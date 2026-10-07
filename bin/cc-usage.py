@@ -4,7 +4,7 @@
 @since 06/10/26
 
 Sums Command Code spend (usage.costUsd) from ~/.commandcode/projects over rolling 5h and 7d windows,
-or for one session with --session <id>.
+for one session with --session <id>, or reports one session's cost, edited files and denied calls with --report <id>.
 """
 import json
 import os
@@ -74,7 +74,70 @@ def session_cost(session_id):
     return None
 
 
+EDIT_TOOLS = {"edit_file", "write_file", "multi_edit", "notebook_edit"}
+DENIAL_MARKS = ("permission denied", "requires permissions", "denied by", "not allowed")
+
+
+def transcript_path(session_id):
+    for project in os.scandir(ROOT):
+        path = os.path.join(project.path, session_id + ".jsonl")
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def tool_target(tool_input):
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("file_path", "path", "command", "pattern", "url"):
+        if tool_input.get(key):
+            return str(tool_input[key])[:160]
+    return ""
+
+
+def result_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return ""
+
+
+def session_report(session_id):
+    path = transcript_path(session_id)
+    if not path:
+        return {"usd": None, "files": [], "denied": [], "toolCalls": 0}
+    calls, files, denied, usd, count = {}, [], [], 0.0, 0
+    with open(path, encoding="utf-8", errors="replace") as transcript:
+        for line in transcript:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            usd += float((row.get("usage") or {}).get("costUsd") or 0)
+            content = (row.get("message") or {}).get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    count += 1
+                    calls[block.get("id")] = (block.get("name", ""), tool_target(block.get("input")))
+                elif block.get("type") == "tool_result":
+                    name, target = calls.get(block.get("tool_use_id"), ("", ""))
+                    text = result_text(block.get("content"))
+                    if any(mark in text.lower() for mark in DENIAL_MARKS):
+                        denied.append({"tool": name, "target": target, "text": text[:200]})
+                    elif name in EDIT_TOOLS and not text.lower().startswith("error") and target and target not in files:
+                        files.append(target)
+    return {"usd": round(usd, 4), "files": files, "denied": denied[-12:], "toolCalls": count}
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--report":
+        print(json.dumps(session_report(sys.argv[2])))
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
         print(json.dumps({"usd": session_cost(sys.argv[2])}))
         return
