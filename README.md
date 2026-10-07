@@ -2,7 +2,16 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.1.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.2.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
+
+## How a Head runs
+- Command Code's headless mode blocks edits and shell commands unless they are pre-approved, so each Head runs in `dont-ask` mode with Hydra's rules, written to the project's `.commandcode/settings.local.json` (added to `.git/info/exclude`). A settings file the person wrote is never touched.
+- Allowed: edits inside `cwd`, read-only shell commands, and the patterns a task lists in `allowShell`. Always denied: `.git` and `.commandcode` edits, commit/push/reset/checkout/switch/restore/stash/clean/rebase/merge, `rm -r`, `rm -f`, `sudo`.
+- `addDirs` grants read access to folders outside `cwd` (mockups, briefs, other repos).
+- A Head that stops before ending its report with `HEAD DONE` (a text-only reply, an empty model reply, a turn cap) is resumed in the same session, up to 8 rounds, and told which calls stay denied. A run that fails before it has a session is retried twice.
+- Limits: `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
+- `background: true` returns at once; the report arrives later as a message from the plugin.
+- Each report lists the files that Head edited and every denied call, read from its own transcript, plus cost, rounds and turns.
 
 ## Layout
 - `.claude-plugin/` — the mod manifest
