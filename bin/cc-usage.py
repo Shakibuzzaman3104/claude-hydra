@@ -75,7 +75,7 @@ def session_cost(session_id):
 
 
 EDIT_TOOLS = {"edit_file", "write_file", "multi_edit", "notebook_edit"}
-DENIAL_MARKS = ("permission denied", "requires permissions", "denied by", "not allowed")
+DENIAL_MARKS = ("permission denied", "requires permissions", "denied by", "not allowed", "blocked by permission", "deny rule", "outside workspace")
 
 
 def transcript_path(session_id):
@@ -134,7 +134,34 @@ def session_report(session_id):
     return {"usd": round(usd, 4), "files": files, "denied": denied[-12:], "toolCalls": count}
 
 
+def find_session(since_ms, prompt_prefix):
+    """The session a Head started after since_ms whose first prompt begins with prompt_prefix."""
+    best = None
+    for project in os.scandir(ROOT):
+        if not project.is_dir():
+            continue
+        for entry in os.scandir(project.path):
+            if not entry.name.endswith(".checkpoints.jsonl") or entry.stat().st_mtime * 1000 < since_ms:
+                continue
+            try:
+                with open(entry.path, encoding="utf-8", errors="replace") as checkpoints:
+                    first = json.loads(checkpoints.readline())
+            except (OSError, ValueError):
+                continue
+            created = parse_time(first.get("createdAt"))
+            if not created or created.timestamp() * 1000 < since_ms:
+                continue
+            if not str(first.get("prompt", "")).startswith(prompt_prefix[:100]):
+                continue
+            if best is None or created < best[0]:
+                best = (created, entry.name[: -len(".checkpoints.jsonl")])
+    return best[1] if best else None
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "--find":
+        print(json.dumps({"sessionId": find_session(float(sys.argv[2]), sys.argv[3])}))
+        return
     if len(sys.argv) == 3 and sys.argv[1] == "--report":
         print(json.dumps(session_report(sys.argv[2])))
         return

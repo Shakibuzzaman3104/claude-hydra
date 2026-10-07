@@ -30,7 +30,7 @@ const LEAD_LABELS: Record<string, string> = {
 export const HYDRA_POLICY = (headModel: string) => `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
-- Heads edit files inside \`cwd\` and nothing else. Folders outside it they must read (mockups, briefs, other repos) go in \`addDirs\`. They can run only read-only shell commands plus the patterns you list in \`allowShell\` (e.g. "xcrun swiftc -parse *"); everything else is denied, never prompted.
+- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the files the Head edited and every call that was denied.
@@ -134,6 +134,16 @@ async function setRun($: EngineInterface, id: string, change: Partial<HeadRun>) 
 
 type SessionReport = { usd: number | null; files: string[]; denied: { tool: string; target: string; text: string }[]; toolCalls: number }
 
+/** The session a Head started, found from its transcript when the run ended before reporting it (a timeout, a kill). */
+async function findSession($: EngineInterface, since: number, task: string): Promise<string | undefined> {
+  try {
+    const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`, '--find', String(since - 5_000), task.slice(0, 100)])
+    return (JSON.parse(ran.stdout) as { sessionId: string | null }).sessionId ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function sessionReport($: EngineInterface, sessionId: string): Promise<SessionReport> {
   try {
     const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`, '--report', sessionId])
@@ -167,55 +177,77 @@ export const isFinished = (text: string) => text.includes(DONE_MARK)
 /** 0 is a clean stop, 8 a turn-cap hit, 9 an empty model reply: all three can pick up where they left off. */
 export const isResumable = (code: number | null) => code === 0 || code === 8 || code === 9
 
-export const DEFAULT_DENY = [
-  'Edit(/.git/**)',
-  'Edit(/.commandcode/**)',
-  'Shell(git commit*)',
-  'Shell(git push*)',
-  'Shell(git reset*)',
-  'Shell(git checkout*)',
-  'Shell(git switch*)',
-  'Shell(git restore*)',
-  'Shell(git stash*)',
-  'Shell(git clean*)',
-  'Shell(git rebase*)',
-  'Shell(git merge*)',
-  'Shell(rm -r*)',
-  'Shell(rm -f*)',
-  'Shell(sudo*)',
+/** Shell commands a Head never runs, even when its task turns shell on. */
+export const DANGEROUS_SHELL = [
+  'Shell(git commit*)', 'Shell(git push*)', 'Shell(git reset*)', 'Shell(git checkout*)', 'Shell(git switch*)',
+  'Shell(git restore*)', 'Shell(git stash*)', 'Shell(git clean*)', 'Shell(git rebase*)', 'Shell(git merge*)',
+  'Shell(git branch -D*)', 'Shell(git tag*)', 'Shell(gh *)',
+  'Shell(rm -r*)', 'Shell(rm -f*)', 'Shell(rm -R*)', 'Shell(sudo*)', 'Shell(su *)', 'Shell(chmod*)', 'Shell(chown*)',
+  'Shell(curl*)', 'Shell(wget*)', 'Shell(ssh*)', 'Shell(scp*)', 'Shell(rsync*)', 'Shell(nc *)', 'Shell(open *)',
+  'Shell(osascript*)', 'Shell(launchctl*)', 'Shell(defaults write*)', 'Shell(security *)', 'Shell(kill*)', 'Shell(pkill*)',
+  'Shell(xcodebuild*)', 'Shell(swift build*)', 'Shell(swift test*)', 'Shell(npm publish*)', 'Shell(npm install*)',
+  'Shell(pip install*)', 'Shell(brew *)',
 ]
+
+/** Inside the project a Head may edit anything except the repo's history and Hydra's own rules. */
+export const PROJECT_DENY = ['Edit(/.git/**)', 'Edit(/.commandcode/**)']
 
 type Permissions = { allow?: string[]; deny?: string[]; additionalDirectories?: string[] }
 type HeadSettings = { managedBy?: string; permissions?: Permissions }
+type HeadNeeds = { addDirs: readonly string[]; shell: boolean }
 
 const union = (a: readonly string[] = [], b: readonly string[] = []) => [...new Set([...a, ...b])]
 
-/** Hydra's own rules for a headless run: edits inside the project, the listed shell patterns, the extra read folders. */
-export const headSettings = (existing: HeadSettings | null, addDirs: readonly string[], allowShell: readonly string[]): HeadSettings => {
-  const before = existing?.permissions ?? {}
+/**
+ * Hydra's rules for Heads run under --yolo: deny rules are the only thing yolo honours, so every write outside the
+ * project is denied path by path, and shell is denied outright unless a running Head in this project asked for it.
+ */
+export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[]): HeadSettings => {
+  const shell = heads.some(head => head.shell)
   return {
     managedBy: OWNER,
     permissions: {
-      allow: union(before.allow, ['Edit(/**)', ...allowShell.map(pattern => `Shell(${pattern})`)]),
-      deny: union(before.deny, DEFAULT_DENY),
-      additionalDirectories: union(before.additionalDirectories, addDirs),
+      deny: [...outsideDeny, ...PROJECT_DENY, ...(shell ? DANGEROUS_SHELL : ['Shell'])],
+      additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []),
     },
   }
 }
 
-/** Writes the rules into the project's personal settings file, never into one the person wrote themselves. */
-async function prepareRules($: EngineInterface, cwd: string, addDirs: readonly string[], allowShell: readonly string[]) {
-  const path = `${cwd.replace(/\/$/, '')}/${RULES_FILE}`
-  let existing: HeadSettings | null = null
+/** Deny rules for every sibling of every folder on the way down to `cwd`, so nothing outside it can be written. */
+async function outsideDenyRules($: EngineInterface, cwd: string) {
+  const parts = cwd.split('/').filter(Boolean)
+  const rules: string[] = []
+  let base = ''
+  for (const part of parts) {
+    const entries = await $.fs.list(base || '/')
+    for (const entry of entries) {
+      if (entry.name === part) continue
+      const path = `${base}/${entry.name}`.slice(1)
+      rules.push(`Edit(//${path})`, `Edit(//${path}/**)`)
+    }
+    base += `/${part}`
+  }
+  return rules
+}
+
+const projects = new Map<string, Map<string, HeadNeeds>>()
+
+const rulesPath = (cwd: string) => `${cwd.replace(/\/$/, '')}/${RULES_FILE}`
+
+/** Writes the project's rules for the Heads now running in it. Returns why it refused, if it did; a Head must not run then. */
+async function writeRules($: EngineInterface, cwd: string): Promise<string | undefined> {
+  const path = rulesPath(cwd)
   if (await $.fs.exists(path)) {
+    let existing: HeadSettings
     try {
       existing = JSON.parse(await $.fs.read(path)) as HeadSettings
     } catch {
-      return `${RULES_FILE} could not be read, so Hydra's rules were not applied; edits will be denied`
+      return `${RULES_FILE} exists but is not valid JSON`
     }
-    if (existing.managedBy !== OWNER) return `${RULES_FILE} belongs to the person, so Hydra's rules were not applied; edits may be denied`
+    if (existing.managedBy !== OWNER) return `${RULES_FILE} belongs to the person, so Hydra cannot lock this project down`
   }
-  await $.fs.write(path, JSON.stringify(headSettings(existing, addDirs, allowShell), null, 2) + '\n')
+  const heads = [...(projects.get(cwd)?.values() ?? [])]
+  await $.fs.write(path, JSON.stringify(headSettings(heads, await outsideDenyRules($, cwd)), null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
     const file = exclude.stdout.trim()
@@ -224,6 +256,20 @@ async function prepareRules($: EngineInterface, cwd: string, addDirs: readonly s
     if (!current.split('\n').includes(RULES_FILE)) await $.fs.write(excludePath, `${current.replace(/\n?$/, '\n')}${RULES_FILE}\n`)
   }
   return undefined
+}
+
+async function joinProject($: EngineInterface, cwd: string, id: string, needs: HeadNeeds) {
+  const heads = projects.get(cwd) ?? new Map<string, HeadNeeds>()
+  heads.set(id, needs)
+  projects.set(cwd, heads)
+  const refusal = await writeRules($, cwd).catch(error => `rules not written: ${String(error).slice(0, 160)}`)
+  if (refusal) heads.delete(id)
+  return refusal
+}
+
+async function leaveProject($: EngineInterface, cwd: string, id: string) {
+  projects.get(cwd)?.delete(id)
+  await writeRules($, cwd).catch(() => undefined)
 }
 
 /** A FIFO gate so a fan-out never starts more Heads at once than the provider and the machine take. */
@@ -250,6 +296,33 @@ export const createGate = (limit: number) => {
 
 const gate = createGate(MAX_PARALLEL)
 
+/**
+ * Background Heads run in a worker loop that `session.start` owns, on that hook's `$`: a `tool.call` hook's `$`
+ * lapses once the call is long over, and a Head spawned under it dies with it. The tool call only queues the job.
+ */
+type Job = { input: Record<string, unknown>; headModel: string; id: string }
+
+export const createJobQueue = () => {
+  const jobs: Job[] = []
+  let wake: (() => void) | undefined
+  return {
+    get size() { return jobs.length },
+    push(job: Job) {
+      jobs.push(job)
+      const resume = wake
+      wake = undefined
+      resume?.()
+    },
+    async next(): Promise<Job> {
+      while (jobs.length === 0) await new Promise<void>(resolve => (wake = resolve))
+      return jobs.shift()!
+    },
+  }
+}
+
+const backgroundJobs = createJobQueue()
+let isWorkerRunning = false
+
 type Round = { finalText: string; sessionId?: string; subtype?: string; code: number | null; signal?: string; errors: string }
 
 async function runRound(
@@ -259,7 +332,7 @@ async function runRound(
   onTurn: () => Promise<void>,
 ): Promise<Round> {
   const args = ['/usr/bin/env', 'commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
-    '--output-format', 'json', '--skip-onboarding', '--permission-mode', 'dont-ask', '--trust']
+    '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
   for (const dir of argv.addDirs) args.push('--add-dir', dir)
   if (argv.resume) args.push('--resume', argv.resume)
   const child = $.process.spawn({ argv: args, cwd: argv.cwd })
@@ -306,6 +379,11 @@ export const relativeTo = (cwd: string, path: string) => {
   return path.startsWith(root) ? path.slice(root.length) : path
 }
 
+export const outsideFiles = (cwd: string, files: readonly string[]) => {
+  const root = cwd.replace(/\/$/, '') + '/'
+  return files.filter(file => file.startsWith('/') && !file.startsWith(root))
+}
+
 export const formatReport = (head: {
   id: string; model: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
@@ -315,6 +393,8 @@ export const formatReport = (head: {
     `session ${head.sessionId ?? 'none'} (commandcode --resume ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
+  const outside = outsideFiles(head.cwd, head.files)
+  if (outside.length > 0) lines.push(`⚠ WROTE OUTSIDE THE PROJECT (${outside.length}): ${outside.join(', ')}`)
   lines.push(head.files.length > 0 ? `edited (${head.files.length}): ${head.files.map(file => relativeTo(head.cwd, file)).join(', ')}` : 'edited: nothing')
   if (head.denied.length > 0) {
     lines.push(`denied (${head.denied.length}):`, ...head.denied.map(d => `  - ${d.tool} ${relativeTo(head.cwd, d.target)}: ${d.text.slice(0, 140)}`))
@@ -330,14 +410,14 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const model = typeof input.model === 'string' && input.model ? input.model : headModel
   const maxTurns = Number(input.maxTurns ?? 60)
   const addDirs = strings(input.addDirs)
-  const allowShell = strings(input.allowShell)
+  const shell = input.shell === true || strings(input.allowShell).length > 0
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
 
   await update($, runs, list => [...list, { id, task: task.slice(0, 80), model, state: 'running' as const, turns: 0 }].slice(-12))
   await refreshStatus($, fiveHourUsd)
   await gate.enter()
   try {
-    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, allowShell, minutes }, signal, fiveHourUsd, id)
+    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes }, signal, fiveHourUsd, id)
   } finally {
     gate.leave()
   }
@@ -345,12 +425,39 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
 
 async function runHeadInside(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; allowShell: string[]; minutes: number },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; shell: boolean; minutes: number },
   outer: AbortSignal,
   fiveHourUsd: number,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, allowShell, minutes } = head
+  const { task, cwd, model, maxTurns, addDirs, shell, minutes } = head
+  const refusal = await joinProject($, cwd, id, { addDirs, shell })
+  if (refusal) {
+    await setRun($, id, { state: 'failed' })
+    await refreshStatus($, fiveHourUsd)
+    return {
+      text: formatReport({
+        id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '',
+        exit: 'not started', rulesNote: `${refusal}. The Head runs with --yolo, so it never starts without Hydra's rules.`,
+      }),
+      isDone: false,
+    }
+  }
+  try {
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes }, outer, fiveHourUsd, id)
+  } finally {
+    await leaveProject($, cwd, id)
+  }
+}
+
+async function runLockedHead(
+  $: EngineInterface,
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number },
+  outer: AbortSignal,
+  fiveHourUsd: number,
+  id: string,
+) {
+  const { task, cwd, model, maxTurns, addDirs, minutes } = head
   const controller = new AbortController()
   outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
@@ -364,8 +471,6 @@ async function runHeadInside(
   )
   const signal = controller.signal
 
-  const rulesNote = await prepareRules($, cwd, addDirs, allowShell).catch(error => `rules not written: ${String(error).slice(0, 120)}`)
-
   let turns = 0
   const onTurn = async () => {
     turns++
@@ -373,12 +478,13 @@ async function runHeadInside(
     await refreshStatus($, fiveHourUsd)
   }
 
+  const startedAt = await $.clock.now()
   let round = await runRound($, { prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs }, signal, onTurn)
   for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
     await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
     round = await runRound($, { prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs }, signal, onTurn)
   }
-  const sessionId = round.sessionId
+  const sessionId = round.sessionId ?? (await findSession($, startedAt, task))
   let rounds = 1
   while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
     const so_far = await sessionReport($, sessionId)
@@ -396,7 +502,7 @@ async function runHeadInside(
 
   const text = formatReport({
     id, model, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
-    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : String(round.code ?? round.signal), rulesNote, errors: round.errors,
+    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : String(round.code ?? round.signal), errors: round.errors,
   })
   return { text, isDone }
 }
@@ -408,6 +514,17 @@ export const register: Register = (on, options) => {
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
 
   on('session.start', async ($, e, next) => {
+    if (!isWorkerRunning) {
+      isWorkerRunning = true
+      void (async () => {
+        for (;;) {
+          const job = await backgroundJobs.next()
+          void runHead($, job.input, job.headModel, new AbortController().signal, fiveHourUsd, job.id)
+            .then(({ text }) => $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${text}` }))
+            .catch(error => $.prompt.submit({ text: `Hydra Head ${job.id} failed before it reported: ${String(error).slice(0, 300)}` }))
+        }
+      })()
+    }
     await $.command.register({ name: 'limits', description: 'Show Claude and Command Code usage limits' })
     await $.command.register({
       name: 'hydra',
@@ -425,7 +542,7 @@ export const register: Register = (on, options) => {
           model: { type: 'string', description: 'Command Code model id; defaults to the Hydra head model' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
-          allowShell: { type: 'array', items: { type: 'string' }, description: 'Shell command patterns the Head may run beyond read-only ones, e.g. "xcrun swiftc -parse *"' },
+          shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
@@ -494,10 +611,8 @@ export const register: Register = (on, options) => {
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
     const id = `h${String(e.tool_use_id ?? (await $.clock.now())).slice(-6)}`
     if (e.background === true) {
-      const controller = new AbortController()
-      void runHead($, e, hydra.headModel, controller.signal, fiveHourUsd, id)
-        .then(({ text }) => $.prompt.submit({ text: `Hydra Head ${id} finished.\n${text}` }))
-        .catch(error => $.prompt.submit({ text: `Hydra Head ${id} failed before it reported: ${String(error).slice(0, 300)}` }))
+      if (!isWorkerRunning) return { deny: 'Hydra has no background worker in this session yet; run this Head without background.' }
+      backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id })
 
       return { result: `Head ${id} started in the background on ${hydra.headModel}. Its report arrives as a message from the hydra plugin when it finishes.` }
     }
