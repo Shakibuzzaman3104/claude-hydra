@@ -5,8 +5,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  barOf, continuePrompt, DEFAULT_DENY, DONE_MARK, formatReport, headSettings, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, statusLine, createGate,
+  barOf, continuePrompt, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  relativeTo, resetsIn, statusLine, createGate, createJobQueue,
 } from './register'
 
 test('labels Claude windows like the Droppy panel', async () => {
@@ -61,16 +61,30 @@ test('treats a Head as finished only after its done mark', async () => {
   expect(isFinished(`All done.\n${DONE_MARK}`)).toBe(true)
 })
 
-test('grants edits in the project, listed shell patterns and read folders, and keeps git safe', async () => {
-  const rules = headSettings(null, ['/Volumes/Design'], ['xcrun swiftc -parse *'])
-  expect(rules.managedBy).toBe('hydra')
-  expect(rules.permissions?.allow).toContain('Edit(/**)')
-  expect(rules.permissions?.allow).toContain('Shell(xcrun swiftc -parse *)')
-  expect(rules.permissions?.deny).toContain('Shell(git push*)')
-  expect(rules.permissions?.additionalDirectories).toEqual(['/Volumes/Design'])
-  const again = headSettings(rules, ['/Volumes/Other'], [])
-  expect(again.permissions?.additionalDirectories).toEqual(['/Volumes/Design', '/Volumes/Other'])
-  expect(again.permissions?.deny?.length).toBe(DEFAULT_DENY.length)
+test('denies shell outright unless a running Head asked for it, and always protects the repo', async () => {
+  const outside = ['Edit(//Users)', 'Edit(//Users/**)']
+  const quiet = headSettings([{ addDirs: ['/Volumes/Design'], shell: false }], outside)
+  expect(quiet.managedBy).toBe('hydra')
+  expect(quiet.permissions?.deny).toContain('Shell')
+  expect(quiet.permissions?.deny).toContain('Edit(//Users/**)')
+  for (const rule of PROJECT_DENY) expect(quiet.permissions?.deny).toContain(rule)
+  expect(quiet.permissions?.additionalDirectories).toEqual(['/Volumes/Design'])
+  expect(quiet.permissions?.allow).toBeUndefined()
+
+  const mixed = headSettings([{ addDirs: ['/a'], shell: false }, { addDirs: ['/a', '/b'], shell: true }], outside)
+  expect(mixed.permissions?.deny).not.toContain('Shell')
+  expect(mixed.permissions?.deny).toContain('Shell(git push*)')
+  expect(mixed.permissions?.deny).toContain('Shell(xcodebuild*)')
+  expect(mixed.permissions?.deny?.length).toBe(outside.length + PROJECT_DENY.length + DANGEROUS_SHELL.length)
+  expect(mixed.permissions?.additionalDirectories).toEqual(['/a', '/b'])
+})
+
+test('flags any write outside the project', async () => {
+  expect(outsideFiles('/repo', ['/repo/a.swift', '/repository/x', '/etc/hosts', 'relative.txt'])).toEqual(['/repository/x', '/etc/hosts'])
+  const text = formatReport({
+    id: 'h2', model: 'm', cwd: '/repo', finished: true, rounds: 1, turns: 1, usd: 0, files: ['/repo/a', '/etc/hosts'], denied: [], finalText: 'ok', exit: '0',
+  })
+  expect(text).toContain('WROTE OUTSIDE THE PROJECT (1): /etc/hosts')
 })
 
 test('tells a resumed Head which calls stay denied', async () => {
@@ -116,4 +130,16 @@ test('never runs more Heads at once than the gate allows, and starts them in ord
   gate.leave()
   gate.leave()
   expect(gate.active).toBe(0)
+})
+
+test('hands queued background jobs to the worker in order, waking it when one arrives', async () => {
+  const queue = createJobQueue()
+  queue.push({ input: { task: 'a' }, headModel: 'm', id: 'h1' })
+  expect((await queue.next()).id).toBe('h1')
+  const waiting = queue.next()
+  queue.push({ input: { task: 'b' }, headModel: 'm', id: 'h2' })
+  queue.push({ input: { task: 'c' }, headModel: 'm', id: 'h3' })
+  expect((await waiting).id).toBe('h2')
+  expect(queue.size).toBe(1)
+  expect((await queue.next()).id).toBe('h3')
 })
