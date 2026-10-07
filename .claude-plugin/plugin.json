@@ -1,0 +1,35 @@
+{
+  "name": "hydra",
+  "version": "0.1.0",
+  "description": "Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both",
+  "author": {
+    "name": "Shakib"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "headsPlan": {
+      "type": "string",
+      "title": "Command Code plan",
+      "description": "Plan name shown in the Heads section",
+      "default": "GOAT"
+    },
+    "headsFiveHourUsd": {
+      "type": "number",
+      "title": "Command Code 5-hour limit (USD)",
+      "description": "Spend cap of the 5-hour window",
+      "default": 14
+    },
+    "headsWeeklyUsd": {
+      "type": "number",
+      "title": "Command Code weekly limit (USD)",
+      "description": "Spend cap of the weekly window",
+      "default": 35
+    },
+    "headModel": {
+      "type": "string",
+      "title": "Hydra head model",
+      "description": "Command Code model the Heads run on",
+      "default": "deepseek/deepseek-v4.1-flash"
+    }
+  }
+}
