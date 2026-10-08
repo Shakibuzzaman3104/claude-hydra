@@ -31,6 +31,7 @@ export const HYDRA_POLICY = (headModel: string) => `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
+- If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the files the Head edited and every call that was denied.
@@ -191,12 +192,15 @@ export const DANGEROUS_SHELL = [
 
 /**
  * Inside the project a Head may edit anything except the repo's history, Hydra's own rules and secret files.
- * `.env` files are neither read nor edited; a Read rule only covers the read tool, so `cat .env` needs its own Shell rule.
+ * Shell rules match `.env` only as a path (after a space, `/` or `=`), so `process.env` still runs.
  */
 export const PROJECT_DENY = [
   'Edit(/.git/**)', 'Edit(/.commandcode/**)',
-  'Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(*.env*)',
+  'Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(* .env*)', 'Shell(*/.env*)', 'Shell(*=.env*)',
 ]
+
+/** The grep tool ignores Read rules and has no path-scoped deny, so it is denied whole when a `.env` file is in reach. */
+export const SEARCH_DENY = 'Grep'
 
 type Permissions = { allow?: string[]; deny?: string[]; additionalDirectories?: string[] }
 type HeadSettings = { managedBy?: string; permissions?: Permissions }
@@ -208,12 +212,12 @@ const union = (a: readonly string[] = [], b: readonly string[] = []) => [...new 
  * Hydra's rules for Heads run under --yolo: deny rules are the only thing yolo honours, so every write outside the
  * project is denied path by path, and shell is denied outright unless a running Head in this project asked for it.
  */
-export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[]): HeadSettings => {
+export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false): HeadSettings => {
   const shell = heads.some(head => head.shell)
   return {
     managedBy: OWNER,
     permissions: {
-      deny: [...outsideDeny, ...PROJECT_DENY, ...(shell ? DANGEROUS_SHELL : ['Shell'])],
+      deny: [...outsideDeny, ...PROJECT_DENY, ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile ? [SEARCH_DENY] : [])],
       additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []),
     },
   }
@@ -237,6 +241,19 @@ async function outsideDenyRules($: EngineInterface, cwd: string) {
 }
 
 const projects = new Map<string, Map<string, HeadNeeds>>()
+const searchOff = new Map<string, string>()
+
+/** The first `.env` file under `dirs`, or why the check failed; a failed check counts as found. */
+async function findEnvFile($: EngineInterface, dirs: readonly string[]): Promise<string | undefined> {
+  const found = await $.process.run([
+    'find', ...dirs, '(', '-name', '.git', '-o', '-name', 'node_modules', ')', '-prune', '-o',
+    '-type', 'f', '(', '-name', '.env', '-o', '-name', '.env.*', ')', '-print', '-quit',
+  ]).catch(() => null)
+  if (!found) return 'the .env check could not run'
+  const first = found.stdout.split('\n')[0]?.trim()
+  if (first) return first
+  return found.exitCode === 0 ? undefined : 'the .env check could not read every folder'
+}
 
 const rulesPath = (cwd: string) => `${cwd.replace(/\/$/, '')}/${RULES_FILE}`
 
@@ -253,7 +270,10 @@ async function writeRules($: EngineInterface, cwd: string): Promise<string | und
     if (existing.managedBy !== OWNER) return `${RULES_FILE} belongs to the person, so Hydra cannot lock this project down`
   }
   const heads = [...(projects.get(cwd)?.values() ?? [])]
-  await $.fs.write(path, JSON.stringify(headSettings(heads, await outsideDenyRules($, cwd)), null, 2) + '\n')
+  const envFile = await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), [])])
+  if (envFile) searchOff.set(cwd, envFile)
+  else searchOff.delete(cwd)
+  await $.fs.write(path, JSON.stringify(headSettings(heads, await outsideDenyRules($, cwd), Boolean(envFile)), null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
     const file = exclude.stdout.trim()
@@ -449,8 +469,10 @@ async function runHeadInside(
       isDone: false,
     }
   }
+  const envFile = searchOff.get(cwd)
+  const rulesNote = envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
-    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes }, outer, fiveHourUsd, id)
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes, rulesNote }, outer, fiveHourUsd, id)
   } finally {
     await leaveProject($, cwd, id)
   }
@@ -458,12 +480,12 @@ async function runHeadInside(
 
 async function runLockedHead(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number; rulesNote?: string },
   outer: AbortSignal,
   fiveHourUsd: number,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, minutes } = head
+  const { task, cwd, model, maxTurns, addDirs, minutes, rulesNote } = head
   const controller = new AbortController()
   outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
@@ -509,6 +531,7 @@ async function runLockedHead(
   const text = formatReport({
     id, model, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : String(round.code ?? round.signal), errors: round.errors,
+    rulesNote,
   })
   return { text, isDone }
 }
