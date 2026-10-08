@@ -2,14 +2,14 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.3.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.3.1). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
 - **Locked down:** before a Head starts, Hydra writes the project's `.commandcode/settings.local.json` (added to `.git/info/exclude`):
   - every folder outside `cwd` is denied for edits, sibling by sibling up to `/`;
   - `.git` and `.commandcode` inside the project are denied;
-  - shell is denied outright unless a running Head asked for `shell: true`; even then destructive git, `rm -r`/`-f`, `sudo`, network tools (`curl`, `wget`, `ssh`, `rsync`, …), builds and installs (`xcodebuild`, `swift build`, `npm install`, `brew`, …) stay denied.
+  - shell is denied outright unless a running Head asked for `shell: true`; even then destructive git, `rm -r`/`-f`, `sudo`, network tools (`curl`, `wget`, `ssh`, `rsync`, …), builds and installs (`xcodebuild`, `swift build`, `npm install`, `brew`, …) stay denied;
   - `.env` and `.env.*` files are kept from Heads, because a Head sends file contents to an external model: the read and edit tools are denied on them, and so is any shell command that names one as a path (`Shell(* .env*)`, `Shell(*/.env*)`, `Shell(*=.env*)`; `process.env` still runs);
   - the grep tool ignores `Read` rules and takes no path-scoped deny, so when a `.env` file sits in the project or an `addDirs` folder Hydra denies the grep tool outright (the report says which file); if the check fails, search is denied too;
   - a Head with `shell: true` can still read `.env` through a command that does not name it, such as `grep -r KEY .`. Pattern rules cannot close that, so avoid shell in projects with real secrets.
@@ -42,7 +42,8 @@ Run this after installing and after any change to how a Head is launched, before
 1. Make a throwaway git repo with `a.txt` containing `hello`, and an empty folder beside it.
 2. Run one Head there with `addDirs` naming a folder outside the repo and outside `/tmp` (the OS temp folder is always readable, so it proves nothing). Ask it to: edit `a.txt`; create `b.txt`; run `ls`; create a file in the folder beside the repo; create a file in your home folder; add a line to `.git/config`; read a file in the `addDirs` folder.
 3. Check the disk yourself. Expected: the edit, the new file and the `addDirs` read succeed; `ls`, both outside writes and the `.git/config` edit are denied and nothing exists outside the repo. The report says `finished`, lists `a.txt` and `b.txt` as edited, lists the four denied calls, and shows no `⚠ WROTE OUTSIDE` line.
-4. Run one Head with `background: true` on a task of 30+ single edits (several minutes): its report arrives as a message from the plugin, and the status line shows `1 running` while it works.
+4. After any change to the `.env` rules, add `.env`, `.env.production` and `sub/.env.local` with fake values, and run one Head with `shell: true` that tries, one call each: the read tool, the grep tool over `.` and over `sub`, `cat .env`, `cat sub/.env.local`, `grep -r SECRET .`, `grep -rn "process.env" a.txt`, and an edit of each `.env` file. Expected: every call is denied except `grep -r SECRET .` (the known shell gap) and the `process.env` grep, and no `.env` file changes. Write the Head's output outside the test repo, or its own log matches the searches.
+5. Run one Head with `background: true` on a task of 30+ single edits (several minutes): its report arrives as a message from the plugin, and the status line shows `1 running` while it works.
 
 When something fails, the Head's transcript is `~/.commandcode/projects/<project-slug>/<sessionId>.jsonl` (the session id is in the report); `python3 bin/cc-usage.py --report <sessionId>` summarises its cost, edited files and denied calls.
 
@@ -60,6 +61,9 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - 2026-10-07: a refusal reads "Blocked by permission deny rule …" (yolo) or "requires permissions" (print-mode gate); the transcript reader must treat both as denials, or refused writes look like edits.
 - 2026-10-07: a background Head spawned from a `tool.call` hook died about 3 minutes later; run long-lived work from `session.start`'s worker. A plugin may not store `$` in a variable (validate rejects it).
 - 2026-10-07: big view files (1,500+ lines) took DeepSeek Heads past 40 minutes; split such work or raise `maxMinutes`, and expect a follow-up Head to finish it.
+- 2026-10-08: Command Code's grep tool ignores `Read` deny rules, and path-scoped `Grep(...)` or `Search(...)` rules never fire; only a bare `Grep` deny stops it. Pointing grep straight at `.env` is caught by `Read(.env)`, but a search over `.` or a folder is not.
+- 2026-10-08: `Read(.env.*)` and `Edit(.env.*)` match nested files such as `sub/.env.local`. Shell rules match the command text, not the files it touches, so `Shell(*.env*)` blocked `grep "process.env"` yet let `grep -r SECRET .` read every `.env`.
+- 2026-10-08: Claude Code's auto mode refuses to let Claude launch a `--yolo` Head from Bash for a probe, even with the person's go-ahead. Write the probe as a script and have the person run it with `! bash <script>`. macOS has no `timeout`; use `perl -e 'alarm shift; exec @ARGV' 600 …`.
 - A plugin's `command.run` hook must not call `$.command.run` (the engine refuses it and nothing answers the command), so `/hydra` only tells the person to run `/model`.
 - Parallel Heads share one checkout. Give them disjoint files, read each report's own edited-file list rather than `git status`, and tell a Head never to delete a type another file still uses.
 - Heads cannot build an Xcode project safely in a shared checkout (a fresh build folder clones every package); the Lead builds and tests.
