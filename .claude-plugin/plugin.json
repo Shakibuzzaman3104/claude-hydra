@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both",
   "author": {
     "name": "Shakib"
