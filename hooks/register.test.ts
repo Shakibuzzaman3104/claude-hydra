@@ -169,19 +169,22 @@ test('reads the levels a model supports from its refusal and rounds a missing on
   expect(isEffort('ultra')).toBe(false)
 })
 
-test('lets the Lead pick high or max under auto, lets the person fix it, and never goes below high', async () => {
+test('lets the Lead pick only high or max under auto, and lets the person fix any level', async () => {
   expect(headEffort('auto', undefined)).toBe('high')
   expect(headEffort('auto', 'max')).toBe('max')
   expect(headEffort('auto', 'low')).toBe('high')
   expect(headEffort('high', 'max')).toBe('high')
   expect(headEffort('max', undefined)).toBe('max')
+  expect(headEffort('low', 'max')).toBe('low')
   expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'max' })).toBe('max')
-  expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'low' })).toBe('auto')
+  expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'off' })).toBe('off')
+  expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'ultra' })).toBe('auto')
   expect(effortModeOf(null)).toBe('auto')
-  for (const level of ['off', 'low', 'medium']) {
+  for (const level of ['off', 'low', 'medium', 'xhigh']) {
     expect(isHeadEffort(level)).toBe(false)
-    expect(isEffortMode(level)).toBe(false)
+    expect(isEffortMode(level)).toBe(true)
   }
+  expect(isEffortMode('ultra')).toBe(false)
   expect(isEffortMode('auto')).toBe(true)
   expect(isHeadEffort('auto')).toBe(false)
 })

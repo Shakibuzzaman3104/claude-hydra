@@ -66,7 +66,7 @@ export const parseHydraArgs = (args: string) => {
 
 export const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export const HEAD_EFFORTS = ['high', 'max'] as const
-export const EFFORT_MODES = ['auto', ...HEAD_EFFORTS] as const
+export const EFFORT_MODES = ['auto', ...EFFORTS] as const
 export const DEFAULT_EFFORT = 'high'
 
 export type EffortMode = (typeof EFFORT_MODES)[number]
@@ -75,10 +75,10 @@ export const isEffort = (value: unknown): value is string => typeof value === 's
 export const isHeadEffort = (value: unknown): value is (typeof HEAD_EFFORTS)[number] => typeof value === 'string' && (HEAD_EFFORTS as readonly string[]).includes(value)
 export const isEffortMode = (value: unknown): value is EffortMode => typeof value === 'string' && (EFFORT_MODES as readonly string[]).includes(value)
 
-/** The session's effort mode; anything else stored there (an older level) reads as auto. */
+/** The session's effort mode; anything else stored there reads as auto. */
 export const effortModeOf = (hydra: HydraMode | null) => (isEffortMode(hydra?.effort) ? hydra.effort : 'auto')
 
-/** The person's fixed level wins; under auto the Lead's pick for this Head does, and high when it gave none. */
+/** The person's fixed level wins, any level; under auto the Lead's pick (high or max) does, and high when it gave none. */
 export const headEffort = (mode: EffortMode, leadPick: string | undefined) => (mode !== 'auto' ? mode : isHeadEffort(leadPick) ? leadPick : DEFAULT_EFFORT)
 
 /** The model's levels from Command Code's refusal: `Unknown effort "medium". Supported: off, low, high, max.` */
@@ -626,7 +626,7 @@ export const register: Register = (on, options) => {
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
-          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head: high (default) or max. Ignored while the person has fixed it with /hydra effort=high|max.' },
+          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head: high (default) or max. Ignored while the person has fixed a level with /hydra effort=<level>.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
@@ -666,7 +666,7 @@ export const register: Register = (on, options) => {
       return { text: 'Hydra off. Claude works alone again.' }
     }
 
-    if (effort !== undefined && !isEffortMode(effort)) return { text: `Effort "${effort}" is not allowed. Use auto (the Lead picks high or max per Head), high or max.` }
+    if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks high or max per Head) or one of: ${EFFORTS.join(', ')}.` }
     const next = { isOn: true, headModel: headModel ?? current.headModel, effort: effort ?? currentEffort }
     await update($, mode, () => next)
     $.ui.invalidate('tool.describe')
