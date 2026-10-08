@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue,
+  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, headName, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -306,4 +306,62 @@ test('leaves the band to the engine when no Head is live', async ($, on) => {
     props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll, view: {} },
   }).then(() => 'drew', (error: unknown) => String(error))
   expect(passed).toContain('no implementation for ui.render')
+})
+
+test('marks only running or queued Heads as stopped, by id or all', async () => {
+  const run = (id: string, state: HeadRun['state']): HeadRun => ({ id, task: 't', model: 'm', state, turns: 0 })
+  const list = [run('h1', 'running'), run('h2', 'queued'), run('h3', 'done'), run('h4', 'failed')]
+  const some = stopRuns(list, ['h1'], 'stopped by the Lead', 5)
+  expect(some[0]).toEqual({ ...list[0], state: 'failed', endedAt: 5, activity: 'stopped by the Lead' })
+  expect(some[1]).toBe(list[1])
+  const all = stopRuns(list, 'all', 'ended by a reload or restart', 9)
+  expect(all.map(r => r.state)).toEqual(['failed', 'failed', 'done', 'failed'])
+  expect(all[2]).toBe(list[2])
+  expect(all[3]).toBe(list[3])
+})
+
+test('flags a running Head with no live process behind it as stale', async () => {
+  const live: HeadRun = { id: 'h1', task: 'convert file', model: 'm', state: 'running', turns: 3, maxTurns: 60, startedAt: 1_000 }
+  const ghost: HeadRun = { ...live, id: 'h2' }
+  const text = listRuns([live, ghost], 66_000, id => id === 'h1')
+  expect(text.split('\n')[0]).toBe('h1 · running · 3/60 turns · 1:05 · running · convert file')
+  expect(text.split('\n')[1]).toContain('h2 · running · NO LIVE PROCESS')
+  expect(listRuns([], 0, () => false)).toBe('No Heads in this session.')
+})
+
+test('names why a Head stopped', async () => {
+  const stopped = new AbortController()
+  stopped.abort('stopped by the Lead')
+  expect(stopReason(stopped.signal)).toBe('stopped by the Lead')
+  const plain = new AbortController()
+  plain.abort()
+  expect(stopReason(plain.signal)).toBe('stopped')
+})
+
+test('hands queued prompts to the session in order', async () => {
+  const queue = createQueue<string>()
+  queue.push('first')
+  const waiting = queue.next()
+  expect(await waiting).toBe('first')
+  const later = queue.next()
+  queue.push('second')
+  expect(await later).toBe('second')
+  expect(queue.size).toBe(0)
+})
+
+test('names Heads short and readable, from the Lead or the task', async () => {
+  expect(slugOf('Prefs Utils!')).toBe('prefs-utils')
+  expect(slugOf('PathaoAppSettings')).toBe('pathao-app-settings')
+  expect(slugOf('ShopOrderDetailsActivity')).toBe('shop-order-details')
+  expect(nameFromTask('Convert app/src/main/java/com/x/utils/PreferenceUtils.kt from Java to Kotlin')).toBe('preference-utils')
+  expect(nameFromTask('Add unit tests for the login screen validation')).toBe('unit-tests-login')
+  expect(nameFromTask('')).toBe('head')
+  expect(headName('Login Tests', 'anything', new Set())).toBe('login-tests')
+  expect(headName(undefined, 'Fix DateTimeUtils.kt parsing', new Set())).toBe('date-time-utils')
+})
+
+test('keeps Head names unique within the session', async () => {
+  const taken = new Set(['prefs-utils', 'prefs-utils-2'])
+  expect(headName('prefs-utils', 't', taken)).toBe('prefs-utils-3')
+  expect(headName('abcdefghij-klmnopqrs', 't', new Set(['abcdefghij-klmnopqrs']))).toBe('abcdefghij-klmnopq-2')
 })
