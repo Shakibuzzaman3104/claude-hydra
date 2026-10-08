@@ -3,8 +3,9 @@
 @author Shakib
 @since 08/10/26
 
-Command Code PreToolUse hook for Hydra's Heads: denies a write or edit whose real path is outside the project.
-Usage: head-guard.py <project root>, with the hook's JSON on stdin.
+Command Code PreToolUse hook for Hydra's Heads: denies a write or edit whose real path is outside the project
+and the folders the Heads may also write to.
+Usage: head-guard.py <project root> [<write dir> ...], with the hook's JSON on stdin.
 """
 import json
 import os
@@ -18,7 +19,7 @@ def deny(reason):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": f"{reason} Do not retry it: Heads write only inside the project.",
+        "permissionDecisionReason": f"{reason} Do not retry it: Heads write only inside the project and the folders the Lead granted.",
     }}))
 
 
@@ -27,7 +28,8 @@ def is_inside(path, root):
 
 
 def main():
-    root = os.path.realpath(sys.argv[1])
+    roots = [os.path.realpath(root) for root in sys.argv[1:]]
+    root = roots[0]
     event = json.load(sys.stdin)
     if event.get("tool_name") not in WRITE_TOOLS and event.get("tool_display_name") not in WRITE_NAMES:
         return
@@ -37,7 +39,7 @@ def main():
         deny("Hydra could not tell which file this call writes.")
         return
     path = os.path.realpath(os.path.join(event.get("cwd") or root, os.path.expanduser(raw)))
-    if not is_inside(path, root):
+    if not any(is_inside(path, allowed) for allowed in roots):
         deny(f"Hydra: {raw} is outside the project.")
 
 
