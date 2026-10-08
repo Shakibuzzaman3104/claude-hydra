@@ -46,6 +46,7 @@ You are the Lead. Implementation goes to Heads: Command Code agents on ${headMod
 ${effortRule(effort)}
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
+- A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
 - If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.
 - Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
@@ -430,7 +431,7 @@ export const SEARCH_DENY = 'Grep'
 
 type Permissions = { allow?: string[]; deny?: string[]; additionalDirectories?: string[] }
 type GuardHook = { matcher: string; hooks: { type: 'command'; command: string; timeout: number }[] }
-type HeadNeeds = { addDirs: readonly string[]; shell: boolean }
+type HeadNeeds = { addDirs: readonly string[]; shell: boolean; writeDirs?: readonly string[] }
 /** A running Head the rules file is kept for: `key` is `<session id>/<head id>`, `until` when it must have ended. */
 export type HeadEntry = HeadNeeds & { key: string; until: number }
 type HeadSettings = { managedBy?: string; hydraHeads?: HeadEntry[]; permissions?: Permissions; hooks?: { PreToolUse: GuardHook[] } }
@@ -441,13 +442,26 @@ const union = (a: readonly string[] = [], b: readonly string[] = []) => [...new 
  * Hydra's rules for Heads run under --yolo: deny rules are the only thing yolo honours, so every write outside the
  * project is denied path by path, and shell is denied outright unless a running Head in this project asked for it.
  */
+/** The folders outside the project that the running Heads may write to, from every Head's `writeDirs`. */
+export const writeDirsOf = (heads: readonly HeadNeeds[]) => heads.reduce<string[]>((dirs, head) => union(dirs, head.writeDirs ?? []), [])
+
+/** What stays protected inside a folder a Head may write to: its history, its Command Code settings and its secrets. */
+export const writeDirDeny = (dir: string) => [
+  `Edit(/${dir}/.git/**)`, `Edit(/${dir}/.commandcode/**)`,
+  `Edit(/${dir}/**/.env)`, `Edit(/${dir}/**/.env.*)`, `Read(/${dir}/**/.env)`, `Read(/${dir}/**/.env.*)`,
+]
+
 export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string): HeadSettings => {
   const shell = heads.some(head => head.shell)
+  const writeDirs = writeDirsOf(heads)
   return {
     managedBy: OWNER,
     permissions: {
-      deny: [...outsideDeny, ...PROJECT_DENY, ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile ? [SEARCH_DENY] : [])],
-      additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []),
+      deny: [
+        ...outsideDeny, ...PROJECT_DENY, ...writeDirs.flatMap(writeDirDeny),
+        ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile ? [SEARCH_DENY] : []),
+      ],
+      additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, [...head.addDirs, ...(head.writeDirs ?? [])]), []),
     },
     ...(guard ? { hooks: { PreToolUse: [{ matcher: 'write|edit', hooks: [{ type: 'command' as const, command: guard, timeout: 10 }] }] } } : {}),
   }
@@ -457,38 +471,68 @@ const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
 
 /**
  * The write guard Command Code runs before every write and edit: it denies a path whose real location is outside
- * `cwd`, which deny rules cannot express for a new folder (write_file creates missing parents).
+ * `cwd` and the `writeDirs`, which deny rules cannot express for a new folder (write_file creates missing parents).
  */
-export const guardCommand = (pluginRoot: string, cwd: string) =>
-  `/usr/bin/env python3 -I ${shellQuote(`${pluginRoot}/bin/head-guard.py`)} ${shellQuote(cwd)}`
+export const guardCommand = (pluginRoot: string, cwd: string, writeDirs: readonly string[] = []) =>
+  [`/usr/bin/env python3 -I ${shellQuote(`${pluginRoot}/bin/head-guard.py`)}`, ...[cwd, ...writeDirs].map(shellQuote)].join(' ')
+
+const isWithin = (path: string, root: string) => path === root || path.startsWith(`${root.replace(/\/$/, '')}/`)
+
+/** Each folder above one of `roots` (and not inside any), with the names that lead down to a root from it. */
+export const waysDown = (roots: readonly string[]) => {
+  const ways = new Map<string, Set<string>>()
+  for (const root of roots) {
+    let base = ''
+    for (const part of root.split('/').filter(Boolean)) {
+      if (roots.some(other => base && isWithin(base, other))) break
+      ways.set(base, (ways.get(base) ?? new Set()).add(part))
+      base += `/${part}`
+    }
+  }
+  return ways
+}
 
 /**
- * Deny rules for every folder above `cwd`: each entry but the way down, and any new file directly in it.
- * A new subfolder of an ancestor can't be named by a rule; the write guard denies those.
+ * Deny rules for every folder above the project and the `writeDirs`: each entry but the ways down, and any new
+ * file directly in it. A new subfolder of an ancestor can't be named by a rule; the write guard denies those.
  */
-export const ancestorDenyRules = (cwd: string, entriesOf: (dir: string) => readonly string[]) => {
+export const ancestorDenyRules = (roots: readonly string[], entriesOf: (dir: string) => readonly string[]) => {
   const rules: string[] = []
-  let base = ''
-  for (const part of cwd.split('/').filter(Boolean)) {
+  for (const [base, names] of waysDown(roots)) {
     rules.push(`Edit(/${base}/*)`)
     for (const name of entriesOf(base || '/')) {
-      if (name === part) continue
+      if (names.has(name)) continue
       const path = `${base}/${name}`.slice(1)
       rules.push(`Edit(//${path})`, `Edit(//${path}/**)`)
     }
-    base += `/${part}`
   }
   return rules
 }
 
-async function outsideDenyRules($: EngineInterface, cwd: string) {
+async function outsideDenyRules($: EngineInterface, roots: readonly string[]) {
   const listings = new Map<string, string[]>()
-  let base = ''
-  for (const part of cwd.split('/').filter(Boolean)) {
-    listings.set(base || '/', (await $.fs.list(base || '/')).map(entry => entry.name))
-    base += `/${part}`
+  for (const base of waysDown(roots).keys()) listings.set(base || '/', (await $.fs.list(base || '/')).map(entry => entry.name))
+  return ancestorDenyRules(roots, dir => listings.get(dir) ?? [])
+}
+
+/**
+ * The real folders a Head asked to write to outside `cwd`, or why one is refused: it must exist, and must not be
+ * `/`, the home folder, a folder above the project or one inside it.
+ */
+async function resolveWriteDirs($: EngineInterface, cwd: string, dirs: readonly string[]): Promise<{ dirs: string[] } | { refusal: string }> {
+  const home = (await $.env.get('HOME')) ?? ''
+  const realCwd = (await $.fs.stat(cwd, { resolve: true }).catch(() => undefined))?.realPath ?? cwd
+  const resolved: string[] = []
+  for (const dir of dirs) {
+    if (!dir.startsWith('/')) return { refusal: `writeDirs needs absolute folders; "${dir}" is not one.` }
+    const stat = await $.fs.stat(dir, { resolve: true }).catch(() => undefined)
+    const real = stat?.realPath
+    if (!stat || stat.kind !== 'dir' || !real) return { refusal: `writeDirs: ${dir} is not an existing folder.` }
+    if (real === '/' || real === home || isWithin(realCwd, real)) return { refusal: `writeDirs: ${dir} is too broad: it holds the project or your home folder. Name the folder the task changes.` }
+    if (isWithin(real, realCwd)) return { refusal: `writeDirs: ${dir} is inside the project, which a Head can write to already.` }
+    resolved.push(real)
   }
-  return ancestorDenyRules(cwd, dir => listings.get(dir) ?? [])
+  return { dirs: union(resolved) }
 }
 
 /** This session's running Heads plus other sessions' still in time; this session's own come from `mine` alone. */
@@ -541,10 +585,12 @@ async function writeRules($: EngineInterface, cwd: string): Promise<string | und
     if (await $.fs.exists(path)) await $.process.run(['/bin/rm', '-f', path])
     return undefined
   }
-  const envFile = await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), [])])
+  const writeDirs = writeDirsOf(heads)
+  const envFile = await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []), ...writeDirs])
   if (envFile) searchOff.set(cwd, envFile)
   else searchOff.delete(cwd)
-  const settings = { ...headSettings(heads, await outsideDenyRules($, cwd), Boolean(envFile), guardCommand($.plugin.root, cwd)), hydraHeads: heads }
+  const outsideDeny = await outsideDenyRules($, [cwd, ...writeDirs])
+  const settings = { ...headSettings(heads, outsideDeny, Boolean(envFile), guardCommand($.plugin.root, cwd, writeDirs)), hydraHeads: heads }
   await $.fs.write(path, JSON.stringify(settings, null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
@@ -823,21 +869,22 @@ export const relativeTo = (cwd: string, path: string) => {
   return path.startsWith(root) ? path.slice(root.length) : path
 }
 
-export const outsideFiles = (cwd: string, files: readonly string[]) => {
-  const root = cwd.replace(/\/$/, '') + '/'
-  return files.filter(file => file.startsWith('/') && !file.startsWith(root))
-}
+/** Files written outside the project and outside every folder the Head was let write to. */
+export const outsideFiles = (cwd: string, files: readonly string[], writeDirs: readonly string[] = []) =>
+  files.filter(file => file.startsWith('/') && ![cwd, ...writeDirs].some(root => isWithin(file, root)))
 
 export const formatReport = (head: {
   id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
+  writeDirs?: readonly string[]
 }) => {
   const lines = [
     `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · $${(head.usd ?? 0).toFixed(4)}`,
     `session ${head.sessionId ?? 'none'} (commandcode --resume ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
-  const outside = outsideFiles(head.cwd, head.files)
+  if (head.writeDirs && head.writeDirs.length > 0) lines.push(`may also write: ${head.writeDirs.join(', ')}`)
+  const outside = outsideFiles(head.cwd, head.files, head.writeDirs)
   if (outside.length > 0) lines.push(`⚠ WROTE OUTSIDE THE PROJECT (${outside.length}): ${outside.join(', ')}`)
   lines.push(head.files.length > 0 ? `edited (${head.files.length}): ${head.files.map(file => relativeTo(head.cwd, file)).join(', ')}` : 'edited: nothing')
   if (head.denied.length > 0) {
@@ -854,6 +901,7 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const model = typeof input.model === 'string' && input.model ? input.model : headModel
   const maxTurns = Number(input.maxTurns ?? 60)
   const addDirs = strings(input.addDirs)
+  const writeDirs = strings(input.writeDirs)
   const shell = input.shell === true || strings(input.allowShell).length > 0
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
   const effort = isHeadEffort(input.effort) ? input.effort : undefined
@@ -875,7 +923,7 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
   await update($, tick, () => startedAt)
   try {
-    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes, effort }, signal, limits, id)
+    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, signal, limits, id)
   } finally {
     gate.leave()
   }
@@ -883,13 +931,13 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
 
 async function runHeadInside(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; shell: boolean; minutes: number; effort?: string },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, shell, minutes, effort } = head
-  const refusal = await joinProject($, cwd, id, { addDirs, shell }, minutes)
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort } = head
+  const refusal = await joinProject($, cwd, id, { addDirs, writeDirs, shell }, minutes)
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
@@ -904,7 +952,7 @@ async function runHeadInside(
   const envFile = searchOff.get(cwd)
   const rulesNote = envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
-    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes, rulesNote, effort }, outer, limits, id)
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, rulesNote, effort }, outer, limits, id)
   } finally {
     await leaveProject($, cwd, id)
   }
@@ -912,7 +960,7 @@ async function runHeadInside(
 
 async function runLockedHead(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number; rulesNote?: string; effort?: string },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; rulesNote?: string; effort?: string },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
@@ -978,7 +1026,7 @@ async function runLockedHead(
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
-    rulesNote,
+    rulesNote, writeDirs: head.writeDirs,
   })
   return { text, isDone }
 }
@@ -1038,6 +1086,7 @@ export const register: Register = (on, options) => {
           model: { type: 'string', description: 'Command Code model id; defaults to the Hydra head model' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
+          writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
           name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
           effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head: high (default), xhigh or max. Ignored while the person has fixed a level with /hydra effort=<level>.' },
@@ -1152,24 +1201,28 @@ export const register: Register = (on, options) => {
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
     if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be high, xhigh or max; Heads never run lower than high.' }
+    const cwd = typeof e.cwd === 'string' && e.cwd ? e.cwd : await $.session.root()
+    const writable = await resolveWriteDirs($, cwd, strings(e.writeDirs))
+    if ('refusal' in writable) return { deny: writable.refusal }
+    const input = { ...e, writeDirs: writable.dirs }
     const taken = new Set([...usedNames, ...(await read($, runs)).map(run => run.id)])
     const id = headName(e.name, String(e.task ?? ''), taken)
     usedNames.add(id)
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment, or run this Head without background.' }
-      backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id })
+      backgroundJobs.push({ input, headModel: hydra.headModel, id })
 
       return { result: `Head ${id} started in the background on ${hydra.headModel}. Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
-      const { text } = await runHead($, e, hydra.headModel, next.signal, limits, id)
+      const { text } = await runHead($, input, hydra.headModel, next.signal, limits, id)
 
       return { result: text }
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
     // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
     const { box, reply } = createReplyBox<HeadResult>(next.signal)
-    backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id, reply })
+    backgroundJobs.push({ input, headModel: hydra.headModel, id, reply })
     const result = await waitForResult(box, next.signal, () => $.process.run(['/bin/sleep', '1'], { timeoutMs: 5_000 }).then(() => undefined))
 
     return { result: result?.text ?? `Head ${id} keeps running in the background after the call was interrupted; its report arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} if it is no longer wanted.` }
