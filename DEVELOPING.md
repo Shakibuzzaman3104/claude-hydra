@@ -66,6 +66,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - Then run the smoke test. Unit tests cannot show what Command Code allows; only a live Head can.
 
 ## Pitfalls already learned
+- 2026-10-08: on Windows, Command Code 1.65 matches a rule `//X` as `/X` and any other rule against the project, so no `Edit(...)` rule can deny a `D:/…` path and a `--yolo` Head writes anywhere (a live Head wrote outside the repo despite `Edit(//D:/…)` and `Edit(D:/…)` rules). Hydra refuses Windows project paths (`windowsPathRefusal`) instead of running unlocked; use WSL.
 - 2026-10-07: Command Code's `-p` mode blocks edits, writes and shell commands unless the run uses `--yolo`, in every permission mode; `accept-edits`, `auto-accept` (an alias) and `dont-ask` with allow rules all fail. Deny rules are the only control left under yolo, hence Hydra's generated deny list.
 - 2026-10-07: one denied call cancels every other call in the same batch ("Skipped — another tool call in this batch was denied"), and a model that keeps hitting denials often ends the run. Grant reads up front with `addDirs`.
 - 2026-10-07: Command Code ends a `-p` run on any text-only reply, and some models reply with text before acting ("I'll start by reading…"). That is why every task ends with the `HEAD DONE` rule and unfinished runs are resumed.
