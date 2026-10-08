@@ -32,6 +32,9 @@ export type HeadRun = {
   steps?: HeadStep[]
   edits?: number
   denials?: number
+  cwd?: string
+  files?: string[]
+  summary?: string
 }
 
 declare module 'claude-code' {
