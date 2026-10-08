@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  barOf, continuePrompt, DEFAULT_EFFORT, isEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  barOf, continuePrompt, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusLine, createGate, createJobQueue,
 } from './register'
 
@@ -34,7 +34,7 @@ test('shows the Head model and Heads usage in the status line only while Hydra i
   expect(statusLine(on, usage, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max │ 5h $1.50/$14 │ 7d $3.00/$35')
   expect(statusLine(on, null, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max')
   expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max')
-  expect(statusLine({ isOn: true, headModel: 'm' }, null, limits)).toBe(`🐉 Hydra · m · ${DEFAULT_EFFORT}`)
+  expect(statusLine({ isOn: true, headModel: 'm' }, null, limits)).toBe('🐉 Hydra · m · auto')
   expect(statusLine({ ...on, isOn: false }, usage, limits)).toBeUndefined()
   expect(statusLine(null, usage, limits)).toBeUndefined()
 })
@@ -167,4 +167,29 @@ test('reads the levels a model supports from its refusal and rounds a missing on
   expect(supportedEfforts('some other failure')).toEqual([])
   expect(isEffort('max')).toBe(true)
   expect(isEffort('ultra')).toBe(false)
+})
+
+test('lets the Lead pick high or max under auto, lets the person fix it, and never goes below high', async () => {
+  expect(headEffort('auto', undefined)).toBe('high')
+  expect(headEffort('auto', 'max')).toBe('max')
+  expect(headEffort('auto', 'low')).toBe('high')
+  expect(headEffort('high', 'max')).toBe('high')
+  expect(headEffort('max', undefined)).toBe('max')
+  expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'max' })).toBe('max')
+  expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'low' })).toBe('auto')
+  expect(effortModeOf(null)).toBe('auto')
+  for (const level of ['off', 'low', 'medium']) {
+    expect(isHeadEffort(level)).toBe(false)
+    expect(isEffortMode(level)).toBe(false)
+  }
+  expect(isEffortMode('auto')).toBe(true)
+  expect(isHeadEffort('auto')).toBe(false)
+})
+
+test('tells the Lead who picks the effort', async () => {
+  const auto = HYDRA_POLICY('deepseek/x', 'auto')
+  expect(auto).toContain('You pick each Head\'s reasoning effort with `effort`')
+  expect(auto).toContain('Never lower than high.')
+  expect(auto).not.toContain('\\`')
+  expect(HYDRA_POLICY('deepseek/x', 'max')).toContain('fixed every Head\'s effort at max')
 })

@@ -27,9 +27,14 @@ const LEAD_LABELS: Record<string, string> = {
   seven_day_fable: 'Weekly · Fable',
 }
 
-export const HYDRA_POLICY = (headModel: string, effort: string) => `# Hydra mode (on)
+const effortRule = (effort: EffortMode) =>
+  effort === 'auto'
+    ? `- You pick each Head's reasoning effort with \`effort\`: \`high\` (the default) for a well-specified implementation, \`max\` when the task needs real reasoning: a subtle bug, concurrency or state, an algorithm, a cross-file change that breaks easily, pixel-faithful UI, or a retry after a Head got it wrong at high. Never lower than high.`
+    : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
+
+export const HYDRA_POLICY = (headModel: string, effort: EffortMode) => `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
-- Heads think at effort ${effort}, which the person sets with /hydra effort=<level>. Pass \`effort\` on one call to override it for that Head: \`max\` for a subtle bug or a design-sensitive change, \`low\` for mechanical edits.
+${effortRule(effort)}
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
 - If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.
@@ -60,9 +65,21 @@ export const parseHydraArgs = (args: string) => {
 }
 
 export const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export const HEAD_EFFORTS = ['high', 'max'] as const
+export const EFFORT_MODES = ['auto', ...HEAD_EFFORTS] as const
 export const DEFAULT_EFFORT = 'high'
 
+export type EffortMode = (typeof EFFORT_MODES)[number]
+
 export const isEffort = (value: unknown): value is string => typeof value === 'string' && (EFFORTS as readonly string[]).includes(value)
+export const isHeadEffort = (value: unknown): value is (typeof HEAD_EFFORTS)[number] => typeof value === 'string' && (HEAD_EFFORTS as readonly string[]).includes(value)
+export const isEffortMode = (value: unknown): value is EffortMode => typeof value === 'string' && (EFFORT_MODES as readonly string[]).includes(value)
+
+/** The session's effort mode; anything else stored there (an older level) reads as auto. */
+export const effortModeOf = (hydra: HydraMode | null) => (isEffortMode(hydra?.effort) ? hydra.effort : 'auto')
+
+/** The person's fixed level wins; under auto the Lead's pick for this Head does, and high when it gave none. */
+export const headEffort = (mode: EffortMode, leadPick: string | undefined) => (mode !== 'auto' ? mode : isHeadEffort(leadPick) ? leadPick : DEFAULT_EFFORT)
 
 /** The model's levels from Command Code's refusal: `Unknown effort "medium". Supported: off, low, high, max.` */
 export const supportedEfforts = (errors: string) => {
@@ -106,7 +123,7 @@ export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
 /** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
 export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
   if (!hydra?.isOn) return undefined
-  const parts = [`🐉 Hydra · ${shortModel(hydra.headModel)} · ${hydra.effort ?? DEFAULT_EFFORT}`]
+  const parts = [`🐉 Hydra · ${shortModel(hydra.headModel)} · ${effortModeOf(hydra)}`]
   if (usage && !usage.error) {
     parts.push(`5h $${usage.fiveHour.usd.toFixed(2)}/$${limits.fiveHourUsd}`, `7d $${usage.weekly.usd.toFixed(2)}/$${limits.weeklyUsd}`)
   }
@@ -470,7 +487,7 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const addDirs = strings(input.addDirs)
   const shell = input.shell === true || strings(input.allowShell).length > 0
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
-  const effort = isEffort(input.effort) ? input.effort : undefined
+  const effort = isHeadEffort(input.effort) ? input.effort : undefined
 
   await update($, runs, list => [...list, { id, task: task.slice(0, 80), model, state: 'running' as const, turns: 0 }].slice(-12))
   await refreshStatus($, limits)
@@ -519,8 +536,8 @@ async function runLockedHead(
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, minutes, rulesNote } = head
-  // A Head given its own effort keeps it; otherwise each round takes the session's current /hydra effort.
-  const effortNow = async () => head.effort ?? (await read($, mode))?.effort ?? DEFAULT_EFFORT
+  // Read each round, so a /hydra effort change reaches a running Head at its next round.
+  const effortNow = async () => headEffort(effortModeOf(await read($, mode)), head.effort)
   const controller = new AbortController()
   outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
@@ -576,7 +593,7 @@ export const register: Register = (on, options) => {
   const weeklyUsd = Number(options.headsWeeklyUsd ?? 35)
   const plan = String(options.headsPlan ?? 'GOAT')
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
-  const defaultEffort = isEffort(options.headEffort) ? options.headEffort : DEFAULT_EFFORT
+  const defaultEffort: EffortMode = isEffortMode(options.headEffort) ? options.headEffort : 'auto'
   const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {
@@ -609,7 +626,7 @@ export const register: Register = (on, options) => {
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
-          effort: { type: 'string', enum: [...EFFORTS], description: "Reasoning effort for this Head only; defaults to the session's /hydra effort" },
+          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head: high (default) or max. Ignored while the person has fixed it with /hydra effort=high|max.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
@@ -634,8 +651,9 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'hydra' }, async ($, e) => {
     const { action, leadModel, headModel, effort, task } = parseHydraArgs(e.args)
-    const current = (await read($, mode)) ?? { isOn: false, headModel: defaultHead, effort: defaultEffort }
-    const currentEffort = current.effort ?? defaultEffort
+    const stored = await read($, mode)
+    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort }
+    const currentEffort = stored ? effortModeOf(stored) : defaultEffort
 
     if (action === 'status') {
       const model = await $.session.model()
@@ -648,7 +666,7 @@ export const register: Register = (on, options) => {
       return { text: 'Hydra off. Claude works alone again.' }
     }
 
-    if (effort !== undefined && !isEffort(effort)) return { text: `Unknown effort "${effort}". Use one of: ${EFFORTS.join(', ')}.` }
+    if (effort !== undefined && !isEffortMode(effort)) return { text: `Effort "${effort}" is not allowed. Use auto (the Lead picks high or max per Head), high or max.` }
     const next = { isOn: true, headModel: headModel ?? current.headModel, effort: effort ?? currentEffort }
     await update($, mode, () => next)
     $.ui.invalidate('tool.describe')
@@ -656,7 +674,8 @@ export const register: Register = (on, options) => {
     const model = await $.session.model()
     const switchHint = leadModel && !model.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
     const changed = current.isOn && next.effort !== currentEffort ? ' Running Heads switch at their next round.' : ''
-    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} · effort ${next.effort}. /hydra off to stop.${changed}${switchHint}`
+    const effortText = next.effort === 'auto' ? 'effort auto (Lead picks high or max)' : `effort ${next.effort}`
+    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} · ${effortText}. /hydra off to stop.${changed}${switchHint}`
 
     return task ? { text, context: [task] } : { text }
   })
@@ -666,7 +685,7 @@ export const register: Register = (on, options) => {
     const hydra = await read($, mode)
     if (!hydra?.isOn) return composed
 
-    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, hydra.effort ?? defaultEffort), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, effortModeOf(hydra)), scope: 'session' as const }] }
   })
 
   on('tool.describe', { tool: HEAD_TOOL }, async ($, e, next) => {
@@ -679,7 +698,7 @@ export const register: Register = (on, options) => {
     const hydra = await read($, mode)
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
-    if (e.effort !== undefined && !isEffort(e.effort)) return { deny: `effort must be one of: ${EFFORTS.join(', ')}.` }
+    if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be high or max; Heads never run lower than high.' }
     const id = `h${String(e.tool_use_id ?? (await $.clock.now())).slice(-6)}`
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra has no background worker in this session yet; run this Head without background.' }
@@ -733,7 +752,7 @@ export const register: Register = (on, options) => {
         {usage && !usage.error && row(`5-hour limit · $${fiveHourUsd.toFixed(2)}`, percentOf(usage.fiveHour.usd, fiveHourUsd), `$${usage.fiveHour.usd.toFixed(2)} ${resetsIn(usage.fiveHour.resetsAt, now)}`)}
         {usage && !usage.error && row(`Weekly · $${weeklyUsd.toFixed(2)}`, percentOf(usage.weekly.usd, weeklyUsd), `$${usage.weekly.usd.toFixed(2)} ${resetsIn(usage.weekly.resetsAt, now)}`)}
 
-        <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} · effort ${hydra.effort ?? defaultEffort}` : 'off'}</Text>
+        <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
         {recent.map(run => (
           <Text dimColor={run.state !== 'running'} color={run.state === 'failed' ? 'red' : undefined}>
             {run.state} · {shortModel(run.model)} · {run.turns} turns{run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(3)}` : ''} · {run.task}
