@@ -32,7 +32,7 @@ Answer `y` to add the marketplace and pick the user scope. Then run `/hydra`. Th
 
 ## What a Head can and can't do
 A Head runs Command Code unattended (`--yolo`; its headless mode can't edit otherwise), locked down by deny rules that Hydra writes before the Head starts and removes after it ends:
-- it can edit files inside the project, but not `.git`, `.commandcode` or `.env` files;
+- it can edit files inside the project, but not `.git`, `.commandcode` or `.env` files. Every write outside it is denied, including into new folders and through symlinks;
 - it can read folders outside the project only when Claude passes them in `addDirs`;
 - it has no shell unless Claude asks for one. Even then, destructive git, `rm -r`/`-f`, `sudo`, network tools, builds and installs are denied;
 - every report lists the files the Head edited and every call that was denied. A write outside the project is flagged at the top.
