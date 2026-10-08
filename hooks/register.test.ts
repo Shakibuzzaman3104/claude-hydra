@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
 } from './register'
 import type { On } from 'claude-code'
@@ -44,7 +44,7 @@ test('writes the Head model, effort and Heads usage for the status line only whi
 })
 
 test('parses /hydra arguments', async () => {
-  expect(parseHydraArgs('')).toEqual({ action: 'on', leadModel: undefined, headModel: undefined, effort: undefined, task: '' })
+  expect(parseHydraArgs('')).toEqual({ action: 'on', leadModel: undefined, headModel: undefined, effort: undefined, task: '', unknown: undefined })
   expect(parseHydraArgs('off').action).toBe('off')
   expect(parseHydraArgs('opus head=moonshotai/kimi-k3 build the login screen')).toEqual({
     action: 'on',
@@ -52,6 +52,7 @@ test('parses /hydra arguments', async () => {
     headModel: 'moonshotai/kimi-k3',
     effort: undefined,
     task: 'build the login screen',
+    unknown: undefined,
   })
   expect(parseHydraArgs('effort=MAX').effort).toBe('max')
   expect(parseHydraArgs('opus --effort low fix it')).toMatchObject({ leadModel: 'opus', effort: 'low', task: 'fix it' })
@@ -417,6 +418,59 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(textOf(await pane.drawn())).toContain('Stop hA')
     await $.ui.press({ plugin: 'hydra', key: 'pick-hB', surface })
     expect(textOf(await pane.drawn())).not.toContain('Stop hB')
+  })
+}
+
+test('never turns a typo into a task, and knows help and statusline', async () => {
+  expect(parseHydraArgs('stauts')).toMatchObject({ action: 'on', unknown: 'stauts', task: '' })
+  expect(parseHydraArgs('efort=max fix the login')).toMatchObject({ unknown: 'efort=max', task: '' })
+  expect(parseHydraArgs('--fast fix the login')).toMatchObject({ unknown: '--fast', task: '' })
+  expect(parseHydraArgs('fix the login bug')).toMatchObject({ unknown: undefined, task: 'fix the login bug' })
+  expect(parseHydraArgs('effort=max')).toMatchObject({ unknown: undefined, effort: 'max', task: '' })
+  expect(parseHydraArgs('help').action).toBe('help')
+  expect(parseHydraArgs('statusline').action).toBe('statusline')
+  expect(HYDRA_HELP).toContain('/hydra-usage')
+})
+
+test('shows spend without a limit until the person sets one', async () => {
+  expect(spentOf(1.5, 0)).toBe('$1.50')
+  expect(spentOf(1.5, 35)).toBe('$1.50/$35')
+  const usage = { fiveHour: { usd: 0.06, resetsAt: null }, weekly: { usd: 1.41, resetsAt: null }, measuredAt: 0 }
+  expect(statusLine({ isOn: true, headModel: 'a/m', effort: 'auto' }, usage, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 m · auto | Heads 5h $0.06 | 7d $1.41')
+})
+
+test('keeps the rules file for other sessions\' live Heads only, and this session\'s from memory', async () => {
+  const entry = (key: string, until: number) => ({ key, until, addDirs: [], shell: false })
+  const inFile = [entry('me/a', 100), entry('other/b', 100), entry('other/old', 5)]
+  expect(mergeHeads(inFile, [], 'me', 10).map(head => head.key)).toEqual(['other/b'])
+  expect(mergeHeads(inFile, [entry('me/c', 100)], 'me', 10).map(head => head.key)).toEqual(['other/b', 'me/c'])
+  expect(mergeHeads([entry('me/a', 100)], [], 'me', 10)).toEqual([])
+})
+
+test('keeps the last lines of a Head\'s report, without the done mark', async () => {
+  expect(summaryOf(`a\n\nb\nc\nd\ne\nf\ng\n${DONE_MARK}`)).toBe('b\nc\nd\ne\nf\ng')
+  expect(summaryOf(DONE_MARK)).toBeUndefined()
+})
+
+test('says what to run when the machine is not ready', async () => {
+  const text = preflightText({ problems: ['The Command Code CLI is not installed. Run `npm i -g command-code`.'], warnings: [] })
+  expect(text).toContain('npm i -g command-code')
+  expect(text).toContain('/hydra again')
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`shows a finished Head's edited files and report, and moves with j/k (${surface})`, async ($, on) => {
+    const finished: HeadRun = { ...LIVE_RUNS[1]!, files: ['a.kt', 'b.kt'], summary: 'Converted both files.' }
+    serveRuns(on, [LIVE_RUNS[0]!, finished])
+    const pane = await $.ui.mount({
+      plugin: 'hydra', surface, component: 'Pane', requestId: 'hydra-heads',
+      props: { title: 'Heads', isFocused: true, bodyColumns: 80, placement: 'dock', scroll, view: {} },
+    })
+    expect(textOf(await pane.drawn())).toContain('j/k')
+    await $.ui.press({ plugin: 'hydra', key: 'prev-head', surface })
+    const picked = textOf(await pane.drawn())
+    expect(picked).toContain('edited (2): a.kt, b.kt')
+    expect(picked).toContain('Converted both files.')
   })
 }
 
