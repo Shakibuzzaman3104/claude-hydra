@@ -27,8 +27,9 @@ const LEAD_LABELS: Record<string, string> = {
   seven_day_fable: 'Weekly · Fable',
 }
 
-export const HYDRA_POLICY = (headModel: string) => `# Hydra mode (on)
+export const HYDRA_POLICY = (headModel: string, effort: string) => `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
+- Heads think at effort ${effort}, which the person sets with /hydra effort=<level>. Pass \`effort\` on one call to override it for that Head: \`max\` for a subtle bug or a design-sensitive change, \`low\` for mechanical edits.
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
 - If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.
@@ -42,6 +43,7 @@ export const parseHydraArgs = (args: string) => {
   let action: 'on' | 'off' | 'status' = 'on'
   let leadModel: string | undefined
   let headModel: string | undefined
+  let effort: string | undefined
   const rest: string[] = []
   for (let i = 0; i < words.length; i++) {
     const word = words[i]!
@@ -50,9 +52,29 @@ export const parseHydraArgs = (args: string) => {
     else if (rest.length === 0 && !leadModel && (LEADS as readonly string[]).includes(lower)) leadModel = lower
     else if (rest.length === 0 && lower.startsWith('head=')) headModel = word.slice(5)
     else if (rest.length === 0 && lower === '--head' && words[i + 1]) headModel = words[++i]
+    else if (rest.length === 0 && lower.startsWith('effort=')) effort = lower.slice(7)
+    else if (rest.length === 0 && lower === '--effort' && words[i + 1]) effort = words[++i]!.toLowerCase()
     else rest.push(word)
   }
-  return { action, leadModel, headModel, task: rest.join(' ') }
+  return { action, leadModel, headModel, effort, task: rest.join(' ') }
+}
+
+export const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+export const DEFAULT_EFFORT = 'high'
+
+export const isEffort = (value: unknown): value is string => typeof value === 'string' && (EFFORTS as readonly string[]).includes(value)
+
+/** The model's levels from Command Code's refusal: `Unknown effort "medium". Supported: off, low, high, max.` */
+export const supportedEfforts = (errors: string) => {
+  const list = /Supported:\s*([a-z, ]+)/i.exec(errors)?.[1]
+  return list ? list.split(',').map(level => level.trim()).filter(isEffort) : []
+}
+
+/** The nearest level the model takes, rounding up so a Head never thinks less than asked. */
+export const nearestEffort = (wanted: string, supported: readonly string[]) => {
+  const rank = (level: string) => (EFFORTS as readonly string[]).indexOf(level)
+  const sorted = [...supported].sort((a, b) => rank(a) - rank(b))
+  return sorted.find(level => rank(level) >= rank(wanted)) ?? sorted.at(-1)
 }
 
 export const leadLabel = (kind: string) =>
@@ -81,10 +103,10 @@ const shortModel = (model: string) => model.split('/').pop() ?? model
 
 export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
 
-/** Shown only while Hydra is on: the Head model and what Heads spent against their 5-hour and weekly limits. */
+/** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
 export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
   if (!hydra?.isOn) return undefined
-  const parts = [`🐉 Hydra · ${shortModel(hydra.headModel)}`]
+  const parts = [`🐉 Hydra · ${shortModel(hydra.headModel)} · ${hydra.effort ?? DEFAULT_EFFORT}`]
   if (usage && !usage.error) {
     parts.push(`5h $${usage.fiveHour.usd.toFixed(2)}/$${limits.fiveHourUsd}`, `7d $${usage.weekly.usd.toFixed(2)}/$${limits.weeklyUsd}`)
   }
@@ -347,13 +369,14 @@ type Round = { finalText: string; sessionId?: string; subtype?: string; code: nu
 
 async function runRound(
   $: EngineInterface,
-  argv: { prompt: string; model: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[] },
+  argv: { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[] },
   signal: AbortSignal,
   onTurn: () => Promise<void>,
 ): Promise<Round> {
   const args = ['/usr/bin/env', 'commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
     '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
   for (const dir of argv.addDirs) args.push('--add-dir', dir)
+  if (argv.effort) args.push('--effort', argv.effort)
   if (argv.resume) args.push('--resume', argv.resume)
   const child = $.process.spawn({ argv: args, cwd: argv.cwd })
   let pending = ''
@@ -392,6 +415,21 @@ async function runRound(
   }
 }
 
+/** Runs a round at `effort`; if the model refuses that level, reruns once at its nearest supported one. */
+async function runRoundAt(
+  $: EngineInterface,
+  argv: Parameters<typeof runRound>[1],
+  signal: AbortSignal,
+  onTurn: () => Promise<void>,
+): Promise<Round & { effort?: string }> {
+  const round = await runRound($, argv, signal, onTurn)
+  if (round.sessionId || !argv.effort || signal.aborted) return { ...round, effort: argv.effort }
+  if (/no reasoning effort/i.test(round.errors)) return { ...(await runRound($, { ...argv, effort: undefined }, signal, onTurn)), effort: undefined }
+  const effort = /Unknown effort/i.test(round.errors) ? nearestEffort(argv.effort, supportedEfforts(round.errors)) : undefined
+  if (!effort || effort === argv.effort) return { ...round, effort: argv.effort }
+  return { ...(await runRound($, { ...argv, effort }, signal, onTurn)), effort }
+}
+
 const strings = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [])
 
 export const relativeTo = (cwd: string, path: string) => {
@@ -405,11 +443,11 @@ export const outsideFiles = (cwd: string, files: readonly string[]) => {
 }
 
 export const formatReport = (head: {
-  id: string; model: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
+  id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
 }) => {
   const lines = [
-    `head ${head.id} · ${head.model} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · $${(head.usd ?? 0).toFixed(4)}`,
+    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · $${(head.usd ?? 0).toFixed(4)}`,
     `session ${head.sessionId ?? 'none'} (commandcode --resume ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
@@ -432,12 +470,13 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const addDirs = strings(input.addDirs)
   const shell = input.shell === true || strings(input.allowShell).length > 0
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
+  const effort = isEffort(input.effort) ? input.effort : undefined
 
   await update($, runs, list => [...list, { id, task: task.slice(0, 80), model, state: 'running' as const, turns: 0 }].slice(-12))
   await refreshStatus($, limits)
   await gate.enter()
   try {
-    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes }, signal, limits, id)
+    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes, effort }, signal, limits, id)
   } finally {
     gate.leave()
   }
@@ -445,12 +484,12 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
 
 async function runHeadInside(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; shell: boolean; minutes: number },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; shell: boolean; minutes: number; effort?: string },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, shell, minutes } = head
+  const { task, cwd, model, maxTurns, addDirs, shell, minutes, effort } = head
   const refusal = await joinProject($, cwd, id, { addDirs, shell })
   if (refusal) {
     await setRun($, id, { state: 'failed' })
@@ -466,7 +505,7 @@ async function runHeadInside(
   const envFile = searchOff.get(cwd)
   const rulesNote = envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
-    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes, rulesNote }, outer, limits, id)
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes, rulesNote, effort }, outer, limits, id)
   } finally {
     await leaveProject($, cwd, id)
   }
@@ -474,12 +513,14 @@ async function runHeadInside(
 
 async function runLockedHead(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number; rulesNote?: string },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number; rulesNote?: string; effort?: string },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, minutes, rulesNote } = head
+  // A Head given its own effort keeps it; otherwise each round takes the session's current /hydra effort.
+  const effortNow = async () => head.effort ?? (await read($, mode))?.effort ?? DEFAULT_EFFORT
   const controller = new AbortController()
   outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
@@ -501,17 +542,17 @@ async function runLockedHead(
   }
 
   const startedAt = await $.clock.now()
-  let round = await runRound($, { prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs }, signal, onTurn)
+  let round = await runRoundAt($, { prompt: task + HEAD_RULES, model, effort: await effortNow(), maxTurns, cwd, addDirs }, signal, onTurn)
   for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
     await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
-    round = await runRound($, { prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs }, signal, onTurn)
+    round = await runRoundAt($, { prompt: task + HEAD_RULES, model, effort: await effortNow(), maxTurns, cwd, addDirs }, signal, onTurn)
   }
   const sessionId = round.sessionId ?? (await findSession($, startedAt, task))
   let rounds = 1
   while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
     const so_far = await sessionReport($, sessionId)
     const denied = so_far.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`)
-    round = await runRound($, { prompt: continuePrompt(denied), model, maxTurns: maxTurns - turns, resume: sessionId, cwd, addDirs }, signal, onTurn)
+    round = await runRoundAt($, { prompt: continuePrompt(denied), model, effort: await effortNow(), maxTurns: maxTurns - turns, resume: sessionId, cwd, addDirs }, signal, onTurn)
     rounds++
   }
 
@@ -523,7 +564,7 @@ async function runLockedHead(
   void refreshHeads($, limits)
 
   const text = formatReport({
-    id, model, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
+    id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : String(round.code ?? round.signal), errors: round.errors,
     rulesNote,
   })
@@ -535,6 +576,7 @@ export const register: Register = (on, options) => {
   const weeklyUsd = Number(options.headsWeeklyUsd ?? 35)
   const plan = String(options.headsPlan ?? 'GOAT')
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
+  const defaultEffort = isEffort(options.headEffort) ? options.headEffort : DEFAULT_EFFORT
   const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {
@@ -553,7 +595,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'hydra',
       description: 'Turn on Hydra: Claude leads, Command Code heads implement',
-      argumentHint: '[fable|opus|sonnet] [head=<model>] [task] | off | status',
+      argumentHint: '[fable|opus|sonnet] [head=<model>] [effort=<level>] [task] | off | status',
     })
     await $.tool.register({
       name: 'head',
@@ -567,6 +609,7 @@ export const register: Register = (on, options) => {
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
+          effort: { type: 'string', enum: [...EFFORTS], description: "Reasoning effort for this Head only; defaults to the session's /hydra effort" },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
@@ -590,12 +633,13 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'hydra' }, async ($, e) => {
-    const { action, leadModel, headModel, task } = parseHydraArgs(e.args)
-    const current = (await read($, mode)) ?? { isOn: false, headModel: defaultHead }
+    const { action, leadModel, headModel, effort, task } = parseHydraArgs(e.args)
+    const current = (await read($, mode)) ?? { isOn: false, headModel: defaultHead, effort: defaultEffort }
+    const currentEffort = current.effort ?? defaultEffort
 
     if (action === 'status') {
       const model = await $.session.model()
-      return { text: current.isOn ? `🐉 Hydra on · Lead ${model} · Head ${current.headModel}` : 'Hydra is off. Turn it on with /hydra.' }
+      return { text: current.isOn ? `🐉 Hydra on · Lead ${model} · Head ${current.headModel} · effort ${currentEffort}` : 'Hydra is off. Turn it on with /hydra.' }
     }
     if (action === 'off') {
       await update($, mode, () => ({ ...current, isOn: false }))
@@ -604,13 +648,15 @@ export const register: Register = (on, options) => {
       return { text: 'Hydra off. Claude works alone again.' }
     }
 
-    const next = { isOn: true, headModel: headModel ?? current.headModel }
+    if (effort !== undefined && !isEffort(effort)) return { text: `Unknown effort "${effort}". Use one of: ${EFFORTS.join(', ')}.` }
+    const next = { isOn: true, headModel: headModel ?? current.headModel, effort: effort ?? currentEffort }
     await update($, mode, () => next)
     $.ui.invalidate('tool.describe')
     await refreshStatus($, limits)
     const model = await $.session.model()
     const switchHint = leadModel && !model.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
-    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel}. /hydra off to stop.${switchHint}`
+    const changed = current.isOn && next.effort !== currentEffort ? ' Running Heads switch at their next round.' : ''
+    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} · effort ${next.effort}. /hydra off to stop.${changed}${switchHint}`
 
     return task ? { text, context: [task] } : { text }
   })
@@ -620,7 +666,7 @@ export const register: Register = (on, options) => {
     const hydra = await read($, mode)
     if (!hydra?.isOn) return composed
 
-    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, hydra.effort ?? defaultEffort), scope: 'session' as const }] }
   })
 
   on('tool.describe', { tool: HEAD_TOOL }, async ($, e, next) => {
@@ -633,6 +679,7 @@ export const register: Register = (on, options) => {
     const hydra = await read($, mode)
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
+    if (e.effort !== undefined && !isEffort(e.effort)) return { deny: `effort must be one of: ${EFFORTS.join(', ')}.` }
     const id = `h${String(e.tool_use_id ?? (await $.clock.now())).slice(-6)}`
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra has no background worker in this session yet; run this Head without background.' }
@@ -686,7 +733,7 @@ export const register: Register = (on, options) => {
         {usage && !usage.error && row(`5-hour limit · $${fiveHourUsd.toFixed(2)}`, percentOf(usage.fiveHour.usd, fiveHourUsd), `$${usage.fiveHour.usd.toFixed(2)} ${resetsIn(usage.fiveHour.resetsAt, now)}`)}
         {usage && !usage.error && row(`Weekly · $${weeklyUsd.toFixed(2)}`, percentOf(usage.weekly.usd, weeklyUsd), `$${usage.weekly.usd.toFixed(2)} ${resetsIn(usage.weekly.resetsAt, now)}`)}
 
-        <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel}` : 'off'}</Text>
+        <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} · effort ${hydra.effort ?? defaultEffort}` : 'off'}</Text>
         {recent.map(run => (
           <Text dimColor={run.state !== 'running'} color={run.state === 'failed' ? 'red' : undefined}>
             {run.state} · {shortModel(run.model)} · {run.turns} turns{run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(3)}` : ''} · {run.task}

@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.3.2). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.4.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -18,7 +18,8 @@ A Claude Code dev mod (v0.3.2). Claude leads the session; Command Code "heads" t
 - **Audit:** each report lists the files that Head edited and every denied call, read from its own transcript, and puts any write outside the project at the top as `⚠ WROTE OUTSIDE THE PROJECT`.
 - `addDirs` grants read access to folders outside `cwd` (mockups, briefs, other repos).
 - **Never quits silently:** a Head that stops before ending its report with `HEAD DONE` (a text-only reply, an empty model reply, a turn cap) is resumed in the same session, up to 8 rounds, and told which calls stay denied. A run that fails before it has a session is retried twice. A run that is cut off (time limit, kill) still reports: its session is found from its transcript by start time and task.
-- **Status line:** blank until `/hydra` turns Hydra on in the session; then `🐉 Hydra · <head model> │ 5h $spent/$limit │ 7d $spent/$limit`, the Heads' Command Code spend against `headsFiveHourUsd` and `headsWeeklyUsd`. Claude's own limits and running Heads are in `/limits`.
+- **Status line:** blank until `/hydra` turns Hydra on in the session; then `🐉 Hydra · <head model> · <effort> │ 5h $spent/$limit │ 7d $spent/$limit`, the Heads' Command Code spend against `headsFiveHourUsd` and `headsWeeklyUsd`. Claude's own limits and running Heads are in `/limits`.
+- **Effort:** Heads run with Command Code's `--effort`, `high` by default (`headEffort`). Change it on the fly with `/hydra effort=max` (or `low`, `off`, …): new Heads start at it and running Heads switch at their next round. The Lead can pass `effort` on one `head` call to pin that Head, e.g. `max` for a subtle bug. Levels differ by model (DeepSeek V4.1 Flash takes `off`, `low`, `high`, `max`); a level the model refuses is raised to its nearest supported one, and the report shows the effort used.
 - **Limits:** `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.
 
@@ -33,9 +34,9 @@ macOS or Linux only: the mod calls `/usr/bin/env python3` and `git`.
    ```
 3. Load it in every session: add `"CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/hydra"` to the `env` block of `~/.claude/settings.json`, keeping the other keys. The auto-mode classifier may block Claude from editing that file; the person then approves it or adds the line themselves.
 4. Check it: `claude plugin validate ~/.claude/mods/hydra` passes and `claude plugin test ~/.claude/mods/hydra` passes every test. A second copy under `~/.claude/dev-mods/*/hydra` would register `/hydra` twice, so remove it.
-5. Start a new session and run `/hydra opus`. It answers `🐉 Hydra on · Lead … · Head <model>`, and the `mcp__hydra__head` tool lists `addDirs`, `shell`, `maxMinutes` and `background`. A tool without those is an older copy.
+5. Start a new session and run `/hydra opus`. It answers `🐉 Hydra on · Lead … · Head <model> · effort high`, and the `mcp__hydra__head` tool lists `addDirs`, `shell`, `effort`, `maxMinutes` and `background`. A tool without those is an older copy.
 
-Plugin options (`userConfig` in `.claude-plugin/plugin.json`): `headModel` (default `deepseek/deepseek-v4.1-flash`), `headsPlan`, `headsFiveHourUsd`, `headsWeeklyUsd`.
+Plugin options (`userConfig` in `.claude-plugin/plugin.json`): `headModel` (default `deepseek/deepseek-v4.1-flash`), `headEffort` (default `high`), `headsPlan`, `headsFiveHourUsd`, `headsWeeklyUsd`.
 
 ## Smoke test
 Run this after installing and after any change to how a Head is launched, before real work.
@@ -65,6 +66,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - 2026-10-08: Command Code's grep tool ignores `Read` deny rules, and path-scoped `Grep(...)` or `Search(...)` rules never fire; only a bare `Grep` deny stops it. Pointing grep straight at `.env` is caught by `Read(.env)`, but a search over `.` or a folder is not.
 - 2026-10-08: `Read(.env.*)` and `Edit(.env.*)` match nested files such as `sub/.env.local`. Shell rules match the command text, not the files it touches, so `Shell(*.env*)` blocked `grep "process.env"` yet let `grep -r SECRET .` read every `.env`.
 - 2026-10-08: Claude Code's auto mode refuses to let Claude launch a `--yolo` Head from Bash for a probe, even with the person's go-ahead. Write the probe as a script and have the person run it with `! bash <script>`. macOS has no `timeout`; use `perl -e 'alarm shift; exec @ARGV' 600 …`.
+- 2026-10-08: Command Code refuses an effort level the model lacks before it starts (exit 1, `Unknown effort "medium". Supported: off, low, high, max.`), and a resumed session restores the last effort it recorded unless `--effort` is passed again. Hydra passes `--effort` on every round.
 - A plugin's `command.run` hook must not call `$.command.run` (the engine refuses it and nothing answers the command), so `/hydra` only tells the person to run `/model`.
 - Parallel Heads share one checkout. Give them disjoint files, read each report's own edited-file list rather than `git status`, and tell a Head never to delete a type another file still uses.
 - Heads cannot build an Xcode project safely in a shared checkout (a fresh build folder clones every package); the Lead builds and tests.
