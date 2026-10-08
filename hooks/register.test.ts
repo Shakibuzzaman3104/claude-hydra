@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, SEARCH_DENY, statusLine, createGate, createJobQueue,
+  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -30,16 +30,17 @@ test('draws a bar proportional to the percent', async () => {
   expect(barOf(150, 4)).toBe('████')
 })
 
-test('shows the Head model and Heads usage in the status line only while Hydra is on', async () => {
-  const usage = { fiveHour: { usd: 1.5, resetsAt: null }, weekly: { usd: 3, resetsAt: null }, measuredAt: 0 }
+test('writes the Head model, effort and Heads usage for the status line only while Hydra is on', async () => {
+  const usage = { fiveHour: { usd: 0.06, resetsAt: null }, weekly: { usd: 1.41, resetsAt: null }, measuredAt: 0 }
   const limits = { fiveHourUsd: 14, weeklyUsd: 35 }
-  const on = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash', effort: 'max' }
-  expect(statusLine(on, usage, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max │ 5h $1.50/$14 │ 7d $3.00/$35')
-  expect(statusLine(on, null, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max')
-  expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max')
-  expect(statusLine({ isOn: true, headModel: 'm' }, null, limits)).toBe('🐉 Hydra · m · auto')
+  const on = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash', effort: 'high' }
+  expect(statusLine(on, usage, limits)).toBe('🐉 deepseek-v4.1-flash · high | Heads 5h $0.06/$14 | 7d $1.41/$35')
+  expect(statusLine(on, null, limits)).toBe('🐉 deepseek-v4.1-flash · high')
+  expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 deepseek-v4.1-flash · high')
+  expect(statusLine({ isOn: true, headModel: 'm' }, null, limits)).toBe('🐉 m · auto')
   expect(statusLine({ ...on, isOn: false }, usage, limits)).toBeUndefined()
   expect(statusLine(null, usage, limits)).toBeUndefined()
+  expect(statusFile('/Users/x', 'abc-123')).toBe('/Users/x/.claude/hydra/status/abc-123.txt')
 })
 
 test('parses /hydra arguments', async () => {
