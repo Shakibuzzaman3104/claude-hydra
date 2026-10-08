@@ -460,7 +460,24 @@ const gate = createGate(MAX_PARALLEL)
  * lapses once the call is long over, and a Head spawned under it dies with it. The tool call only queues the job.
  */
 type HeadResult = { text: string; isDone: boolean }
-type Job = { input: Record<string, unknown>; headModel: string; id: string; signal?: AbortSignal; reply?: (result: HeadResult) => void }
+/** `reply` hands a foreground call its result; it answers false once that call is gone, and the report goes out as a message. */
+type Job = { input: Record<string, unknown>; headModel: string; id: string; reply?: (result: HeadResult) => boolean }
+
+/**
+ * The foreground call's end of a worker-run Head. An interrupted call (the person typed, opened a pane, pressed Esc)
+ * lets go of the Head instead of killing it: `reply` then answers false and the worker sends the report as a message.
+ */
+export const createReplyBox = <T,>(signal: AbortSignal) => {
+  const box: { result?: T } = {}
+  return {
+    box,
+    reply: (result: T) => {
+      if (signal.aborted) return false
+      box.result = result
+      return true
+    },
+  }
+}
 
 /** Each live Head's stop switch, by id. */
 const controllers = new Map<string, AbortController>()
@@ -513,6 +530,16 @@ export const headName = (requested: unknown, task: string, taken: ReadonlySet<st
 export const waitForResult = async <T,>(box: { result?: T }, signal: AbortSignal, pause: () => Promise<void>): Promise<T | undefined> => {
   while (box.result === undefined && !signal.aborted) await pause().catch(() => undefined)
   return box.result
+}
+
+/** Stops live Heads by id; ones with no process behind them are marked failed at once. Returns those. */
+async function stopHeadsNow($: EngineInterface, ids: readonly string[], reason: string, limits: HeadLimits) {
+  for (const id of ids) controllers.get(id)?.abort(reason)
+  const ghosts = ids.filter(id => !controllers.has(id))
+  const now = await $.clock.now()
+  if (ghosts.length > 0) await update($, runs, current => stopRuns(current, ghosts, `${reason} (no live process)`, now))
+  await refreshStatus($, limits)
+  return ghosts
 }
 
 /** Names handed out in this module's life, so parallel calls never get the same one before their runs are recorded. */
@@ -826,8 +853,6 @@ export const register: Register = (on, options) => {
           const job = await backgroundJobs.next()
           const controller = new AbortController()
           controllers.set(job.id, controller)
-          if (job.signal?.aborted) controller.abort('stopped: the tool call was cancelled')
-          else job.signal?.addEventListener('abort', () => controller.abort('stopped: the tool call was cancelled'), { once: true })
           void runHead($, job.input, job.headModel, controller.signal, limits, job.id)
             .catch(async error => {
               const reason = `failed before it reported: ${String(error).slice(0, 300)}`
@@ -837,15 +862,14 @@ export const register: Register = (on, options) => {
               return { text: `Hydra Head ${job.id} ${reason}`, isDone: false }
             })
             .then(async result => {
-              if (job.reply) job.reply(result)
-              else await $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${result.text}` })
+              if (!job.reply?.(result)) await $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${result.text}` })
             })
             .finally(() => controllers.delete(job.id))
         }
       })()
     }
-    await $.command.register({ name: 'limits', description: 'Show Claude and Command Code usage limits' })
-    await $.command.register({ name: 'heads', description: 'Hydra: watch the Heads work, live' })
+    await $.command.register({ name: 'limits', description: 'Show Claude and Command Code usage limits', immediate: true })
+    await $.command.register({ name: 'heads', description: 'Hydra: watch the Heads work, live (opens without interrupting Claude)', immediate: true })
     await $.command.register({
       name: 'hydra',
       description: 'Turn on Hydra: Claude leads, Command Code heads implement',
@@ -982,11 +1006,11 @@ export const register: Register = (on, options) => {
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
     // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
-    const box: { result?: HeadResult } = {}
-    backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id, signal: next.signal, reply: result => (box.result = result) })
+    const { box, reply } = createReplyBox<HeadResult>(next.signal)
+    backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id, reply })
     const result = await waitForResult(box, next.signal, () => $.process.run(['/bin/sleep', '1'], { timeoutMs: 5_000 }).then(() => undefined))
 
-    return { result: result?.text ?? `Head ${id} stopped: the call was cancelled before it reported.` }
+    return { result: result?.text ?? `Head ${id} keeps running in the background after the call was interrupted; its report arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} if it is no longer wanted.` }
   }).catch(() => ({ deny: 'hydra: the Head run failed before it reported.' }))
 
   on('tool.describe', { tool: CONTROL_TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
@@ -1005,10 +1029,7 @@ export const register: Register = (on, options) => {
       const list = await read($, runs)
       const targets = list.filter(run => (run.state === 'running' || run.state === 'queued') && (ids === 'all' || ids.includes(run.id)))
       if (targets.length === 0) return { result: `No running or queued Head${ids === 'all' ? '' : ` ${ids[0]}`}.` }
-      for (const run of targets) controllers.get(run.id)?.abort('stopped by the Lead')
-      const ghosts = targets.filter(run => !controllers.has(run.id)).map(run => run.id)
-      if (ghosts.length > 0) await update($, runs, current => stopRuns(current, ghosts, 'stopped by the Lead (no live process)', now))
-      await refreshStatus($, limits)
+      const ghosts = await stopHeadsNow($, targets.map(run => run.id), 'stopped by the Lead', limits)
 
       return { result: `Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
     }
@@ -1083,7 +1104,7 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         <Text bold>🐉 Hydra · {hydra?.isOn ? `${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
-        <Text dimColor>{list.length > 0 ? `${headsSummary(list)} · press a number to inspect` : 'No Heads in this session yet.'}</Text>
+        <Text dimColor>{list.length > 0 ? `${headsSummary(list)} · press a number to inspect, s to stop it` : 'No Heads in this session yet.'}</Text>
         <Box flexDirection="column" marginTop={1}>
           {list.map((run, index) => (
             <Box key={run.id}>
@@ -1100,6 +1121,11 @@ export const register: Register = (on, options) => {
               {chosen.id} · {shortModel(chosen.model)}{chosen.effort ? ` · effort ${chosen.effort}` : ''} · {chosen.state} {elapsedOf(chosen, now)}
             </Text>
             <Text dimColor wrap="wrap">{chosen.task}</Text>
+            {(chosen.state === 'running' || chosen.state === 'queued') && (
+              <Box marginTop={1}>
+                <Button key="stop-head" hotkey="s" label={`Stop ${chosen.id}`} onPress={() => stopHeadsNow($, [chosen.id], 'stopped from /heads', limits)} />
+              </Box>
+            )}
             <Box marginTop={1}>
               <Text>turn {chosen.turns}/{chosen.maxTurns ?? '?'} </Text>
               <Text color={glyphColor(chosen)}>{barOf(chosen.maxTurns ? (chosen.turns / chosen.maxTurns) * 100 : 0, barWidth)}</Text>

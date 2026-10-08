@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
+  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -393,3 +393,29 @@ test('waits for a worker-run Head through pauses, and stops waiting on abort', a
   expect(recovered).toBe('report')
   expect(failures).toBe(0)
 })
+
+test('an interrupted foreground call lets go of its Head instead of killing it', async () => {
+  const live = new AbortController()
+  const kept = createReplyBox<string>(live.signal)
+  expect(kept.reply('report')).toBe(true)
+  expect(kept.box.result).toBe('report')
+
+  const interrupted = new AbortController()
+  const handed = createReplyBox<string>(interrupted.signal)
+  interrupted.abort('the person opened /heads')
+  expect(handed.reply('late report')).toBe(false)
+  expect(handed.box.result).toBeUndefined()
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`offers a Stop button for a live Head in /heads, never for a finished one (${surface})`, async ($, on) => {
+    serveRuns(on, LIVE_RUNS)
+    const pane = await $.ui.mount({
+      plugin: 'hydra', surface, component: 'Pane', requestId: 'hydra-heads',
+      props: { title: 'Heads', isFocused: true, bodyColumns: 80, placement: 'dock', scroll, view: {} },
+    })
+    expect(textOf(await pane.drawn())).toContain('Stop hA')
+    await $.ui.press({ plugin: 'hydra', key: 'pick-hB', surface })
+    expect(textOf(await pane.drawn())).not.toContain('Stop hB')
+  })
+}
