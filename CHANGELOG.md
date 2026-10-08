@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.3 — 2026-10-08
+- The status line instructions (`/hydra statusline`, README) add `"refreshInterval": 2`: without it Claude Code reruns the status line only at the next message, so `/hydra off` seemed not to clear it.
+
 ## 0.7.2 — 2026-10-08
 - `writeDirs`: Claude can let a Head write to named folders outside the project, such as the real location of a symlinked package. Each is resolved to its real path and refused if it is `/`, the home folder, a folder above the project or one inside it. The deny rules leave a way down to it, the write guard accepts it, and its `.git`, `.commandcode` and `.env` files stay protected. Reports list the granted folders and don't flag writes there as outside the project. Verified live under `--yolo`: a write through a symlink to a granted folder succeeded; a `.env` inside it and a sibling folder stayed denied.
 
