@@ -27,14 +27,15 @@ test('draws a bar proportional to the percent', async () => {
   expect(barOf(150, 4)).toBe('████')
 })
 
-test('summarises both sides in the status line', async () => {
-  const line = statusLine(
-    [{ kind: 'five_hour', percentUsed: 30 }, { kind: 'seven_day', percentUsed: 93 }],
-    { fiveHour: { usd: 1.5, resetsAt: null }, weekly: { usd: 3, resetsAt: null }, measuredAt: 0 },
-    14,
-  )
-  expect(line).toBe('Lead 5h 30% wk 93% │ Heads 5h $1.50/$14')
-  expect(statusLine([], null, 14)).toBeUndefined()
+test('shows the Head model and Heads usage in the status line only while Hydra is on', async () => {
+  const usage = { fiveHour: { usd: 1.5, resetsAt: null }, weekly: { usd: 3, resetsAt: null }, measuredAt: 0 }
+  const limits = { fiveHourUsd: 14, weeklyUsd: 35 }
+  const on = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash' }
+  expect(statusLine(on, usage, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash │ 5h $1.50/$14 │ 7d $3.00/$35')
+  expect(statusLine(on, null, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash')
+  expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash')
+  expect(statusLine({ ...on, isOn: false }, usage, limits)).toBeUndefined()
+  expect(statusLine(null, usage, limits)).toBeUndefined()
 })
 
 test('parses /hydra arguments', async () => {
@@ -47,13 +48,6 @@ test('parses /hydra arguments', async () => {
     task: 'build the login screen',
   })
   expect(parseHydraArgs('fix the opus label').leadModel).toBeUndefined()
-})
-
-test('shows Hydra first in the status line while it is on', async () => {
-  const line = statusLine([], null, 14, { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash' }, 2, 17)
-  expect(line).toBe('🐉 Hydra · deepseek-v4.1-flash · 2 running · 17 turns')
-  expect(statusLine([], null, 14, { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash' })).toBe('🐉 Hydra · deepseek-v4.1-flash')
-  expect(statusLine([], null, 14, { isOn: false, headModel: 'x' })).toBeUndefined()
 })
 
 test('treats a Head as finished only after its done mark', async () => {
