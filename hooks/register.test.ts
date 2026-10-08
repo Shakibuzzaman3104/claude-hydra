@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  barOf, continuePrompt, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  barOf, continuePrompt, DEFAULT_EFFORT, isEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusLine, createGate, createJobQueue,
 } from './register'
 
@@ -30,23 +30,28 @@ test('draws a bar proportional to the percent', async () => {
 test('shows the Head model and Heads usage in the status line only while Hydra is on', async () => {
   const usage = { fiveHour: { usd: 1.5, resetsAt: null }, weekly: { usd: 3, resetsAt: null }, measuredAt: 0 }
   const limits = { fiveHourUsd: 14, weeklyUsd: 35 }
-  const on = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash' }
-  expect(statusLine(on, usage, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash │ 5h $1.50/$14 │ 7d $3.00/$35')
-  expect(statusLine(on, null, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash')
-  expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash')
+  const on = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash', effort: 'max' }
+  expect(statusLine(on, usage, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max │ 5h $1.50/$14 │ 7d $3.00/$35')
+  expect(statusLine(on, null, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max')
+  expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 Hydra · deepseek-v4.1-flash · max')
+  expect(statusLine({ isOn: true, headModel: 'm' }, null, limits)).toBe(`🐉 Hydra · m · ${DEFAULT_EFFORT}`)
   expect(statusLine({ ...on, isOn: false }, usage, limits)).toBeUndefined()
   expect(statusLine(null, usage, limits)).toBeUndefined()
 })
 
 test('parses /hydra arguments', async () => {
-  expect(parseHydraArgs('')).toEqual({ action: 'on', leadModel: undefined, headModel: undefined, task: '' })
+  expect(parseHydraArgs('')).toEqual({ action: 'on', leadModel: undefined, headModel: undefined, effort: undefined, task: '' })
   expect(parseHydraArgs('off').action).toBe('off')
   expect(parseHydraArgs('opus head=moonshotai/kimi-k3 build the login screen')).toEqual({
     action: 'on',
     leadModel: 'opus',
     headModel: 'moonshotai/kimi-k3',
+    effort: undefined,
     task: 'build the login screen',
   })
+  expect(parseHydraArgs('effort=MAX').effort).toBe('max')
+  expect(parseHydraArgs('opus --effort low fix it')).toMatchObject({ leadModel: 'opus', effort: 'low', task: 'fix it' })
+  expect(parseHydraArgs('fix the effort=max label').effort).toBeUndefined()
   expect(parseHydraArgs('fix the opus label').leadModel).toBeUndefined()
 })
 
@@ -149,4 +154,17 @@ test('hands queued background jobs to the worker in order, waking it when one ar
   expect((await waiting).id).toBe('h2')
   expect(queue.size).toBe(1)
   expect((await queue.next()).id).toBe('h3')
+})
+
+test('reads the levels a model supports from its refusal and rounds a missing one up', async () => {
+  const levels = supportedEfforts('Unknown effort "medium". Supported: off, low, high, max.\n')
+  expect(levels).toEqual(['off', 'low', 'high', 'max'])
+  expect(nearestEffort('medium', levels)).toBe('high')
+  expect(nearestEffort('xhigh', levels)).toBe('max')
+  expect(nearestEffort('low', levels)).toBe('low')
+  expect(nearestEffort('max', ['low', 'high'])).toBe('high')
+  expect(nearestEffort('high', [])).toBeUndefined()
+  expect(supportedEfforts('some other failure')).toEqual([])
+  expect(isEffort('max')).toBe(true)
+  expect(isEffort('ultra')).toBe(false)
 })

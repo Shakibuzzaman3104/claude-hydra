@@ -13,7 +13,7 @@ export type HeadsUsage = {
   error?: string
 }
 
-export type HydraMode = { isOn: boolean; headModel: string }
+export type HydraMode = { isOn: boolean; headModel: string; effort?: string }
 
 export type HeadRun = {
   id: string
