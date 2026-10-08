@@ -585,6 +585,7 @@ async function writeRules($: EngineInterface, cwd: string): Promise<string | und
   if (heads.length === 0) {
     searchOff.delete(cwd)
     if (await $.fs.exists(path)) await $.process.run(['/bin/rm', '-f', path])
+    await $.process.run(['/bin/rmdir', `${cwd.replace(/\/$/, '')}/.commandcode`]).catch(() => undefined)
     return undefined
   }
   const writeDirs = writeDirsOf(heads)

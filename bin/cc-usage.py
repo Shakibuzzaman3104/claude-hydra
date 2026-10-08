@@ -75,7 +75,7 @@ def session_cost(session_id):
 
 
 EDIT_TOOLS = {"edit_file", "write_file", "multi_edit", "notebook_edit"}
-DENIAL_MARKS = ("permission denied", "requires permissions", "denied by", "not allowed", "blocked by permission", "deny rule", "outside workspace")
+DENIAL_MARKS = ("permission denied", "requires permissions", "denied by", "not allowed", "blocked by permission", "deny rule", "outside workspace", "blocked by hook policy")
 
 
 def transcript_path(session_id):
