@@ -40,7 +40,7 @@ A Claude Code dev mod (v0.6.3). Claude leads the session; Command Code "heads" t
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.
 
 ## Install
-macOS or Linux only: the mod calls `/usr/bin/env python3` and `git`.
+macOS or Linux only: the mod calls `/usr/bin/env python3` and `git`. On native Windows a Head refuses to start: Command Code's path rules cannot name a drive (`D:/…`), so the outside-the-project deny list cannot be written (tested with Command Code 1.65: a `--yolo` Head wrote outside the repo despite `Edit(//D:/…)`, `Edit(D:/…)` rules). Use WSL.
 
 1. Prerequisites: `python3`, `git`, the `gh` CLI signed in to an account that can read this private repo, and the Command Code CLI (`npm i -g command-code`). On a machine where Command Code has never run, the person runs `commandcode` once in a terminal to sign in.
 2. Put the mod where Claude Code loads it, leaving out the generated types:
@@ -71,6 +71,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - Then run the smoke test. Unit tests cannot show what Command Code allows; only a live Head can.
 
 ## Pitfalls already learned
+- 2026-10-08: on Windows, Command Code 1.65 matches a rule `//X` as `/X` and any other rule against the project, so no `Edit(...)` rule can deny a `D:/…` path and a `--yolo` Head writes anywhere. Hydra refuses Windows project paths (`windowsPathRefusal`) instead of running unlocked.
 - 2026-10-07: Command Code's `-p` mode blocks edits, writes and shell commands unless the run uses `--yolo`, in every permission mode; `accept-edits`, `auto-accept` (an alias) and `dont-ask` with allow rules all fail. Deny rules are the only control left under yolo, hence Hydra's generated deny list.
 - 2026-10-07: one denied call cancels every other call in the same batch ("Skipped — another tool call in this batch was denied"), and a model that keeps hitting denials often ends the run. Grant reads up front with `addDirs`.
 - 2026-10-07: Command Code ends a `-p` run on any text-only reply, and some models reply with text before acting ("I'll start by reading…"). That is why every task ends with the `HEAD DONE` rule and unfinished runs are resumed.

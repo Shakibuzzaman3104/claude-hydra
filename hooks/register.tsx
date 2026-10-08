@@ -417,7 +417,18 @@ async function writeRules($: EngineInterface, cwd: string): Promise<string | und
   return undefined
 }
 
+/**
+ * Command Code 1.65 anchors a path rule at `/` or the project, so no rule can name `D:/…`: on a Windows path the
+ * outside-the-project deny list cannot be written and a --yolo Head could write anywhere (verified with a live Head).
+ */
+export const windowsPathRefusal = (cwd: string) =>
+  /^[A-Za-z]:|^\\\\|\\/.test(cwd)
+    ? `${cwd} is a Windows path, and Command Code cannot deny writes to one (its rules cannot name a drive), so Hydra cannot lock a Head into it. Run Claude Code under WSL instead`
+    : undefined
+
 async function joinProject($: EngineInterface, cwd: string, id: string, needs: HeadNeeds) {
+  const unsupported = windowsPathRefusal(cwd)
+  if (unsupported) return unsupported
   const heads = projects.get(cwd) ?? new Map<string, HeadNeeds>()
   heads.set(id, needs)
   projects.set(cwd, heads)
