@@ -79,29 +79,23 @@ const percentOf = (usd: number, limit: number) => (limit > 0 ? Math.round((usd /
 
 const shortModel = (model: string) => model.split('/').pop() ?? model
 
-export const statusLine = (
-  windows: LeadWindow[],
-  usage: HeadsUsage | null,
-  fiveHourUsd: number,
-  hydra: HydraMode | null = null,
-  running = 0,
-  turns = 0,
-) => {
-  const parts: string[] = []
-  const short = (kind: string) => (kind === 'five_hour' ? '5h' : kind === 'seven_day' ? 'wk' : kind.replace('seven_day_', 'wk·'))
-  if (hydra?.isOn) parts.push(`🐉 Hydra · ${shortModel(hydra.headModel)}${running > 0 ? ` · ${running} running · ${turns} turns` : ''}`)
-  if (windows.length > 0) parts.push(`Lead ${windows.map(w => `${short(w.kind)} ${Math.round(w.percentUsed)}%`).join(' ')}`)
-  if (usage && !usage.error) parts.push(`Heads 5h $${usage.fiveHour.usd.toFixed(2)}/$${fiveHourUsd}`)
-  return parts.length > 0 ? parts.join(' │ ') : undefined
+export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
+
+/** Shown only while Hydra is on: the Head model and what Heads spent against their 5-hour and weekly limits. */
+export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
+  if (!hydra?.isOn) return undefined
+  const parts = [`🐉 Hydra · ${shortModel(hydra.headModel)}`]
+  if (usage && !usage.error) {
+    parts.push(`5h $${usage.fiveHour.usd.toFixed(2)}/$${limits.fiveHourUsd}`, `7d $${usage.weekly.usd.toFixed(2)}/$${limits.weeklyUsd}`)
+  }
+  return parts.join(' │ ')
 }
 
-async function refreshStatus($: EngineInterface, fiveHourUsd: number) {
-  const live = (await read($, runs)).filter(run => run.state === 'running')
-  const turns = live.reduce((sum, run) => sum + run.turns, 0)
-  $.ui.status(statusLine(await read($, lead), await read($, heads), fiveHourUsd, await read($, mode), live.length, turns))
+async function refreshStatus($: EngineInterface, limits: HeadLimits) {
+  $.ui.status(statusLine(await read($, mode), await read($, heads), limits))
 }
 
-async function refreshHeads($: EngineInterface, fiveHourUsd: number) {
+async function refreshHeads($: EngineInterface, limits: HeadLimits) {
   try {
     const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`], { timeoutMs: 20_000 })
     const usage = JSON.parse(ran.stdout) as HeadsUsage
@@ -115,10 +109,10 @@ async function refreshHeads($: EngineInterface, fiveHourUsd: number) {
       error: String(error).slice(0, 120),
     }))
   }
-  await refreshStatus($, fiveHourUsd)
+  await refreshStatus($, limits)
 }
 
-async function storeLead($: EngineInterface, windows: readonly LeadWindow[], fiveHourUsd: number) {
+async function storeLead($: EngineInterface, windows: readonly LeadWindow[], limits: HeadLimits) {
   await update($, lead, () => windows.map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt })))
   for (const w of windows) {
     const mark = `${w.kind}@${w.resetsAt ?? ''}`
@@ -126,7 +120,7 @@ async function storeLead($: EngineInterface, windows: readonly LeadWindow[], fiv
     await update($, warned, list => [...list, mark].slice(-20))
     $.ui.toast(`Claude ${leadLabel(w.kind)} at ${Math.round(w.percentUsed)}% · ${resetsIn(w.resetsAt, await $.clock.now())}`)
   }
-  await refreshStatus($, fiveHourUsd)
+  await refreshStatus($, limits)
 }
 
 async function setRun($: EngineInterface, id: string, change: Partial<HeadRun>) {
@@ -430,7 +424,7 @@ export const formatReport = (head: {
   return lines.join('\n')
 }
 
-async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, fiveHourUsd: number, id: string) {
+async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, limits: HeadLimits, id: string) {
   const task = String(input.task ?? '').trim()
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : await $.session.root()
   const model = typeof input.model === 'string' && input.model ? input.model : headModel
@@ -440,10 +434,10 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
 
   await update($, runs, list => [...list, { id, task: task.slice(0, 80), model, state: 'running' as const, turns: 0 }].slice(-12))
-  await refreshStatus($, fiveHourUsd)
+  await refreshStatus($, limits)
   await gate.enter()
   try {
-    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes }, signal, fiveHourUsd, id)
+    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes }, signal, limits, id)
   } finally {
     gate.leave()
   }
@@ -453,14 +447,14 @@ async function runHeadInside(
   $: EngineInterface,
   head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; shell: boolean; minutes: number },
   outer: AbortSignal,
-  fiveHourUsd: number,
+  limits: HeadLimits,
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, shell, minutes } = head
   const refusal = await joinProject($, cwd, id, { addDirs, shell })
   if (refusal) {
     await setRun($, id, { state: 'failed' })
-    await refreshStatus($, fiveHourUsd)
+    await refreshStatus($, limits)
     return {
       text: formatReport({
         id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '',
@@ -472,7 +466,7 @@ async function runHeadInside(
   const envFile = searchOff.get(cwd)
   const rulesNote = envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
-    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes, rulesNote }, outer, fiveHourUsd, id)
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs, minutes, rulesNote }, outer, limits, id)
   } finally {
     await leaveProject($, cwd, id)
   }
@@ -482,7 +476,7 @@ async function runLockedHead(
   $: EngineInterface,
   head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; minutes: number; rulesNote?: string },
   outer: AbortSignal,
-  fiveHourUsd: number,
+  limits: HeadLimits,
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, minutes, rulesNote } = head
@@ -503,7 +497,7 @@ async function runLockedHead(
   const onTurn = async () => {
     turns++
     await setRun($, id, { turns })
-    await refreshStatus($, fiveHourUsd)
+    await refreshStatus($, limits)
   }
 
   const startedAt = await $.clock.now()
@@ -526,7 +520,7 @@ async function runLockedHead(
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
   await setRun($, id, { state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined })
-  void refreshHeads($, fiveHourUsd)
+  void refreshHeads($, limits)
 
   const text = formatReport({
     id, model, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
@@ -541,6 +535,7 @@ export const register: Register = (on, options) => {
   const weeklyUsd = Number(options.headsWeeklyUsd ?? 35)
   const plan = String(options.headsPlan ?? 'GOAT')
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
+  const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {
     if (!isWorkerRunning) {
@@ -548,7 +543,7 @@ export const register: Register = (on, options) => {
       void (async () => {
         for (;;) {
           const job = await backgroundJobs.next()
-          void runHead($, job.input, job.headModel, new AbortController().signal, fiveHourUsd, job.id)
+          void runHead($, job.input, job.headModel, new AbortController().signal, limits, job.id)
             .then(({ text }) => $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${text}` }))
             .catch(error => $.prompt.submit({ text: `Hydra Head ${job.id} failed before it reported: ${String(error).slice(0, 300)}` }))
         }
@@ -581,15 +576,15 @@ export const register: Register = (on, options) => {
     // A reload or restart ends every Head this module was running; say so instead of showing them running forever.
     await update($, runs, list => list.map(run => (run.state === 'running' ? { ...run, state: 'failed' as const } : run)))
     const usage = await $.session.usage()
-    await storeLead($, usage.rateLimits, fiveHourUsd)
-    void refreshHeads($, fiveHourUsd)
-    $.clock.every(REFRESH_MS, () => void refreshHeads($, fiveHourUsd))
+    await storeLead($, usage.rateLimits, limits)
+    void refreshHeads($, limits)
+    $.clock.every(REFRESH_MS, () => void refreshHeads($, limits))
 
     return next(e)
   })
 
   on('session.measure', async ($, e, next) => {
-    if (e.changed.includes('rateLimits')) await storeLead($, e.rateLimits, fiveHourUsd)
+    if (e.changed.includes('rateLimits')) await storeLead($, e.rateLimits, limits)
 
     return next(e)
   })
@@ -605,14 +600,14 @@ export const register: Register = (on, options) => {
     if (action === 'off') {
       await update($, mode, () => ({ ...current, isOn: false }))
       $.ui.invalidate('tool.describe')
-      await refreshStatus($, fiveHourUsd)
+      await refreshStatus($, limits)
       return { text: 'Hydra off. Claude works alone again.' }
     }
 
     const next = { isOn: true, headModel: headModel ?? current.headModel }
     await update($, mode, () => next)
     $.ui.invalidate('tool.describe')
-    await refreshStatus($, fiveHourUsd)
+    await refreshStatus($, limits)
     const model = await $.session.model()
     const switchHint = leadModel && !model.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
     const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel}. /hydra off to stop.${switchHint}`
@@ -645,13 +640,13 @@ export const register: Register = (on, options) => {
 
       return { result: `Head ${id} started in the background on ${hydra.headModel}. Its report arrives as a message from the hydra plugin when it finishes.` }
     }
-    const { text } = await runHead($, e, hydra.headModel, next.signal, fiveHourUsd, id)
+    const { text } = await runHead($, e, hydra.headModel, next.signal, limits, id)
 
     return { result: text }
   }).catch(() => ({ deny: 'hydra: the Head run failed before it reported.' }))
 
   on('command.run', { command: 'limits' }, async $ => {
-    await refreshHeads($, fiveHourUsd)
+    await refreshHeads($, limits)
     await $.ui.open({ id: PANE, title: 'Usage' })
 
     return { text: 'Usage pane opened.' }

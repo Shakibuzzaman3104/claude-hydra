@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.3.1). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.3.2). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -18,6 +18,7 @@ A Claude Code dev mod (v0.3.1). Claude leads the session; Command Code "heads" t
 - **Audit:** each report lists the files that Head edited and every denied call, read from its own transcript, and puts any write outside the project at the top as `⚠ WROTE OUTSIDE THE PROJECT`.
 - `addDirs` grants read access to folders outside `cwd` (mockups, briefs, other repos).
 - **Never quits silently:** a Head that stops before ending its report with `HEAD DONE` (a text-only reply, an empty model reply, a turn cap) is resumed in the same session, up to 8 rounds, and told which calls stay denied. A run that fails before it has a session is retried twice. A run that is cut off (time limit, kill) still reports: its session is found from its transcript by start time and task.
+- **Status line:** blank until `/hydra` turns Hydra on in the session; then `🐉 Hydra · <head model> │ 5h $spent/$limit │ 7d $spent/$limit`, the Heads' Command Code spend against `headsFiveHourUsd` and `headsWeeklyUsd`. Claude's own limits and running Heads are in `/limits`.
 - **Limits:** `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.
 
@@ -43,7 +44,7 @@ Run this after installing and after any change to how a Head is launched, before
 2. Run one Head there with `addDirs` naming a folder outside the repo and outside `/tmp` (the OS temp folder is always readable, so it proves nothing). Ask it to: edit `a.txt`; create `b.txt`; run `ls`; create a file in the folder beside the repo; create a file in your home folder; add a line to `.git/config`; read a file in the `addDirs` folder.
 3. Check the disk yourself. Expected: the edit, the new file and the `addDirs` read succeed; `ls`, both outside writes and the `.git/config` edit are denied and nothing exists outside the repo. The report says `finished`, lists `a.txt` and `b.txt` as edited, lists the four denied calls, and shows no `⚠ WROTE OUTSIDE` line.
 4. After any change to the `.env` rules, add `.env`, `.env.production` and `sub/.env.local` with fake values, and run one Head with `shell: true` that tries, one call each: the read tool, the grep tool over `.` and over `sub`, `cat .env`, `cat sub/.env.local`, `grep -r SECRET .`, `grep -rn "process.env" a.txt`, and an edit of each `.env` file. Expected: every call is denied except `grep -r SECRET .` (the known shell gap) and the `process.env` grep, and no `.env` file changes. Write the Head's output outside the test repo, or its own log matches the searches.
-5. Run one Head with `background: true` on a task of 30+ single edits (several minutes): its report arrives as a message from the plugin, and the status line shows `1 running` while it works.
+5. Run one Head with `background: true` on a task of 30+ single edits (several minutes): its report arrives as a message from the plugin, and `/limits` lists it as running while it works.
 
 When something fails, the Head's transcript is `~/.commandcode/projects/<project-slug>/<sessionId>.jsonl` (the session id is in the report); `python3 bin/cc-usage.py --report <sessionId>` summarises its cost, edited files and denied calls.
 
