@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both",
   "author": {
     "name": "Shakib"
@@ -34,7 +34,7 @@
     "headEffort": {
       "type": "string",
       "title": "Hydra head effort",
-      "description": "auto (the Lead picks high or max per Head), high or max (every Head); changeable with /hydra effort=<level>",
+      "description": "auto (the Lead picks high or max per Head) or a level every Head runs at: off, low, medium, high, xhigh or max; changeable with /hydra effort=<level>",
       "default": "auto"
     }
   }
