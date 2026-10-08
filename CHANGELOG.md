@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0 — 2026-10-08
+Ready for people other than its author.
+- Install with one line: the repo is its own marketplace (`/plugin install hydra --marketplace Shakibuzzaman3104/claude-hydra`). The README is rewritten for new users; internals, the smoke test and pitfalls move to DEVELOPING.md.
+- `/hydra` checks the setup first (macOS/Linux, the Command Code CLI, `python3`, `git`, a Command Code sign-in) and says what to run instead of failing inside a Head.
+- The first `/hydra` asks once before any code goes to the Head model, and says how Heads are locked down. The Lead's `control on` can't skip that.
+- Fix: the Head rules file (`.commandcode/settings.local.json`) is deleted when the last Head in a project ends. It used to stay, so the person's own Command Code runs there had shell and outside edits denied with no visible reason. Each running Head is listed in the file with its session and an end time, so sessions sharing a project keep each other's lockdown, and a crashed session's entries expire. A session start cleans up after a reload or crash.
+- A typo is no longer a task: `/hydra stauts` or `/hydra efort=max` names the unknown option instead of turning Hydra on and sending the word to Claude. New `/hydra help` and `/hydra statusline`.
+- `/limits` is now `/hydra-usage`.
+- No personal defaults: the Heads' 5-hour and weekly caps default to 0 (spend shown without a limit), the plan name to empty; set them in `/config`. `headEffort` is a picker there.
+- `/heads` shows a finished Head's edited files and the last lines of its report, moves with `j`/`k`, and keeps the last 20 Heads.
+- Error messages say what to do (the person's own rules file, an unwritable project, a Head that could not run).
+- Status files of other sessions are deleted after a week.
+
 ## 0.6.3 — 2026-10-08
 - Heads default to `deepseek/deepseek-v4.1-flash-fast`, the high-throughput deployment of V4.1 Flash (Command Code says full weights). Same effort levels (`off`, `low`, `high`, `max`); a smoke test gave matching answers in 3 s against 5 s. Cache reads cost more ($0.02/M against $0.003/M), and Command Code has not scored it yet. Set `headModel` to `deepseek/deepseek-v4.1-flash` to go back.
 
