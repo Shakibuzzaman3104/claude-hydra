@@ -506,6 +506,15 @@ export const headName = (requested: unknown, task: string, taken: ReadonlySet<st
   }
 }
 
+/**
+ * Waits for a worker-run Head's result by repeatedly awaiting `pause`, which must be a `$` call (a host `sleep`):
+ * the engine stops a hook's own clock while a `$` call is in flight, so the wait costs no budget. Ends early on abort.
+ */
+export const waitForResult = async <T,>(box: { result?: T }, signal: AbortSignal, pause: () => Promise<void>): Promise<T | undefined> => {
+  while (box.result === undefined && !signal.aborted) await pause().catch(() => undefined)
+  return box.result
+}
+
 /** Names handed out in this module's life, so parallel calls never get the same one before their runs are recorded. */
 const usedNames = new Set<string>()
 
@@ -972,11 +981,12 @@ export const register: Register = (on, options) => {
       return { result: text }
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
-    const { text } = await new Promise<HeadResult>(reply =>
-      backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id, signal: next.signal, reply }),
-    )
+    // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
+    const box: { result?: HeadResult } = {}
+    backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id, signal: next.signal, reply: result => (box.result = result) })
+    const result = await waitForResult(box, next.signal, () => $.process.run(['/bin/sleep', '1'], { timeoutMs: 5_000 }).then(() => undefined))
 
-    return { result: text }
+    return { result: result?.text ?? `Head ${id} stopped: the call was cancelled before it reported.` }
   }).catch(() => ({ deny: 'hydra: the Head run failed before it reported.' }))
 
   on('tool.describe', { tool: CONTROL_TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))

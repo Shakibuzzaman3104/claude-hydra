@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1 — 2026-10-08
+- Fix: a foreground Head failed after 10 s with "the Head run failed before it reported". The `tool.call` hook waited on a plain promise, which counts against a hook's 10 s budget; it now waits through `$` calls (a host `sleep`), which do not. Verified live: a foreground Head ran 19 s and reported; a background Head was stopped by name through `mcp__hydra__control`.
+
 ## 0.6.0 — 2026-10-08
 - Heads get short meaningful names (`prefs-utils`, `login-tests`) instead of `h` + digits: the Lead passes `name`, else Hydra makes one from the task's first source file or first words; unique per session.
 - Every Head, foreground or background, runs on the session's own worker, so cancelling a Head's tool call stops it cleanly instead of leaving it shown as running. The stream read is raced against the stop signal, so a silent Head (a model thinking, a hung CLI) cannot hold a stopped run open.
