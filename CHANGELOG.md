@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.3 — 2026-10-08
+- Heads default to `deepseek/deepseek-v4.1-flash-fast`, the high-throughput deployment of V4.1 Flash (Command Code says full weights). Same effort levels (`off`, `low`, `high`, `max`); a smoke test gave matching answers in 3 s against 5 s. Cache reads cost more ($0.02/M against $0.003/M), and Command Code has not scored it yet. Set `headModel` to `deepseek/deepseek-v4.1-flash` to go back.
+
 ## 0.6.2 — 2026-10-08
 - `/heads` and `/limits` are immediate commands: they open at once mid-turn instead of interrupting Claude, which used to cancel a foreground Head.
 - An interrupted foreground call (Esc, a typed prompt) no longer kills its Head: the Head keeps running and its report arrives as a message. Only a deliberate stop ends it.

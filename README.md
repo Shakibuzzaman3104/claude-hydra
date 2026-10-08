@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.6.2). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.6.3). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -52,7 +52,7 @@ macOS or Linux only: the mod calls `/usr/bin/env python3` and `git`.
 4. Check it: `claude plugin validate ~/.claude/mods/hydra` passes and `claude plugin test ~/.claude/mods/hydra` passes every test. A second copy under `~/.claude/dev-mods/*/hydra` would register `/hydra` twice, so remove it.
 5. Start a new session and run `/hydra opus`. It answers `🐉 Hydra on · Lead … · Head <model> · effort auto (Lead picks high, xhigh or max)`, and the `mcp__hydra__head` tool lists `addDirs`, `shell`, `effort`, `maxMinutes` and `background`. A tool without those is an older copy.
 
-Plugin options (`userConfig` in `.claude-plugin/plugin.json`): `headModel` (default `deepseek/deepseek-v4.1-flash`), `headEffort` (`auto` or a level; default `auto`), `headsPlan`, `headsFiveHourUsd`, `headsWeeklyUsd`.
+Plugin options (`userConfig` in `.claude-plugin/plugin.json`): `headModel` (default `deepseek/deepseek-v4.1-flash-fast`), `headEffort` (`auto` or a level; default `auto`), `headsPlan`, `headsFiveHourUsd`, `headsWeeklyUsd`.
 
 ## Smoke test
 Run this after installing and after any change to how a Head is launched, before real work.
