@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.4 — 2026-10-08
+- A Head can no longer create files outside the project. New files directly in a folder above the project are denied by rule (`Edit(//<folder>/*)`, PR #15). New folders there (`~/new/x`, a missing `~/.ssh/authorized_keys`), which no deny rule can name because `write_file` creates missing parents, are denied by a write guard: a Command Code `PreToolUse` hook (`bin/head-guard.py`) that checks each write's real path, symlinks resolved, against the project. Verified with a live `--yolo` Head.
+
 ## 0.6.3 — 2026-10-08
 - Heads default to `deepseek/deepseek-v4.1-flash-fast`, the high-throughput deployment of V4.1 Flash (Command Code says full weights). Same effort levels (`off`, `low`, `high`, `max`); a smoke test gave matching answers in 3 s against 5 s. Cache reads cost more ($0.02/M against $0.003/M), and Command Code has not scored it yet. Set `headModel` to `deepseek/deepseek-v4.1-flash` to go back.
 
