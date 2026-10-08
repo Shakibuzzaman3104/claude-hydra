@@ -102,6 +102,8 @@ else
   printf '%s' "$out"
 fi
 
+Then add "refreshInterval": 2 to the statusLine block of ~/.claude/settings.json, so the line appears and clears within 2 seconds of /hydra and /hydra off instead of at your next message.
+
 A full script is in the repo's examples/statusline.sh. Without it, the band above the prompt and /heads show the same.`
 
 export const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
