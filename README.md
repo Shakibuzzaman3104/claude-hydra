@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.5.1). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.6.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -32,6 +32,10 @@ A Claude Code dev mod (v0.5.1). Claude leads the session; Command Code "heads" t
   Claude's own limits and running Heads are in `/limits` and `/heads`.
 - **Effort:** Heads run with Command Code's `--effort`. In `auto` (the default, `headEffort`) the Lead picks per Head and never below `high`: `high` for a well-specified implementation, `xhigh` for multi-file work with some design judgement, non-trivial logic, edge-case tests or matching a mockup, `max` for a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, or a retry after a Head got it wrong. DeepSeek V4.1 Flash has no `xhigh`, so it runs as `max` there. `/hydra effort=<level>` (`off`, `low`, `medium`, `high`, `xhigh` or `max`) fixes every Head at that level and overrides the Lead; `/hydra effort=auto` hands the choice back. A change reaches running Heads at their next round. A level the model lacks is raised to its nearest supported one (DeepSeek V4.1 Flash takes `off`, `low`, `high`, `max`), and each report shows the effort used.
 - **Limits:** `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
+- **Names:** every Head has a short name saying what it works on (`prefs-utils`, `login-tests`), used in the band, `/heads`, reports and `mcp__hydra__control`. The Lead passes `name`; without one Hydra makes one from the first source file the task names (`PreferenceUtils.kt` → `preference-utils`) or its first few meaningful words. Names are lowercase kebab, at most 20 characters, and unique per session (`-2`, `-3`).
+- **Lead control:** `mcp__hydra__control` lets the Lead `list` Heads (one with no process behind it is flagged `NO LIVE PROCESS`), `stop` one by name or all, `clear` finished ones from the views, and turn Hydra `on`/`off` or set its `effort` and head model, so it never has to ask the person to stop a Head.
+- **Stopping cleanly:** every Head, foreground or background, runs on the `session.start` worker. Cancelling a Head's tool call aborts it, and the stream read is raced against that stop, so a silent Head (a model thinking, a hung CLI) ends at once and is marked failed with the reason. A reload marks running and queued Heads as ended.
+- **`/hydra <task>`:** the task is submitted as a prompt, so the Lead starts right after the command instead of on the next message.
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.
 
 ## Install
@@ -73,6 +77,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - 2026-10-07: Command Code writes a session's `.jsonl` transcript lazily; at first only `.meta.json` and `.checkpoints.jsonl` exist, so a missing transcript does not mean a dead Head. The first line of `.checkpoints.jsonl` holds the prompt and `createdAt`.
 - 2026-10-07: a refusal reads "Blocked by permission deny rule …" (yolo) or "requires permissions" (print-mode gate); the transcript reader must treat both as denials, or refused writes look like edits.
 - 2026-10-07: a background Head spawned from a `tool.call` hook died about 3 minutes later; run long-lived work from `session.start`'s worker. A plugin may not store `$` in a variable (validate rejects it).
+- 2026-10-08: a foreground Head run under a `tool.call` hook's `$` stayed "running" forever after its call was cancelled: the child died with the call, and the hook could no longer record it. Every Head now runs on the worker's `$`. Set `statusLine.refreshInterval` (e.g. 2) so the status line shows `/hydra` on/off without waiting for the next message.
 - 2026-10-07: big view files (1,500+ lines) took DeepSeek Heads past 40 minutes; split such work or raise `maxMinutes`, and expect a follow-up Head to finish it.
 - 2026-10-08: Command Code's grep tool ignores `Read` deny rules, and path-scoped `Grep(...)` or `Search(...)` rules never fire; only a bare `Grep` deny stops it. Pointing grep straight at `.env` is caught by `Read(.env)`, but a search over `.` or a folder is not.
 - 2026-10-08: `Read(.env.*)` and `Edit(.env.*)` match nested files such as `sub/.env.local`. Shell rules match the command text, not the files it touches, so `Shell(*.env*)` blocked `grep "process.env"` yet let `grep -r SECRET .` read every `.env`.

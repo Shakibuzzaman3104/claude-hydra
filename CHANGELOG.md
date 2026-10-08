@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — 2026-10-08
+- Heads get short meaningful names (`prefs-utils`, `login-tests`) instead of `h` + digits: the Lead passes `name`, else Hydra makes one from the task's first source file or first words; unique per session.
+- Every Head, foreground or background, runs on the session's own worker, so cancelling a Head's tool call stops it cleanly instead of leaving it shown as running. The stream read is raced against the stop signal, so a silent Head (a model thinking, a hung CLI) cannot hold a stopped run open.
+- New `mcp__hydra__control` tool for the Lead: `list` the Heads (stale ones flagged NO LIVE PROCESS), `stop` one or all, `clear` finished ones, and turn Hydra `on`/`off` or set its `effort`.
+- A reload marks queued Heads as ended too, not only running ones.
+- `/hydra <task>` submits the task as a prompt, so the Lead starts at once instead of waiting for the next message.
+
 ## 0.5.1 — 2026-10-08
 - Hydra's line moves from the plugin status row (which Claude Code prefixes with `⚠ hydra:`) to `~/.claude/hydra/status/<session id>.txt`, printed by the person's status line command. `examples/statusline.sh` shows a full script.
 

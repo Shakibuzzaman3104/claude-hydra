@@ -11,6 +11,7 @@ const PANE = 'hydra-usage'
 const HEADS_PANE = 'hydra-heads'
 const LIVE_AFTER_END_MS = 60_000
 const HEAD_TOOL = 'mcp__hydra__head'
+const CONTROL_TOOL = 'mcp__hydra__control'
 const REFRESH_MS = 120_000
 const WARN_AT = 90
 const LEADS = ['fable', 'opus', 'sonnet'] as const
@@ -42,9 +43,11 @@ ${effortRule(effort)}
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
 - If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.
+- Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the files the Head edited and every call that was denied.
+- You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 - End with what each Head did, what you verified, and the Heads' total cost.`
 
 export const parseHydraArgs = (args: string) => {
@@ -456,27 +459,98 @@ const gate = createGate(MAX_PARALLEL)
  * Background Heads run in a worker loop that `session.start` owns, on that hook's `$`: a `tool.call` hook's `$`
  * lapses once the call is long over, and a Head spawned under it dies with it. The tool call only queues the job.
  */
-type Job = { input: Record<string, unknown>; headModel: string; id: string }
+type HeadResult = { text: string; isDone: boolean }
+type Job = { input: Record<string, unknown>; headModel: string; id: string; signal?: AbortSignal; reply?: (result: HeadResult) => void }
 
-export const createJobQueue = () => {
-  const jobs: Job[] = []
+/** Each live Head's stop switch, by id. */
+const controllers = new Map<string, AbortController>()
+
+export const stopReason = (signal: AbortSignal) => (typeof signal.reason === 'string' && signal.reason ? signal.reason : 'stopped')
+
+/**
+ * Marks running and queued Heads in `ids` (all of them when `ids` is 'all') as failed with `reason`.
+ * Used for Heads that have no live process behind them any more, so the views stop counting.
+ */
+const STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'that', 'this', 'one', 'file', 'files', 'convert', 'add', 'fix', 'make', 'update', 'implement', 'write', 'task', 'goal', 'repo', 'android', 'kotlin', 'java'])
+const NAME_MAX = 20
+
+/** Lowercase kebab, letters and digits only, at most 20 characters, cut at a dash. */
+export const slugOf = (text: string) => {
+  const slug = text
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  if (slug.length <= NAME_MAX) return slug
+  const cut = slug.slice(0, NAME_MAX)
+  return (cut.includes('-') ? cut.slice(0, cut.lastIndexOf('-')) : cut).replace(/-+$/, '')
+}
+
+/** A name from the task: the first source file it names, else its first few meaningful words. */
+export const nameFromTask = (task: string) => {
+  const file = /([A-Za-z][\w-]*)\.(?:kt|kts|java|ts|tsx|js|jsx|swift|go|py|dart|xml|gradle)\b/.exec(task)?.[1]
+  if (file) return slugOf(file)
+  const words = (task.toLowerCase().match(/[a-z][a-z0-9]+/g) ?? []).filter(word => word.length > 2 && !STOP_WORDS.has(word))
+  return slugOf(words.slice(0, 3).join('-')) || 'head'
+}
+
+/** The Lead's name, or one from the task, made unique among names already taken this session (`-2`, `-3`…). */
+export const headName = (requested: unknown, task: string, taken: ReadonlySet<string>) => {
+  const base = (typeof requested === 'string' && slugOf(requested)) || nameFromTask(task)
+  if (!taken.has(base)) return base
+  for (let n = 2; ; n++) {
+    const suffix = `-${n}`
+    const candidate = `${base.slice(0, NAME_MAX - suffix.length).replace(/-+$/, '')}${suffix}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+/** Names handed out in this module's life, so parallel calls never get the same one before their runs are recorded. */
+const usedNames = new Set<string>()
+
+export const stopRuns = (list: readonly HeadRun[], ids: readonly string[] | 'all', reason: string, now: number) =>
+  list.map(run =>
+    (run.state === 'running' || run.state === 'queued') && (ids === 'all' || ids.includes(run.id))
+      ? { ...run, state: 'failed' as const, endedAt: now, activity: reason }
+      : run,
+  )
+
+/** One line per Head for the Lead: id, state, turns, elapsed, what it is doing, the task's start. */
+export const listRuns = (list: readonly HeadRun[], now: number, isLiveProcess: (id: string) => boolean) =>
+  list.length === 0
+    ? 'No Heads in this session.'
+    : list
+        .map(run => {
+          const ghost = (run.state === 'running' || run.state === 'queued') && !isLiveProcess(run.id) ? ' · NO LIVE PROCESS' : ''
+          return `${run.id} · ${run.state}${ghost} · ${run.turns}/${run.maxTurns ?? '?'} turns · ${elapsedOf(run, now)} · ${nowLine(run)} · ${run.task.slice(0, 80)}`
+        })
+        .join('\n')
+
+export const createQueue = <T,>() => {
+  const jobs: T[] = []
   let wake: (() => void) | undefined
   return {
     get size() { return jobs.length },
-    push(job: Job) {
+    push(job: T) {
       jobs.push(job)
       const resume = wake
       wake = undefined
       resume?.()
     },
-    async next(): Promise<Job> {
+    async next(): Promise<T> {
       while (jobs.length === 0) await new Promise<void>(resolve => (wake = resolve))
       return jobs.shift()!
     },
   }
 }
 
+export const createJobQueue = () => createQueue<Job>()
+
 const backgroundJobs = createJobQueue()
+
+/** Prompts a command hands to the session to submit: a command's own `$` may lapse before the session is idle. */
+const pendingPrompts = createQueue<string>()
 let isWorkerRunning = false
 
 type Round = { finalText: string; sessionId?: string; subtype?: string; code: number | null; signal?: string; errors: string }
@@ -506,8 +580,19 @@ async function runRound(
       // A partial or non-JSON line from the CLI; the final result line is what counts.
     }
   }
-  for await (const { stream, text } of child) {
-    if (signal.aborted) break
+  // Raced against the abort, so a silent child (a model thinking, a hung CLI) cannot hold a stopped Head open.
+  const aborted = new Promise<'aborted'>(resolve => {
+    if (signal.aborted) resolve('aborted')
+    else signal.addEventListener('abort', () => resolve('aborted'), { once: true })
+  })
+  for (;;) {
+    const step = await Promise.race([child.next(), aborted])
+    if (step === 'aborted') {
+      void child.return({ code: null, signal: 'aborted' }).catch(() => undefined)
+      break
+    }
+    if (step.done) break
+    const { stream, text } = step.value
     if (stream === 'stderr') {
       errors = (errors + text).slice(-2000)
       continue
@@ -590,6 +675,15 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   await update($, runs, list => [...list, queued].slice(-12))
   await refreshStatus($, limits)
   await gate.enter()
+  if (signal.aborted) {
+    gate.leave()
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: stopReason(signal) })
+    await refreshStatus($, limits)
+    return {
+      text: formatReport({ id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '', exit: stopReason(signal) }),
+      isDone: false,
+    }
+  }
   const startedAt = await $.clock.now()
   await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
   await update($, tick, () => startedAt)
@@ -686,15 +780,16 @@ async function runLockedHead(
   const report = sessionId ? await sessionReport($, sessionId) : { usd: null, files: [], denied: [], toolCalls: 0 }
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
+  const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
     state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt: await $.clock.now(),
-    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : 'stopped before HEAD DONE',
+    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? 'stopped before HEAD DONE',
   })
   void refreshHeads($, limits)
 
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
-    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : String(round.code ?? round.signal), errors: round.errors,
+    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     rulesNote,
   })
   return { text, isDone }
@@ -713,10 +808,30 @@ export const register: Register = (on, options) => {
       isWorkerRunning = true
       void (async () => {
         for (;;) {
+          const text = await pendingPrompts.next()
+          await $.prompt.submit({ text, asUser: true }).catch(() => undefined)
+        }
+      })()
+      void (async () => {
+        for (;;) {
           const job = await backgroundJobs.next()
-          void runHead($, job.input, job.headModel, new AbortController().signal, limits, job.id)
-            .then(({ text }) => $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${text}` }))
-            .catch(error => $.prompt.submit({ text: `Hydra Head ${job.id} failed before it reported: ${String(error).slice(0, 300)}` }))
+          const controller = new AbortController()
+          controllers.set(job.id, controller)
+          if (job.signal?.aborted) controller.abort('stopped: the tool call was cancelled')
+          else job.signal?.addEventListener('abort', () => controller.abort('stopped: the tool call was cancelled'), { once: true })
+          void runHead($, job.input, job.headModel, controller.signal, limits, job.id)
+            .catch(async error => {
+              const reason = `failed before it reported: ${String(error).slice(0, 300)}`
+              const now = await $.clock.now()
+              await update($, runs, list => stopRuns(list, [job.id], reason, now))
+              await refreshStatus($, limits)
+              return { text: `Hydra Head ${job.id} ${reason}`, isDone: false }
+            })
+            .then(async result => {
+              if (job.reply) job.reply(result)
+              else await $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${result.text}` })
+            })
+            .finally(() => controllers.delete(job.id))
         }
       })()
     }
@@ -739,6 +854,7 @@ export const register: Register = (on, options) => {
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
+          name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
           effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head: high (default), xhigh or max. Ignored while the person has fixed a level with /hydra effort=<level>.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
@@ -746,9 +862,23 @@ export const register: Register = (on, options) => {
         required: ['task'],
       },
     })
+    await $.tool.register({
+      name: 'control',
+      description: 'Hydra control for the Lead: list the Heads (with their state, turns, time and what they are doing), stop a stuck or wrong Head by id or all of them, clear finished ones from the views, or turn Hydra on/off and set the Head effort or model.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['list', 'stop', 'clear', 'on', 'off', 'effort'], description: 'What to do (default list)' },
+          id: { type: 'string', description: 'For stop: the Head name (e.g. prefs-utils), or all; default all' },
+          effort: { type: 'string', enum: [...EFFORT_MODES], description: 'For on/effort: auto or a fixed level' },
+          headModel: { type: 'string', description: 'For on/effort: the Command Code model the Heads run on' },
+        },
+      },
+    })
     $.ui.status(undefined)
     // A reload or restart ends every Head this module was running; say so instead of showing them running forever.
-    await update($, runs, list => list.map(run => (run.state === 'running' ? { ...run, state: 'failed' as const } : run)))
+    const startNow = await $.clock.now()
+    await update($, runs, list => stopRuns(list, 'all', 'ended by a reload or restart', startNow))
     const usage = await $.session.usage()
     await storeLead($, usage.rateLimits, limits)
     void refreshHeads($, limits)
@@ -799,7 +929,13 @@ export const register: Register = (on, options) => {
     const effortText = next.effort === 'auto' ? 'effort auto (Lead picks high, xhigh or max)' : `effort ${next.effort}`
     const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} · ${effortText}. /hydra off to stop.${changed}${switchHint}`
 
-    return task ? { text, context: [task] } : { text }
+    // A command's `context` only rides along with the next prompt; submitting the task starts the Lead's turn now.
+    if (task) {
+      if (isWorkerRunning) pendingPrompts.push(task)
+      else return { text, context: [task] }
+    }
+
+    return { text }
   })
 
   on('prompt.compose', async ($, e, next) => {
@@ -821,17 +957,74 @@ export const register: Register = (on, options) => {
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
     if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be high, xhigh or max; Heads never run lower than high.' }
-    const id = `h${String(e.tool_use_id ?? (await $.clock.now())).slice(-6)}`
+    const taken = new Set([...usedNames, ...(await read($, runs)).map(run => run.id)])
+    const id = headName(e.name, String(e.task ?? ''), taken)
+    usedNames.add(id)
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra has no background worker in this session yet; run this Head without background.' }
       backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id })
 
       return { result: `Head ${id} started in the background on ${hydra.headModel}. Its report arrives as a message from the hydra plugin when it finishes.` }
     }
-    const { text } = await runHead($, e, hydra.headModel, next.signal, limits, id)
+    if (!isWorkerRunning) {
+      const { text } = await runHead($, e, hydra.headModel, next.signal, limits, id)
+
+      return { result: text }
+    }
+    // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
+    const { text } = await new Promise<HeadResult>(reply =>
+      backgroundJobs.push({ input: { ...e }, headModel: hydra.headModel, id, signal: next.signal, reply }),
+    )
 
     return { result: text }
   }).catch(() => ({ deny: 'hydra: the Head run failed before it reported.' }))
+
+  on('tool.describe', { tool: CONTROL_TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
+
+  on('tool.call', { tool: CONTROL_TOOL }, async ($, e) => {
+    const action = String(e.action ?? 'list')
+    const now = await $.clock.now()
+    const ids = typeof e.id === 'string' && e.id && e.id !== 'all' ? [e.id] : ('all' as const)
+    if (action === 'list') {
+      const hydra = await read($, mode)
+      const head = hydra?.isOn ? `Hydra on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'Hydra off'
+
+      return { result: `${head}\n${listRuns(await read($, runs), now, id => controllers.has(id))}` }
+    }
+    if (action === 'stop') {
+      const list = await read($, runs)
+      const targets = list.filter(run => (run.state === 'running' || run.state === 'queued') && (ids === 'all' || ids.includes(run.id)))
+      if (targets.length === 0) return { result: `No running or queued Head${ids === 'all' ? '' : ` ${ids[0]}`}.` }
+      for (const run of targets) controllers.get(run.id)?.abort('stopped by the Lead')
+      const ghosts = targets.filter(run => !controllers.has(run.id)).map(run => run.id)
+      if (ghosts.length > 0) await update($, runs, current => stopRuns(current, ghosts, 'stopped by the Lead (no live process)', now))
+      await refreshStatus($, limits)
+
+      return { result: `Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
+    }
+    if (action === 'clear') {
+      await update($, runs, list => list.filter(run => run.state === 'running' || run.state === 'queued'))
+
+      return { result: 'Cleared finished and failed Heads from the views.' }
+    }
+    const stored = await read($, mode)
+    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort }
+    if (action === 'off') {
+      await update($, mode, () => ({ ...current, isOn: false }))
+    } else if (action === 'on' || action === 'effort') {
+      const effort = typeof e.effort === 'string' ? e.effort : undefined
+      if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
+      const headModel = typeof e.headModel === 'string' && e.headModel ? e.headModel : current.headModel
+      await update($, mode, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored) }))
+    } else {
+      return { deny: `Unknown action "${action}". Use list, stop, clear, on, off or effort.` }
+    }
+    $.ui.invalidate('tool.describe')
+    await refreshStatus($, limits)
+    const hydra = await read($, mode)
+
+    return { result: hydra?.isOn ? `Hydra on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'Hydra off.' }
+  })
 
   on('command.run', { command: 'heads' }, async $ => {
     await $.ui.open({ id: HEADS_PANE, title: 'Heads' })
