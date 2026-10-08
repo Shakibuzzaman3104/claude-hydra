@@ -10,7 +10,9 @@ A Claude Code dev mod (v0.3.0). Claude leads the session; Command Code "heads" t
   - every folder outside `cwd` is denied for edits, sibling by sibling up to `/`;
   - `.git` and `.commandcode` inside the project are denied;
   - shell is denied outright unless a running Head asked for `shell: true`; even then destructive git, `rm -r`/`-f`, `sudo`, network tools (`curl`, `wget`, `ssh`, `rsync`, …), builds and installs (`xcodebuild`, `swift build`, `npm install`, `brew`, …) stay denied.
-  - `.env` and `.env.*` files can never be read or edited, with or without shell (`Read`, `Edit` and `Shell(*.env*)` deny rules), because a Head sends file contents to an external model.
+  - `.env` and `.env.*` files are kept from Heads, because a Head sends file contents to an external model: the read and edit tools are denied on them, and so is any shell command that names one as a path (`Shell(* .env*)`, `Shell(*/.env*)`, `Shell(*=.env*)`; `process.env` still runs);
+  - the grep tool ignores `Read` rules and takes no path-scoped deny, so when a `.env` file sits in the project or an `addDirs` folder Hydra denies the grep tool outright (the report says which file); if the check fails, search is denied too;
+  - a Head with `shell: true` can still read `.env` through a command that does not name it, such as `grep -r KEY .`. Pattern rules cannot close that, so avoid shell in projects with real secrets.
   Heads sharing a `cwd` share one file, rebuilt from the Heads running there as each starts and ends.
 - **Fails closed:** if the rules cannot be written, or the project already has a `settings.local.json` the person wrote, the Head does not start and the report says why.
 - **Audit:** each report lists the files that Head edited and every denied call, read from its own transcript, and puts any write outside the project at the top as `⚠ WROTE OUTSIDE THE PROJECT`.

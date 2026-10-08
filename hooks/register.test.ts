@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   barOf, continuePrompt, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, statusLine, createGate, createJobQueue,
+  relativeTo, resetsIn, SEARCH_DENY, statusLine, createGate, createJobQueue,
 } from './register'
 
 test('labels Claude windows like the Droppy panel', async () => {
@@ -82,8 +82,14 @@ test('denies shell outright unless a running Head asked for it, and always prote
 test('never lets a Head read or edit .env files, with or without shell', async () => {
   for (const shell of [false, true]) {
     const deny = headSettings([{ addDirs: [], shell }], []).permissions?.deny
-    for (const rule of ['Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(*.env*)']) expect(deny).toContain(rule)
+    for (const rule of ['Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(* .env*)', 'Shell(*/.env*)']) expect(deny).toContain(rule)
+    expect(deny).not.toContain('Shell(*.env*)')
   }
+})
+
+test('denies the search tool only when a .env file is in reach', async () => {
+  expect(headSettings([{ addDirs: [], shell: false }], []).permissions?.deny).not.toContain(SEARCH_DENY)
+  expect(headSettings([{ addDirs: [], shell: false }], [], true).permissions?.deny).toContain(SEARCH_DENY)
 })
 
 test('flags any write outside the project', async () => {
