@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both",
   "author": {
     "name": "Shakib"
@@ -30,6 +30,12 @@
       "title": "Hydra head model",
       "description": "Command Code model the Heads run on",
       "default": "deepseek/deepseek-v4.1-flash"
+    },
+    "headEffort": {
+      "type": "string",
+      "title": "Hydra head effort",
+      "description": "Reasoning effort the Heads run at: off, low, medium, high, xhigh or max (the model's nearest supported level is used)",
+      "default": "high"
     }
   }
 }
