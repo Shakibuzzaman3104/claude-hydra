@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
 } from './register'
 import type { On } from 'claude-code'
@@ -419,3 +419,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(textOf(await pane.drawn())).not.toContain('Stop hB')
   })
 }
+
+test('refuses Windows project paths, which Command Code cannot deny writes to', async () => {
+  expect(windowsPathRefusal('D:/projects/app')).toContain('WSL')
+  expect(windowsPathRefusal('C:\\Users\\me\\app')).toContain('WSL')
+  expect(windowsPathRefusal('\\\\server\\share')).toContain('WSL')
+  expect(windowsPathRefusal('/Users/me/app')).toBeUndefined()
+})
