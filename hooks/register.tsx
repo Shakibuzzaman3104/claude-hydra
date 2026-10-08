@@ -5,9 +5,11 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { HeadRun, HeadsUsage, HydraMode, LeadWindow } from '../types'
+import type { HeadRun, HeadStep, HeadsUsage, HydraMode, LeadWindow } from '../types'
 
 const PANE = 'hydra-usage'
+const HEADS_PANE = 'hydra-heads'
+const LIVE_AFTER_END_MS = 60_000
 const HEAD_TOOL = 'mcp__hydra__head'
 const REFRESH_MS = 120_000
 const WARN_AT = 90
@@ -18,6 +20,8 @@ const heads = atom({ plugin: 'hydra', key: 'heads' } as const, null)
 const warned = atom({ plugin: 'hydra', key: 'warned' } as const, [])
 const mode = atom({ plugin: 'hydra', key: 'mode' } as const, null)
 const runs = atom({ plugin: 'hydra', key: 'runs' } as const, [])
+const selected = atom({ plugin: 'hydra', key: 'selected' } as const, null)
+const tick = atom({ plugin: 'hydra', key: 'tick' } as const, 0)
 
 const LEAD_LABELS: Record<string, string> = {
   five_hour: '5-hour limit',
@@ -118,6 +122,38 @@ const percentOf = (usd: number, limit: number) => (limit > 0 ? Math.round((usd /
 
 const shortModel = (model: string) => model.split('/').pop() ?? model
 
+const SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
+export const clockOf = (ms: number) => {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const two = (n: number) => String(n).padStart(2, '0')
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  return hours > 0 ? `${hours}:${two(minutes)}:${two(total % 60)}` : `${minutes}:${two(total % 60)}`
+}
+
+export const elapsedOf = (run: HeadRun, now: number) => (run.startedAt ? clockOf((run.endedAt ?? now) - run.startedAt) : '–')
+
+export const glyphOf = (run: HeadRun, frame: number) =>
+  run.state === 'running' ? SPINNER[frame % SPINNER.length]! : run.state === 'queued' ? '◌' : run.state === 'done' ? '✓' : '✗'
+
+const glyphColor = (run: HeadRun) => (run.state === 'running' ? 'cyan' : run.state === 'done' ? 'green' : run.state === 'failed' ? 'red' : undefined)
+
+/** Running and queued Heads, and any that ended in the last minute, so the band shows how they finished. */
+export const isLive = (run: HeadRun, now: number) =>
+  run.state === 'running' || run.state === 'queued' || (run.endedAt !== undefined && now - run.endedAt < LIVE_AFTER_END_MS)
+
+export const headsSummary = (list: readonly HeadRun[]) =>
+  (['running', 'queued', 'done', 'failed'] as const)
+    .map(state => [state, list.filter(run => run.state === state).length] as const)
+    .filter(([, count]) => count > 0)
+    .map(([state, count]) => `${count} ${state}`)
+    .join(' · ')
+
+/** What a Head is doing now, or how it ended. */
+export const nowLine = (run: HeadRun) =>
+  run.state === 'done' ? `done${run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(4)}` : ''}` : run.activity ?? run.state
+
 export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
 
 /** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
@@ -162,8 +198,55 @@ async function storeLead($: EngineInterface, windows: readonly LeadWindow[], lim
   await refreshStatus($, limits)
 }
 
-async function setRun($: EngineInterface, id: string, change: Partial<HeadRun>) {
-  await update($, runs, list => list.map(run => (run.id === id ? { ...run, ...change } : run)))
+async function setRun($: EngineInterface, id: string, change: Partial<HeadRun> | ((run: HeadRun) => Partial<HeadRun>)) {
+  await update($, runs, list => list.map(run => (run.id === id ? { ...run, ...(typeof change === 'function' ? change(run) : change) } : run)))
+}
+
+/** The events of Command Code's JSON stream the live view reads. */
+export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown> }
+
+const WATCHED = new Set(['turn_end', 'thinking_start', 'tool_queued', 'tool_running', 'tool_completed', 'tool_denied'])
+const EDIT_TOOLS = new Set(['edit_file', 'write_file'])
+const MAX_STEPS = 8
+
+/** A short line for a tool call: `edit c.txt`, `search "TODO"`, `$ ls`. */
+export const describeTool = (name: string, input: Record<string, unknown> = {}, cwd = '') => {
+  const path = String(input.file_path ?? input.path ?? '')
+  const at = !path || path === cwd || path === `${cwd}/` ? '.' : relativeTo(cwd, path)
+  const verbs: Record<string, string> = { read_file: 'read', edit_file: 'edit', write_file: 'write', read_directory: 'list' }
+  if (verbs[name]) return `${verbs[name]} ${at}`
+  if (name === 'grep') return `search "${String(input.pattern ?? '')}"`
+  if (name === 'glob') return `find ${String(input.pattern ?? '')}`
+  if (name === 'shell_command') return `$ ${String(input.command ?? '')}`
+  return name.replace(/_/g, ' ')
+}
+
+/** Folds one stream event into a Head's live record; `labels` keeps each queued call's line for its later events. */
+export const applyEvent = (run: HeadRun, event: StreamEvent, labels: Map<string, string>, cwd: string): Partial<HeadRun> => {
+  const label = () => labels.get(event.toolCallId ?? '') ?? describeTool(event.toolName ?? 'tool')
+  switch (event.type) {
+    case 'thinking_start':
+      return { activity: 'thinking' }
+    case 'tool_queued':
+      labels.set(event.toolCallId ?? '', describeTool(event.toolName ?? 'tool', event.input, cwd))
+      return {}
+    case 'tool_running':
+      return { activity: label() }
+    case 'tool_completed':
+    case 'tool_denied': {
+      const isOk = event.type === 'tool_completed'
+      const step: HeadStep = { isOk, text: label() }
+      return {
+        steps: [...(run.steps ?? []), step].slice(-MAX_STEPS),
+        edits: (run.edits ?? 0) + (isOk && EDIT_TOOLS.has(event.toolName ?? '') ? 1 : 0),
+        denials: (run.denials ?? 0) + (isOk ? 0 : 1),
+      }
+    }
+    case 'turn_end':
+      return { turns: run.turns + 1 }
+    default:
+      return {}
+  }
 }
 
 type SessionReport = { usd: number | null; files: string[]; denied: { tool: string; target: string; text: string }[]; toolCalls: number }
@@ -388,7 +471,7 @@ async function runRound(
   $: EngineInterface,
   argv: { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[] },
   signal: AbortSignal,
-  onTurn: () => Promise<void>,
+  onEvent: (event: StreamEvent) => Promise<void>,
 ): Promise<Round> {
   const args = ['/usr/bin/env', 'commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
     '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
@@ -402,9 +485,9 @@ async function runRound(
   const take = async (line: string) => {
     if (!line.trim().startsWith('{')) return
     try {
-      const row = JSON.parse(line) as { type?: string; event?: { type?: string } }
+      const row = JSON.parse(line) as { type?: string; event?: StreamEvent }
       if (row.type === 'result') result = row as Record<string, unknown>
-      if (row.event?.type === 'turn_end') await onTurn()
+      if (row.event && WATCHED.has(row.event.type)) await onEvent(row.event)
     } catch {
       // A partial or non-JSON line from the CLI; the final result line is what counts.
     }
@@ -437,14 +520,14 @@ async function runRoundAt(
   $: EngineInterface,
   argv: Parameters<typeof runRound>[1],
   signal: AbortSignal,
-  onTurn: () => Promise<void>,
+  onEvent: (event: StreamEvent) => Promise<void>,
 ): Promise<Round & { effort?: string }> {
-  const round = await runRound($, argv, signal, onTurn)
+  const round = await runRound($, argv, signal, onEvent)
   if (round.sessionId || !argv.effort || signal.aborted) return { ...round, effort: argv.effort }
-  if (/no reasoning effort/i.test(round.errors)) return { ...(await runRound($, { ...argv, effort: undefined }, signal, onTurn)), effort: undefined }
+  if (/no reasoning effort/i.test(round.errors)) return { ...(await runRound($, { ...argv, effort: undefined }, signal, onEvent)), effort: undefined }
   const effort = /Unknown effort/i.test(round.errors) ? nearestEffort(argv.effort, supportedEfforts(round.errors)) : undefined
   if (!effort || effort === argv.effort) return { ...round, effort: argv.effort }
-  return { ...(await runRound($, { ...argv, effort }, signal, onTurn)), effort }
+  return { ...(await runRound($, { ...argv, effort }, signal, onEvent)), effort }
 }
 
 const strings = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [])
@@ -489,9 +572,13 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
   const effort = isHeadEffort(input.effort) ? input.effort : undefined
 
-  await update($, runs, list => [...list, { id, task: task.slice(0, 80), model, state: 'running' as const, turns: 0 }].slice(-12))
+  const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot' }
+  await update($, runs, list => [...list, queued].slice(-12))
   await refreshStatus($, limits)
   await gate.enter()
+  const startedAt = await $.clock.now()
+  await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
+  await update($, tick, () => startedAt)
   try {
     return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, shell, minutes, effort }, signal, limits, id)
   } finally {
@@ -509,7 +596,7 @@ async function runHeadInside(
   const { task, cwd, model, maxTurns, addDirs, shell, minutes, effort } = head
   const refusal = await joinProject($, cwd, id, { addDirs, shell })
   if (refusal) {
-    await setRun($, id, { state: 'failed' })
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
     return {
       text: formatReport({
@@ -552,24 +639,32 @@ async function runLockedHead(
   const signal = controller.signal
 
   let turns = 0
-  const onTurn = async () => {
-    turns++
-    await setRun($, id, { turns })
-    await refreshStatus($, limits)
+  const labels = new Map<string, string>()
+  const onEvent = async (event: StreamEvent) => {
+    if (event.type === 'turn_end') turns++
+    await setRun($, id, run => applyEvent(run, event, labels, cwd))
+  }
+  const roundAt = async (argv: Omit<Parameters<typeof runRound>[1], 'effort'>) => {
+    const effort = await effortNow()
+    await setRun($, id, { effort })
+    const ran = await runRoundAt($, { ...argv, effort }, signal, onEvent)
+    if (ran.effort !== effort) await setRun($, id, { effort: ran.effort })
+    return ran
   }
 
   const startedAt = await $.clock.now()
-  let round = await runRoundAt($, { prompt: task + HEAD_RULES, model, effort: await effortNow(), maxTurns, cwd, addDirs }, signal, onTurn)
+  let round = await roundAt({ prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs })
   for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
     await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
-    round = await runRoundAt($, { prompt: task + HEAD_RULES, model, effort: await effortNow(), maxTurns, cwd, addDirs }, signal, onTurn)
+    round = await roundAt({ prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs })
   }
   const sessionId = round.sessionId ?? (await findSession($, startedAt, task))
   let rounds = 1
   while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
     const so_far = await sessionReport($, sessionId)
     const denied = so_far.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`)
-    round = await runRoundAt($, { prompt: continuePrompt(denied), model, effort: await effortNow(), maxTurns: maxTurns - turns, resume: sessionId, cwd, addDirs }, signal, onTurn)
+    await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
+    round = await roundAt({ prompt: continuePrompt(denied), model, maxTurns: maxTurns - turns, resume: sessionId, cwd, addDirs })
     rounds++
   }
 
@@ -577,7 +672,10 @@ async function runLockedHead(
   const report = sessionId ? await sessionReport($, sessionId) : { usd: null, files: [], denied: [], toolCalls: 0 }
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
-  await setRun($, id, { state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined })
+  await setRun($, id, {
+    state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt: await $.clock.now(),
+    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : 'stopped before HEAD DONE',
+  })
   void refreshHeads($, limits)
 
   const text = formatReport({
@@ -609,6 +707,7 @@ export const register: Register = (on, options) => {
       })()
     }
     await $.command.register({ name: 'limits', description: 'Show Claude and Command Code usage limits' })
+    await $.command.register({ name: 'heads', description: 'Hydra: watch the Heads work, live' })
     await $.command.register({
       name: 'hydra',
       description: 'Turn on Hydra: Claude leads, Command Code heads implement',
@@ -639,6 +738,14 @@ export const register: Register = (on, options) => {
     await storeLead($, usage.rateLimits, limits)
     void refreshHeads($, limits)
     $.clock.every(REFRESH_MS, () => void refreshHeads($, limits))
+    // The views' clock: stamps the time once a second while some Head is live, and once more after the last one goes quiet.
+    let wasLive = false
+    $.clock.every(1_000, () => void (async () => {
+      const now = await $.clock.now()
+      const isAnyLive = (await read($, runs)).some(run => isLive(run, now))
+      if (isAnyLive || wasLive) await update($, tick, () => now)
+      wasLive = isAnyLive
+    })())
 
     return next(e)
   })
@@ -711,6 +818,93 @@ export const register: Register = (on, options) => {
     return { result: text }
   }).catch(() => ({ deny: 'hydra: the Head run failed before it reported.' }))
 
+  on('command.run', { command: 'heads' }, async $ => {
+    await $.ui.open({ id: HEADS_PANE, title: 'Heads' })
+
+    return { text: 'Heads pane opened.' }
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    const now = await read($, tick)
+    const frame = Math.floor(now / 1000)
+    const live = (await read($, runs)).filter(run => isLive(run, now))
+    if (live.length === 0) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text bold>🐉 Hydra </Text>
+          <Text dimColor>{headsSummary(live)} · /heads for detail</Text>
+        </Box>
+        {live.map(run => (
+          <Box key={run.id}>
+            <Text color={glyphColor(run)}>{glyphOf(run, frame)} </Text>
+            <Text bold>{run.id} </Text>
+            <Text dimColor>{(run.effort ?? '').padEnd(5)} </Text>
+            <Text color={glyphColor(run)}>{barOf(run.maxTurns ? (run.turns / run.maxTurns) * 100 : 0, 8)}</Text>
+            <Text dimColor> {String(run.turns).padStart(2)}/{run.maxTurns ?? '?'} {elapsedOf(run, now).padStart(5)} </Text>
+            <Text wrap="truncate-end" dimColor={run.state !== 'running'}>{nowLine(run)}</Text>
+          </Box>
+        ))}
+      </Box>
+    )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: HEADS_PANE }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const now = await read($, tick)
+    const frame = Math.floor(now / 1000)
+    const hydra = await read($, mode)
+    const list = [...(await read($, runs))].reverse()
+    const pick = await read($, selected)
+    const chosen = list.find(run => run.id === pick) ?? list.find(run => run.state === 'running') ?? list[0]
+    const barWidth = Math.max(10, Math.min(30, e.props.bodyColumns - 24))
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>🐉 Hydra · {hydra?.isOn ? `${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
+        <Text dimColor>{list.length > 0 ? `${headsSummary(list)} · press a number to inspect` : 'No Heads in this session yet.'}</Text>
+        <Box flexDirection="column" marginTop={1}>
+          {list.map((run, index) => (
+            <Box key={run.id}>
+              <Button key={`pick-${run.id}`} plain hotkey={index < 9 ? String(index + 1) : undefined} label={run.id} onPress={() => update($, selected, () => run.id)} />
+              <Text color={glyphColor(run)}> {glyphOf(run, frame)} </Text>
+              <Text dimColor>{elapsedOf(run, now).padStart(5)} {String(run.turns).padStart(3)}t </Text>
+              <Text wrap="truncate-end" bold={run.id === chosen?.id}>{run.task}</Text>
+            </Box>
+          ))}
+        </Box>
+        {chosen && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold>
+              {chosen.id} · {shortModel(chosen.model)}{chosen.effort ? ` · effort ${chosen.effort}` : ''} · {chosen.state} {elapsedOf(chosen, now)}
+            </Text>
+            <Text dimColor wrap="wrap">{chosen.task}</Text>
+            <Box marginTop={1}>
+              <Text>turn {chosen.turns}/{chosen.maxTurns ?? '?'} </Text>
+              <Text color={glyphColor(chosen)}>{barOf(chosen.maxTurns ? (chosen.turns / chosen.maxTurns) * 100 : 0, barWidth)}</Text>
+            </Box>
+            <Text dimColor>
+              {chosen.edits ?? 0} edits · {chosen.denials ?? 0} denied{chosen.costUsd !== undefined ? ` · $${chosen.costUsd.toFixed(4)}` : ''}
+            </Text>
+            <Box marginTop={1}>
+              <Text color={glyphColor(chosen)}>{glyphOf(chosen, frame)} </Text>
+              <Text wrap="truncate-end">{nowLine(chosen)}</Text>
+            </Box>
+            {(chosen.steps ?? []).map((step, index) => (
+              <Box key={`step-${index}`}>
+                <Text color={step.isOk ? 'green' : 'red'}>  {step.isOk ? '✓' : '✗'} </Text>
+                <Text wrap="truncate-end" dimColor={step.isOk}>{step.text}{step.isOk ? '' : ' (denied)'}</Text>
+              </Box>
+            ))}
+          </Box>
+        )}
+      </Box>
+    )
+  })
+
   on('command.run', { command: 'limits' }, async $ => {
     await refreshHeads($, limits)
     await $.ui.open({ id: PANE, title: 'Usage' })
@@ -725,7 +919,7 @@ export const register: Register = (on, options) => {
     const windows = await read($, lead)
     const usage = await read($, heads)
     const hydra = await read($, mode)
-    const recent = (await read($, runs)).slice(-5)
+    const recent = await read($, runs)
 
     const row = (label: string, percent: number, detail: string) => (
       <Box flexDirection="column" marginBottom={1}>
@@ -753,11 +947,7 @@ export const register: Register = (on, options) => {
         {usage && !usage.error && row(`Weekly · $${weeklyUsd.toFixed(2)}`, percentOf(usage.weekly.usd, weeklyUsd), `$${usage.weekly.usd.toFixed(2)} ${resetsIn(usage.weekly.resetsAt, now)}`)}
 
         <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
-        {recent.map(run => (
-          <Text dimColor={run.state !== 'running'} color={run.state === 'failed' ? 'red' : undefined}>
-            {run.state} · {shortModel(run.model)} · {run.turns} turns{run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(3)}` : ''} · {run.task}
-          </Text>
-        ))}
+        {recent.length > 0 && <Text dimColor>{headsSummary(recent)} · /heads to watch them</Text>}
       </Box>
     )
   })
