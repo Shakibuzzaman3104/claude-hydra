@@ -5,9 +5,12 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  barOf, continuePrompt, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusLine, createGate, createJobQueue,
 } from './register'
+import type { On } from 'claude-code'
+
+import type { HeadRun } from '../types'
 
 test('labels Claude windows like the Droppy panel', async () => {
   expect(leadLabel('five_hour')).toBe('5-hour limit')
@@ -197,4 +200,109 @@ test('tells the Lead who picks the effort', async () => {
   for (const level of ['`high`', '`xhigh`', '`max`']) expect(auto).toContain(level)
   expect(auto).not.toContain('\\`')
   expect(HYDRA_POLICY('deepseek/x', 'max')).toContain('fixed every Head\'s effort at max')
+})
+
+test('describes tool calls in a few words, relative to the repo', async () => {
+  expect(describeTool('edit_file', { file_path: '/repo/src/a.ts' }, '/repo')).toBe('edit src/a.ts')
+  expect(describeTool('read_directory', { path: '/repo' }, '/repo')).toBe('list .')
+  expect(describeTool('grep', { pattern: 'TODO' }, '/repo')).toBe('search "TODO"')
+  expect(describeTool('shell_command', { command: 'ls -a' }, '/repo')).toBe('$ ls -a')
+  expect(describeTool('web_fetch', {}, '/repo')).toBe('web fetch')
+})
+
+test('folds the stream into a live record: activity, steps, edits, denials and turns', async () => {
+  const labels = new Map<string, string>()
+  let run: HeadRun = { id: 'h1', task: 't', model: 'm', state: 'running', turns: 0 }
+  const apply = (event: Parameters<typeof applyEvent>[1]) => { run = { ...run, ...applyEvent(run, event, labels, '/repo') } }
+  apply({ type: 'thinking_start' })
+  expect(run).toMatchObject({ activity: 'thinking' })
+  apply({ type: 'tool_queued', toolCallId: 'c1', toolName: 'edit_file', input: { file_path: '/repo/c.txt' } })
+  apply({ type: 'tool_running', toolCallId: 'c1', toolName: 'edit_file' })
+  expect(run).toMatchObject({ activity: 'edit c.txt' })
+  apply({ type: 'tool_completed', toolCallId: 'c1', toolName: 'edit_file' })
+  apply({ type: 'tool_queued', toolCallId: 'c2', toolName: 'shell_command', input: { command: 'ls' } })
+  apply({ type: 'tool_denied', toolCallId: 'c2', toolName: 'shell_command' })
+  apply({ type: 'turn_end' })
+  expect(run).toMatchObject({ edits: 1, denials: 1, turns: 1, steps: [{ isOk: true, text: 'edit c.txt' }, { isOk: false, text: '$ ls' }] })
+})
+
+test('draws times, glyphs and summaries for the live view', async () => {
+  expect(clockOf(134_000)).toBe('2:14')
+  expect(clockOf(3_723_000)).toBe('1:02:03')
+  const base = { id: 'h', task: 't', model: 'm', turns: 0 }
+  expect(elapsedOf({ ...base, state: 'running', startedAt: 1_000 }, 61_000)).toBe('1:00')
+  expect(elapsedOf({ ...base, state: 'queued' }, 5)).toBe('–')
+  expect(glyphOf({ ...base, state: 'done' }, 3)).toBe('✓')
+  expect(glyphOf({ ...base, state: 'failed' }, 3)).toBe('✗')
+  expect(glyphOf({ ...base, state: 'running' }, 1)).not.toBe(glyphOf({ ...base, state: 'running' }, 2))
+  expect(isLive({ ...base, state: 'done', endedAt: 0 }, 30_000)).toBe(true)
+  expect(isLive({ ...base, state: 'done', endedAt: 0 }, 90_000)).toBe(false)
+  expect(headsSummary([{ ...base, state: 'running' }, { ...base, state: 'running' }, { ...base, state: 'failed' }])).toBe('2 running · 1 failed')
+  expect(nowLine({ ...base, state: 'done', costUsd: 0.0048 })).toBe('done · $0.0048')
+  expect(nowLine({ ...base, state: 'running', activity: 'edit c.txt' })).toBe('edit c.txt')
+})
+
+const NOW = 1_000_000
+
+const LIVE_RUNS: HeadRun[] = [
+  {
+    id: 'hA', task: 'Make 12 edits to c.txt', model: 'deepseek/deepseek-v4.1-flash', state: 'running', turns: 7, maxTurns: 40, effort: 'high', startedAt: NOW - 134_000,
+    activity: 'edit c.txt', edits: 5, denials: 1, steps: [{ isOk: true, text: 'search "TODO"' }, { isOk: false, text: '$ wc -l c.txt' }],
+  },
+  { id: 'hB', task: 'Smoke test the rules', model: 'deepseek/deepseek-v4.1-flash', state: 'done', turns: 14, maxTurns: 40, effort: 'max', costUsd: 0.0336,
+    startedAt: NOW - 90_000, endedAt: NOW - 10_000 },
+]
+const scroll = { offset: 0, bodyRows: 20 }
+
+/** The text a drawn tree shows, its chunks joined per element. */
+const textOf = (node: unknown): string => {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (!node || typeof node !== 'object') return ''
+  const element = node as { children?: unknown[]; props?: { label?: string } }
+  return (element.props?.label ?? '') + (element.children ?? []).map(textOf).join('') + '\n'
+}
+
+/** Stands in for the engine: the Head list those Heads left, the views' clock, and the engine's own empty band. */
+const serveRuns = (on: On, list: HeadRun[]) => {
+  on('state.get', ($, e, next) => {
+    if (e.plugin === 'hydra' && e.key === 'runs') return Promise.resolve({ value: { value: list, version: 1 } })
+    if (e.plugin === 'hydra' && e.key === 'tick') return Promise.resolve({ value: { value: NOW, version: 1 } })
+    return next(e)
+  })
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`draws the live band above the prompt while Heads work (${surface})`, async ($, on) => {
+    serveRuns(on, LIVE_RUNS)
+    const band = await $.ui.mount({
+      plugin: 'hydra', surface, component: 'AbovePrompt',
+      props: { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 100, scroll, view: {} },
+    })
+    const text = textOf(await band.drawn())
+    for (const part of ['1 running · 1 done', 'hA', 'high', ' 7/40', '2:14', 'edit c.txt', 'hB', 'max', '14/40', 'done · $0.0336']) expect(text).toContain(part)
+  })
+
+  test(`lists Heads in the /heads pane and shows the one picked (${surface})`, async ($, on) => {
+    serveRuns(on, LIVE_RUNS)
+    const pane = await $.ui.mount({
+      plugin: 'hydra', surface, component: 'Pane', requestId: 'hydra-heads',
+      props: { title: 'Heads', isFocused: true, bodyColumns: 80, placement: 'dock', scroll, view: {} },
+    })
+    const first = textOf(await pane.drawn())
+    for (const part of ['Make 12 edits to c.txt', '5 edits · 1 denied', '$ wc -l c.txt', '(denied)']) expect(first).toContain(part)
+    await $.ui.press({ plugin: 'hydra', key: 'pick-hB', surface })
+    const picked = textOf(await pane.drawn())
+    expect(picked).toContain('effort max')
+    expect(picked).toContain('$0.0336')
+  })
+}
+
+test('leaves the band to the engine when no Head is live', async ($, on) => {
+  serveRuns(on, [])
+  // Nothing stands for the engine's own band here, so a pass ends in the kit's "no implementation".
+  const passed = await $.ui.mount({
+    plugin: 'hydra', surface: 'terminal', component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll, view: {} },
+  }).then(() => 'drew', (error: unknown) => String(error))
+  expect(passed).toContain('no implementation for ui.render')
 })

@@ -15,13 +15,23 @@ export type HeadsUsage = {
 
 export type HydraMode = { isOn: boolean; headModel: string; effort?: string }
 
+export type HeadStep = { isOk: boolean; text: string }
+
 export type HeadRun = {
   id: string
   task: string
   model: string
-  state: 'running' | 'done' | 'failed'
+  state: 'queued' | 'running' | 'done' | 'failed'
   turns: number
   costUsd?: number
+  effort?: string
+  maxTurns?: number
+  startedAt?: number
+  endedAt?: number
+  activity?: string
+  steps?: HeadStep[]
+  edits?: number
+  denials?: number
 }
 
 declare module 'claude-code' {
@@ -32,6 +42,9 @@ declare module 'claude-code' {
       warned: string[]
       mode: HydraMode | null
       runs: HeadRun[]
+      selected: string | null
+      /** The views' clock, in ms: stamped once a second while a Head is live. */
+      tick: number
     }
   }
 }
