@@ -169,7 +169,7 @@ test('reads the levels a model supports from its refusal and rounds a missing on
   expect(isEffort('ultra')).toBe(false)
 })
 
-test('lets the Lead pick only high or max under auto, and lets the person fix any level', async () => {
+test('lets the Lead pick only high, xhigh or max under auto, and lets the person fix any level', async () => {
   expect(headEffort('auto', undefined)).toBe('high')
   expect(headEffort('auto', 'max')).toBe('max')
   expect(headEffort('auto', 'low')).toBe('high')
@@ -180,7 +180,9 @@ test('lets the Lead pick only high or max under auto, and lets the person fix an
   expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'off' })).toBe('off')
   expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'ultra' })).toBe('auto')
   expect(effortModeOf(null)).toBe('auto')
-  for (const level of ['off', 'low', 'medium', 'xhigh']) {
+  expect(headEffort('auto', 'xhigh')).toBe('xhigh')
+  expect(isHeadEffort('xhigh')).toBe(true)
+  for (const level of ['off', 'low', 'medium']) {
     expect(isHeadEffort(level)).toBe(false)
     expect(isEffortMode(level)).toBe(true)
   }
@@ -191,8 +193,8 @@ test('lets the Lead pick only high or max under auto, and lets the person fix an
 
 test('tells the Lead who picks the effort', async () => {
   const auto = HYDRA_POLICY('deepseek/x', 'auto')
-  expect(auto).toContain('You pick each Head\'s reasoning effort with `effort`')
-  expect(auto).toContain('Never lower than high.')
+  expect(auto).toContain('You pick each Head\'s reasoning effort with `effort`, never lower than high')
+  for (const level of ['`high`', '`xhigh`', '`max`']) expect(auto).toContain(level)
   expect(auto).not.toContain('\\`')
   expect(HYDRA_POLICY('deepseek/x', 'max')).toContain('fixed every Head\'s effort at max')
 })
