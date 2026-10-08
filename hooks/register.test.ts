@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  ancestorDenyRules, guardCommand, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
 } from './register'
 import type { On } from 'claude-code'
@@ -423,7 +423,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
 test('denies new files directly in every folder above the project, never inside it', async () => {
   const listings: Record<string, string[]> = { '/': ['Users', 'tmp'], '/Users': ['me', 'other'], '/Users/me': ['app', '.zshrc'] }
-  const rules = ancestorDenyRules('/Users/me/app', dir => listings[dir] ?? [])
+  const rules = ancestorDenyRules(['/Users/me/app'], dir => listings[dir] ?? [])
   for (const rule of ['Edit(//*)', 'Edit(//Users/*)', 'Edit(//Users/me/*)', 'Edit(//tmp/**)', 'Edit(//Users/other/**)', 'Edit(//Users/me/.zshrc)']) expect(rules).toContain(rule)
   expect(rules.some(rule => rule.startsWith('Edit(//Users/me/app'))).toBe(false)
 })
@@ -494,4 +494,26 @@ test('refuses Windows project paths, which Command Code cannot deny writes to', 
   expect(windowsPathRefusal('C:\\Users\\me\\app')).toContain('WSL')
   expect(windowsPathRefusal('\\\\server\\share')).toContain('WSL')
   expect(windowsPathRefusal('/Users/me/app')).toBeUndefined()
+})
+
+test('leaves a way down to each folder a Head may write to, and keeps its secrets and history protected', async () => {
+  const listings: Record<string, string[]> = { '/': ['Users'], '/Users': ['me'], '/Users/me': ['app', 'shared', 'other'] }
+  const rules = ancestorDenyRules(['/Users/me/app', '/Users/me/shared'], dir => listings[dir] ?? [])
+  expect(rules).toContain('Edit(//Users/me/other/**)')
+  expect(rules).toContain('Edit(//Users/me/*)')
+  expect(rules.some(rule => rule.includes('/shared') || rule.includes('/app'))).toBe(false)
+  expect([...waysDown(['/a/b/app', '/a/b/app/inner']).keys()]).toEqual(['', '/a', '/a/b'])
+
+  const settings = headSettings([{ addDirs: ['/brief'], shell: false, writeDirs: ['/Users/me/shared'] }], [])
+  for (const rule of writeDirDeny('/Users/me/shared')) expect(settings.permissions?.deny).toContain(rule)
+  expect(writeDirDeny('/Users/me/shared')).toContain('Edit(//Users/me/shared/**/.env)')
+  expect(settings.permissions?.additionalDirectories).toEqual(['/brief', '/Users/me/shared'])
+  expect(guardCommand('/p', '/Users/me/app', ['/Users/me/shared'])).toBe("/usr/bin/env python3 -I '/p/bin/head-guard.py' '/Users/me/app' '/Users/me/shared'")
+})
+
+test('flags writes outside the project only when no granted folder holds them', async () => {
+  expect(outsideFiles('/r', ['/r/a.kt', '/s/b.kt', '/t/c.kt'], ['/s'])).toEqual(['/t/c.kt'])
+  expect(outsideFiles('/r', ['/rx/a.kt'])).toEqual(['/rx/a.kt'])
+  expect(formatReport({ id: 'h', model: 'm', cwd: '/r', finished: true, rounds: 1, turns: 1, usd: 0, files: ['/s/b.kt'], denied: [], finalText: '', exit: '0', writeDirs: ['/s'] }))
+    .toContain('may also write: /s')
 })
