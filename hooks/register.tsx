@@ -835,7 +835,7 @@ export const register: Register = (on, options) => {
   const fiveHourUsd = Number(options.headsFiveHourUsd ?? 14)
   const weeklyUsd = Number(options.headsWeeklyUsd ?? 35)
   const plan = String(options.headsPlan ?? 'GOAT')
-  const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
+  const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash-fast')
   const defaultEffort: EffortMode = isEffortMode(options.headEffort) ? options.headEffort : 'auto'
   const limits = { fiveHourUsd, weeklyUsd }
 
