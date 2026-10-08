@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.6.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.6.1). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -77,6 +77,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - 2026-10-07: Command Code writes a session's `.jsonl` transcript lazily; at first only `.meta.json` and `.checkpoints.jsonl` exist, so a missing transcript does not mean a dead Head. The first line of `.checkpoints.jsonl` holds the prompt and `createdAt`.
 - 2026-10-07: a refusal reads "Blocked by permission deny rule …" (yolo) or "requires permissions" (print-mode gate); the transcript reader must treat both as denials, or refused writes look like edits.
 - 2026-10-07: a background Head spawned from a `tool.call` hook died about 3 minutes later; run long-lived work from `session.start`'s worker. A plugin may not store `$` in a variable (validate rejects it).
+- 2026-10-08: a hook's own time is capped at 10 s per dispatch, and awaiting a plain promise counts; a `$` call in flight does not. A hook that must wait longer (the foreground Head) waits through `$` calls such as `$.process.run(['/bin/sleep', '1'])`.
 - 2026-10-08: a foreground Head run under a `tool.call` hook's `$` stayed "running" forever after its call was cancelled: the child died with the call, and the hook could no longer record it. Every Head now runs on the worker's `$`. Set `statusLine.refreshInterval` (e.g. 2) so the status line shows `/hydra` on/off without waiting for the next message.
 - 2026-10-07: big view files (1,500+ lines) took DeepSeek Heads past 40 minutes; split such work or raise `maxMinutes`, and expect a follow-up Head to finish it.
 - 2026-10-08: Command Code's grep tool ignores `Read` deny rules, and path-scoped `Grep(...)` or `Search(...)` rules never fire; only a bare `Grep` deny stops it. Pointing grep straight at `.env` is caught by `Read(.env)`, but a search over `.` or a folder is not.

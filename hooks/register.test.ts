@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import {
   applyEvent, barOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, headName, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
+  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -364,4 +364,32 @@ test('keeps Head names unique within the session', async () => {
   const taken = new Set(['prefs-utils', 'prefs-utils-2'])
   expect(headName('prefs-utils', 't', taken)).toBe('prefs-utils-3')
   expect(headName('abcdefghij-klmnopqrs', 't', new Set(['abcdefghij-klmnopqrs']))).toBe('abcdefghij-klmnopq-2')
+})
+
+test('waits for a worker-run Head through pauses, and stops waiting on abort', async () => {
+  const box: { result?: string } = {}
+  let pauses = 0
+  const done = await waitForResult(box, new AbortController().signal, async () => {
+    pauses++
+    if (pauses === 3) box.result = 'report'
+  })
+  expect(done).toBe('report')
+  expect(pauses).toBe(3)
+
+  const stopper = new AbortController()
+  let calls = 0
+  const stopped = await waitForResult<string>({}, stopper.signal, async () => {
+    calls++
+    if (calls === 2) stopper.abort('stopped')
+  })
+  expect(stopped).toBeUndefined()
+  expect(calls).toBe(2)
+
+  let failures = 0
+  const recovered = await waitForResult(box, new AbortController().signal, async () => {
+    failures++
+    throw new Error('sleep failed')
+  })
+  expect(recovered).toBe('report')
+  expect(failures).toBe(0)
 })
