@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.4 — 2026-10-08
+- Reports list a write the write guard blocked under `denied`, not `edited` (Command Code words it "Blocked by hook policy").
+- When the last Head leaves, the empty `.commandcode` folder Hydra made goes too; one holding the person's own files stays.
+- Smoke-tested through real Hydra Heads: in-project edits succeed; a sibling folder, a new folder in the home folder, `.git` and a symlink out of the project are denied; with `writeDirs` the symlinked write succeeds while `.env` inside and other folders stay denied; the rules file is deleted when the Head ends.
+
 ## 0.7.3 — 2026-10-08
 - The status line instructions (`/hydra statusline`, README) add `"refreshInterval": 2`: without it Claude Code reruns the status line only at the next message, so `/hydra off` seemed not to clear it.
 
