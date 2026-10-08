@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.4.2). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.4.3). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -19,7 +19,7 @@ A Claude Code dev mod (v0.4.2). Claude leads the session; Command Code "heads" t
 - `addDirs` grants read access to folders outside `cwd` (mockups, briefs, other repos).
 - **Never quits silently:** a Head that stops before ending its report with `HEAD DONE` (a text-only reply, an empty model reply, a turn cap) is resumed in the same session, up to 8 rounds, and told which calls stay denied. A run that fails before it has a session is retried twice. A run that is cut off (time limit, kill) still reports: its session is found from its transcript by start time and task.
 - **Status line:** blank until `/hydra` turns Hydra on in the session; then `🐉 Hydra · <head model> · <effort> │ 5h $spent/$limit │ 7d $spent/$limit`, the Heads' Command Code spend against `headsFiveHourUsd` and `headsWeeklyUsd`. Claude's own limits and running Heads are in `/limits`.
-- **Effort:** Heads run with Command Code's `--effort`. In `auto` (the default, `headEffort`) the Lead picks per Head and never below `high`: `high` for a well-specified implementation, `max` for a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, pixel-faithful UI, or a retry after a Head got it wrong. `/hydra effort=<level>` (`off`, `low`, `medium`, `high`, `xhigh` or `max`) fixes every Head at that level and overrides the Lead; `/hydra effort=auto` hands the choice back. A change reaches running Heads at their next round. A level the model lacks is raised to its nearest supported one (DeepSeek V4.1 Flash takes `off`, `low`, `high`, `max`), and each report shows the effort used.
+- **Effort:** Heads run with Command Code's `--effort`. In `auto` (the default, `headEffort`) the Lead picks per Head and never below `high`: `high` for a well-specified implementation, `xhigh` for multi-file work with some design judgement, non-trivial logic, edge-case tests or matching a mockup, `max` for a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, or a retry after a Head got it wrong. DeepSeek V4.1 Flash has no `xhigh`, so it runs as `max` there. `/hydra effort=<level>` (`off`, `low`, `medium`, `high`, `xhigh` or `max`) fixes every Head at that level and overrides the Lead; `/hydra effort=auto` hands the choice back. A change reaches running Heads at their next round. A level the model lacks is raised to its nearest supported one (DeepSeek V4.1 Flash takes `off`, `low`, `high`, `max`), and each report shows the effort used.
 - **Limits:** `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.
 
@@ -34,7 +34,7 @@ macOS or Linux only: the mod calls `/usr/bin/env python3` and `git`.
    ```
 3. Load it in every session: add `"CLAUDE_CODE_PLUGIN_DIRS": "~/.claude/mods/hydra"` to the `env` block of `~/.claude/settings.json`, keeping the other keys. The auto-mode classifier may block Claude from editing that file; the person then approves it or adds the line themselves.
 4. Check it: `claude plugin validate ~/.claude/mods/hydra` passes and `claude plugin test ~/.claude/mods/hydra` passes every test. A second copy under `~/.claude/dev-mods/*/hydra` would register `/hydra` twice, so remove it.
-5. Start a new session and run `/hydra opus`. It answers `🐉 Hydra on · Lead … · Head <model> · effort auto (Lead picks high or max)`, and the `mcp__hydra__head` tool lists `addDirs`, `shell`, `effort`, `maxMinutes` and `background`. A tool without those is an older copy.
+5. Start a new session and run `/hydra opus`. It answers `🐉 Hydra on · Lead … · Head <model> · effort auto (Lead picks high, xhigh or max)`, and the `mcp__hydra__head` tool lists `addDirs`, `shell`, `effort`, `maxMinutes` and `background`. A tool without those is an older copy.
 
 Plugin options (`userConfig` in `.claude-plugin/plugin.json`): `headModel` (default `deepseek/deepseek-v4.1-flash`), `headEffort` (`auto` or a level; default `auto`), `headsPlan`, `headsFiveHourUsd`, `headsWeeklyUsd`.
 
