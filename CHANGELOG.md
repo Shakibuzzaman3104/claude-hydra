@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 — 2026-10-08
+- `/heads` and `/limits` are immediate commands: they open at once mid-turn instead of interrupting Claude, which used to cancel a foreground Head.
+- An interrupted foreground call (Esc, a typed prompt) no longer kills its Head: the Head keeps running and its report arrives as a message. Only a deliberate stop ends it.
+- `/heads` has a Stop button (`s`) for the Head in view; `mcp__hydra__control` stop shares the same path.
+- Verified live: a turn interrupted 20 s into a foreground Head left it running; it finished all 12 edits and reported as a message.
+
 ## 0.6.1 — 2026-10-08
 - Fix: a foreground Head failed after 10 s with "the Head run failed before it reported". The `tool.call` hook waited on a plain promise, which counts against a hook's 10 s budget; it now waits through `$` calls (a host `sleep`), which do not. Verified live: a foreground Head ran 19 s and reported; a background Head was stopped by name through `mcp__hydra__control`.
 

@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.6.1). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.6.2). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -34,6 +34,7 @@ A Claude Code dev mod (v0.6.1). Claude leads the session; Command Code "heads" t
 - **Limits:** `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
 - **Names:** every Head has a short name saying what it works on (`prefs-utils`, `login-tests`), used in the band, `/heads`, reports and `mcp__hydra__control`. The Lead passes `name`; without one Hydra makes one from the first source file the task names (`PreferenceUtils.kt` → `preference-utils`) or its first few meaningful words. Names are lowercase kebab, at most 20 characters, and unique per session (`-2`, `-3`).
 - **Lead control:** `mcp__hydra__control` lets the Lead `list` Heads (one with no process behind it is flagged `NO LIVE PROCESS`), `stop` one by name or all, `clear` finished ones from the views, and turn Hydra `on`/`off` or set its `effort` and head model, so it never has to ask the person to stop a Head.
+- **Watching without interrupting:** `/heads` and `/limits` are immediate commands, so they open mid-turn without touching Claude's work. An interrupted foreground call (Esc, a typed prompt) lets its Head keep running; the report then arrives as a message. Stop a Head on purpose with `s` in `/heads` or through `mcp__hydra__control`.
 - **Stopping cleanly:** every Head, foreground or background, runs on the `session.start` worker. Cancelling a Head's tool call aborts it, and the stream read is raced against that stop, so a silent Head (a model thinking, a hung CLI) ends at once and is marked failed with the reason. A reload marks running and queued Heads as ended.
 - **`/hydra <task>`:** the task is submitted as a prompt, so the Lead starts right after the command instead of on the next message.
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.
