@@ -2,7 +2,7 @@
 
 Hydra on demand (/hydra): Claude leads, Command Code heads implement; plus a usage pane (/limits) for both
 
-A Claude Code dev mod (v0.5.0). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
+A Claude Code dev mod (v0.5.1). Claude leads the session; Command Code "heads" take on implementation work. `/hydra` starts it on demand, `/heads` shows the Heads working live, and `/limits` opens a usage pane covering both.
 
 ## How a Head runs
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
@@ -19,7 +19,17 @@ A Claude Code dev mod (v0.5.0). Claude leads the session; Command Code "heads" t
 - `addDirs` grants read access to folders outside `cwd` (mockups, briefs, other repos).
 - **Never quits silently:** a Head that stops before ending its report with `HEAD DONE` (a text-only reply, an empty model reply, a turn cap) is resumed in the same session, up to 8 rounds, and told which calls stay denied. A run that fails before it has a session is retried twice. A run that is cut off (time limit, kill) still reports: its session is found from its transcript by start time and task.
 - **Watching Heads:** while a Head runs (and for a minute after it ends) a band above the prompt shows one row per Head: a spinner (◌ queued, ✓ done, ✗ failed), its id, effort, a turn bar with `turns/maxTurns`, elapsed time and what it is doing now (`thinking`, `edit c.txt`, `search "TODO"`, `$ ls`) or how it ended. `/heads` opens a pane with every Head of the session: press its number to see its task, turn bar, edits, denials, cost and its last 8 tool calls (✓ done, ✗ denied). Both read Command Code's JSON event stream as it arrives and redraw once a second while a Head is live.
-- **Status line:** blank until `/hydra` turns Hydra on in the session; then `🐉 Hydra · <head model> · <effort> │ 5h $spent/$limit │ 7d $spent/$limit`, the Heads' Command Code spend against `headsFiveHourUsd` and `headsWeeklyUsd`. Claude's own limits and running Heads are in `/limits`.
+- **Status line:** Hydra writes its line to `~/.claude/hydra/status/<session id>.txt` while `/hydra` is on in that session (the file is emptied when it is off): `🐉 <head model> · <effort> | Heads 5h $spent/$limit | 7d $spent/$limit`, the Heads' Command Code spend against `headsFiveHourUsd` and `headsWeeklyUsd`. Your status line command prints it, which avoids the `⚠ <plugin>:` prefix Claude Code puts on a plugin's own status row. Add this before the final `printf` of `~/.claude/statusline.sh`, where `$input` is the JSON Claude Code passes and `$out` your line:
+  ```bash
+  session_id=$(printf '%s' "$input" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"' | head -1 | sed -E 's/.*"([A-Za-z0-9-]*)"$/\1/')
+  hydra_file="$HOME/.claude/hydra/status/$session_id.txt"
+  if [ -n "$session_id" ] && [ -s "$hydra_file" ]; then
+    printf '%s\n\033[38;5;179m%s\033[0m' "$out" "$(head -1 "$hydra_file")"
+  else
+    printf '%s' "$out"
+  fi
+  ```
+  Claude's own limits and running Heads are in `/limits` and `/heads`.
 - **Effort:** Heads run with Command Code's `--effort`. In `auto` (the default, `headEffort`) the Lead picks per Head and never below `high`: `high` for a well-specified implementation, `xhigh` for multi-file work with some design judgement, non-trivial logic, edge-case tests or matching a mockup, `max` for a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, or a retry after a Head got it wrong. DeepSeek V4.1 Flash has no `xhigh`, so it runs as `max` there. `/hydra effort=<level>` (`off`, `low`, `medium`, `high`, `xhigh` or `max`) fixes every Head at that level and overrides the Lead; `/hydra effort=auto` hands the choice back. A change reaches running Heads at their next round. A level the model lacks is raised to its nearest supported one (DeepSeek V4.1 Flash takes `off`, `low`, `high`, `max`), and each report shows the effort used.
 - **Limits:** `maxMinutes` (default 40) per Head, at most 6 Heads at once (the rest queue in order).
 - **Background:** `background: true` queues the Head for a worker that `session.start` owns and returns at once; the report arrives later as a message from the plugin. A plugin may not keep `$` in a variable, and a `tool.call` hook's `$` lapses a few minutes after the call returns, killing anything spawned under it; that is why the worker lives in `session.start`.

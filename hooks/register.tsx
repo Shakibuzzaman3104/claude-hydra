@@ -159,15 +159,29 @@ export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
 /** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
 export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
   if (!hydra?.isOn) return undefined
-  const parts = [`🐉 Hydra · ${shortModel(hydra.headModel)} · ${effortModeOf(hydra)}`]
+  const parts = [`🐉 ${shortModel(hydra.headModel)} · ${effortModeOf(hydra)}`]
   if (usage && !usage.error) {
-    parts.push(`5h $${usage.fiveHour.usd.toFixed(2)}/$${limits.fiveHourUsd}`, `7d $${usage.weekly.usd.toFixed(2)}/$${limits.weeklyUsd}`)
+    parts.push(`Heads 5h $${usage.fiveHour.usd.toFixed(2)}/$${limits.fiveHourUsd}`, `7d $${usage.weekly.usd.toFixed(2)}/$${limits.weeklyUsd}`)
   }
-  return parts.join(' │ ')
+  return parts.join(' | ')
 }
 
+/** Where the person's status line command finds this session's Hydra line; empty while Hydra is off. */
+export const statusFile = (home: string, sessionId: string) => `${home}/.claude/hydra/status/${sessionId}.txt`
+
+let lastStatus: string | undefined
+
+/**
+ * Hydra's line goes to a per-session file that ~/.claude/statusline.sh prints, not to `$.ui.status`, which the
+ * engine draws with a `⚠ hydra:` prefix.
+ */
 async function refreshStatus($: EngineInterface, limits: HeadLimits) {
-  $.ui.status(statusLine(await read($, mode), await read($, heads), limits))
+  const line = statusLine(await read($, mode), await read($, heads), limits) ?? ''
+  if (line === lastStatus) return
+  const home = await $.env.get('HOME')
+  if (!home) return
+  await $.fs.write(statusFile(home, await $.session.id()), line ? `${line}\n` : '')
+  lastStatus = line
 }
 
 async function refreshHeads($: EngineInterface, limits: HeadLimits) {
@@ -732,6 +746,7 @@ export const register: Register = (on, options) => {
         required: ['task'],
       },
     })
+    $.ui.status(undefined)
     // A reload or restart ends every Head this module was running; say so instead of showing them running forever.
     await update($, runs, list => list.map(run => (run.state === 'running' ? { ...run, state: 'failed' as const } : run)))
     const usage = await $.session.usage()
