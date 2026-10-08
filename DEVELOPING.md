@@ -13,7 +13,8 @@
 ## How a Head runs (internals)
 - **Why `--yolo`:** Command Code's headless (`-p`) mode has a built-in gate that blocks `edit_file`, `write_file` and `shell_command` unless the run uses `--yolo`; permission rules cannot lift it. So every Head runs with `--yolo`, locked down by deny rules, which yolo still honours.
 - **Locked down:** before a Head starts, Hydra writes the project's `.commandcode/settings.local.json` (added to `.git/info/exclude`):
-  - every folder outside `cwd` is denied for edits, sibling by sibling up to `/`;
+  - every folder outside `cwd` is denied for edits, sibling by sibling up to `/`, and so is any new file directly in a folder above `cwd`;
+  - a write guard (`bin/head-guard.py`, a Command Code `PreToolUse` hook in the same file) denies every write or edit whose real path, symlinks resolved, is outside `cwd`. Deny rules cannot name a new folder (`write_file` creates missing parents, so `~/new/x` or a missing `~/.ssh/authorized_keys` slip past them); the guard can. It also denies a symlink inside the project that points out of it. Command Code runs a tool when its hook crashes, so the deny rules stay as the floor;
   - `.git` and `.commandcode` inside the project are denied;
   - shell is denied outright unless a running Head asked for `shell: true`; even then destructive git, `rm -r`/`-f`, `sudo`, network tools (`curl`, `wget`, `ssh`, `rsync`, …), builds and installs (`xcodebuild`, `swift build`, `npm install`, `brew`, …) stay denied;
   - `.env` and `.env.*` files are kept from Heads, because a Head sends file contents to an external model: the read and edit tools are denied on them, and so is any shell command that names one as a path (`Shell(* .env*)`, `Shell(*/.env*)`, `Shell(*=.env*)`; `process.env` still runs);
@@ -50,8 +51,8 @@
 Run this after installing and after any change to how a Head is launched, before real work.
 
 1. Make a throwaway git repo with `a.txt` containing `hello`, and an empty folder beside it.
-2. Run one Head there with `addDirs` naming a folder outside the repo and outside `/tmp` (the OS temp folder is always readable, so it proves nothing). Ask it to: edit `a.txt`; create `b.txt`; run `ls`; create a file in the folder beside the repo; create a file in your home folder; add a line to `.git/config`; read a file in the `addDirs` folder.
-3. Check the disk yourself. Expected: the edit, the new file and the `addDirs` read succeed; `ls`, both outside writes and the `.git/config` edit are denied and nothing exists outside the repo. The report says `finished`, lists `a.txt` and `b.txt` as edited, lists the four denied calls, and shows no `⚠ WROTE OUTSIDE` line.
+2. Run one Head there with `addDirs` naming a folder outside the repo and outside `/tmp` (the OS temp folder is always readable, so it proves nothing). Ask it to: edit `a.txt`; create `b.txt`; run `ls`; create a file in the folder beside the repo; create a file in your home folder; create `~/hydra-probe/x.txt` (a new folder); add a line to `.git/config`; read a file in the `addDirs` folder.
+3. Check the disk yourself. Expected: the edit, the new file and the `addDirs` read succeed; `ls`, the three outside writes and the `.git/config` edit are denied and nothing exists outside the repo. The report says `finished`, lists `a.txt` and `b.txt` as edited, lists the five denied calls, and shows no `⚠ WROTE OUTSIDE` line.
 4. After any change to the `.env` rules, add `.env`, `.env.production` and `sub/.env.local` with fake values, and run one Head with `shell: true` that tries, one call each: the read tool, the grep tool over `.` and over `sub`, `cat .env`, `cat sub/.env.local`, `grep -r SECRET .`, `grep -rn "process.env" a.txt`, and an edit of each `.env` file. Expected: every call is denied except `grep -r SECRET .` (the known shell gap) and the `process.env` grep, and no `.env` file changes. Write the Head's output outside the test repo, or its own log matches the searches.
 5. Run one Head with `background: true` on a task of 30+ single edits (several minutes): its report arrives as a message from the plugin, the band above the prompt shows it working (spinner, turn bar, current tool call), and `/heads` shows its live step log.
 
@@ -66,6 +67,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - Then run the smoke test. Unit tests cannot show what Command Code allows; only a live Head can.
 
 ## Pitfalls already learned
+- 2026-10-08: path deny rules have `*` (one name, dotfiles included), `?` and `**`, but no negation and no character classes, so no rule can deny "a new folder in `~` other than the project", and `write_file` creates missing parents. A `PreToolUse` hook in `settings.local.json` fires under `--yolo` before the tool runs and its deny is final, so the write guard closes that gap. A hook that crashes or times out lets the tool run.
 - 2026-10-08: on Windows, Command Code 1.65 matches a rule `//X` as `/X` and any other rule against the project, so no `Edit(...)` rule can deny a `D:/…` path and a `--yolo` Head writes anywhere (a live Head wrote outside the repo despite `Edit(//D:/…)` and `Edit(D:/…)` rules). Hydra refuses Windows project paths (`windowsPathRefusal`) instead of running unlocked; use WSL.
 - 2026-10-07: Command Code's `-p` mode blocks edits, writes and shell commands unless the run uses `--yolo`, in every permission mode; `accept-edits`, `auto-accept` (an alias) and `dont-ask` with allow rules all fail. Deny rules are the only control left under yolo, hence Hydra's generated deny list.
 - 2026-10-07: one denied call cancels every other call in the same batch ("Skipped — another tool call in this batch was denied"), and a model that keeps hitting denials often ends the run. Grant reads up front with `addDirs`.
@@ -90,6 +92,7 @@ When something fails, the Head's transcript is `~/.commandcode/projects/<project
 - `.claude-plugin/` — the mod manifest and the marketplace file
 - `hooks/` — the hooks that drive it, and their tests
 - `bin/cc-usage.py` — reads Command Code transcripts: spend windows, a Head's report, a lost session
+- `bin/head-guard.py` — the write guard Command Code runs before each Head write or edit
 - `types/` — the state contract
 - `examples/statusline.sh` — a full status line command that prints Hydra's line
 - `CHANGELOG.md` — what changed in each version

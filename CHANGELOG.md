@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.1 — 2026-10-08
+- A Head can no longer create files outside the project. New files directly in a folder above the project are denied by rule (`Edit(//<folder>/*)`, PR #15). New folders there (`~/new/x`, a missing `~/.ssh/authorized_keys`), which no deny rule can name because `write_file` creates missing parents, are denied by a write guard: a Command Code `PreToolUse` hook (`bin/head-guard.py`) that checks each write's real path, symlinks resolved, against the project. Verified with a live `--yolo` Head.
+
 ## 0.7.0 — 2026-10-08
 Ready for people other than its author.
 - Install with one line: the repo is its own marketplace (`/plugin install hydra --marketplace Shakibuzzaman3104/claude-hydra`). The README is rewritten for new users; internals, the smoke test and pitfalls move to DEVELOPING.md.

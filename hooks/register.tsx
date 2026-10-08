@@ -429,10 +429,11 @@ export const PROJECT_DENY = [
 export const SEARCH_DENY = 'Grep'
 
 type Permissions = { allow?: string[]; deny?: string[]; additionalDirectories?: string[] }
+type GuardHook = { matcher: string; hooks: { type: 'command'; command: string; timeout: number }[] }
 type HeadNeeds = { addDirs: readonly string[]; shell: boolean }
 /** A running Head the rules file is kept for: `key` is `<session id>/<head id>`, `until` when it must have ended. */
 export type HeadEntry = HeadNeeds & { key: string; until: number }
-type HeadSettings = { managedBy?: string; hydraHeads?: HeadEntry[]; permissions?: Permissions }
+type HeadSettings = { managedBy?: string; hydraHeads?: HeadEntry[]; permissions?: Permissions; hooks?: { PreToolUse: GuardHook[] } }
 
 const union = (a: readonly string[] = [], b: readonly string[] = []) => [...new Set([...a, ...b])]
 
@@ -440,7 +441,7 @@ const union = (a: readonly string[] = [], b: readonly string[] = []) => [...new 
  * Hydra's rules for Heads run under --yolo: deny rules are the only thing yolo honours, so every write outside the
  * project is denied path by path, and shell is denied outright unless a running Head in this project asked for it.
  */
-export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false): HeadSettings => {
+export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string): HeadSettings => {
   const shell = heads.some(head => head.shell)
   return {
     managedBy: OWNER,
@@ -448,24 +449,46 @@ export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly 
       deny: [...outsideDeny, ...PROJECT_DENY, ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile ? [SEARCH_DENY] : [])],
       additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []),
     },
+    ...(guard ? { hooks: { PreToolUse: [{ matcher: 'write|edit', hooks: [{ type: 'command' as const, command: guard, timeout: 10 }] }] } } : {}),
   }
 }
 
-/** Deny rules for every sibling of every folder on the way down to `cwd`, so nothing outside it can be written. */
-async function outsideDenyRules($: EngineInterface, cwd: string) {
-  const parts = cwd.split('/').filter(Boolean)
+const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`
+
+/**
+ * The write guard Command Code runs before every write and edit: it denies a path whose real location is outside
+ * `cwd`, which deny rules cannot express for a new folder (write_file creates missing parents).
+ */
+export const guardCommand = (pluginRoot: string, cwd: string) =>
+  `/usr/bin/env python3 -I ${shellQuote(`${pluginRoot}/bin/head-guard.py`)} ${shellQuote(cwd)}`
+
+/**
+ * Deny rules for every folder above `cwd`: each entry but the way down, and any new file directly in it.
+ * A new subfolder of an ancestor can't be named by a rule; the write guard denies those.
+ */
+export const ancestorDenyRules = (cwd: string, entriesOf: (dir: string) => readonly string[]) => {
   const rules: string[] = []
   let base = ''
-  for (const part of parts) {
-    const entries = await $.fs.list(base || '/')
-    for (const entry of entries) {
-      if (entry.name === part) continue
-      const path = `${base}/${entry.name}`.slice(1)
+  for (const part of cwd.split('/').filter(Boolean)) {
+    rules.push(`Edit(/${base}/*)`)
+    for (const name of entriesOf(base || '/')) {
+      if (name === part) continue
+      const path = `${base}/${name}`.slice(1)
       rules.push(`Edit(//${path})`, `Edit(//${path}/**)`)
     }
     base += `/${part}`
   }
   return rules
+}
+
+async function outsideDenyRules($: EngineInterface, cwd: string) {
+  const listings = new Map<string, string[]>()
+  let base = ''
+  for (const part of cwd.split('/').filter(Boolean)) {
+    listings.set(base || '/', (await $.fs.list(base || '/')).map(entry => entry.name))
+    base += `/${part}`
+  }
+  return ancestorDenyRules(cwd, dir => listings.get(dir) ?? [])
 }
 
 /** This session's running Heads plus other sessions' still in time; this session's own come from `mine` alone. */
@@ -521,7 +544,7 @@ async function writeRules($: EngineInterface, cwd: string): Promise<string | und
   const envFile = await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), [])])
   if (envFile) searchOff.set(cwd, envFile)
   else searchOff.delete(cwd)
-  const settings = { ...headSettings(heads, await outsideDenyRules($, cwd), Boolean(envFile)), hydraHeads: heads }
+  const settings = { ...headSettings(heads, await outsideDenyRules($, cwd), Boolean(envFile), guardCommand($.plugin.root, cwd)), hydraHeads: heads }
   await $.fs.write(path, JSON.stringify(settings, null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
