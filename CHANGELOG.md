@@ -12,6 +12,7 @@ Ready for people other than its author.
 - `/heads` shows a finished Head's edited files and the last lines of its report, moves with `j`/`k`, and keeps the last 20 Heads.
 - Error messages say what to do (the person's own rules file, an unwritable project, a Head that could not run).
 - Status files of other sessions are deleted after a week.
+- A Head refuses a Windows project path instead of running unlocked: Command Code's rules cannot name a drive, so writes outside the project could not be denied (PR #13). Use WSL.
 
 ## 0.6.3 — 2026-10-08
 - Heads default to `deepseek/deepseek-v4.1-flash-fast`, the high-throughput deployment of V4.1 Flash (Command Code says full weights). Same effort levels (`off`, `low`, `high`, `max`); a smoke test gave matching answers in 3 s against 5 s. Cache reads cost more ($0.02/M against $0.003/M), and Command Code has not scored it yet. Set `headModel` to `deepseek/deepseek-v4.1-flash` to go back.

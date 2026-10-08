@@ -15,7 +15,7 @@ Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin
 - **`/hydra help`** lists everything.
 
 ## Requirements
-- macOS or Linux, with `git` and `python3`
+- macOS or Linux (on Windows, use WSL), with `git` and `python3`
 - Claude Code
 - The [Command Code](https://commandcode.ai) CLI, signed in:
   ```

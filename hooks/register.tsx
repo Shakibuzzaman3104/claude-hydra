@@ -242,7 +242,7 @@ let isPreflightPassed = false
 async function preflight($: EngineInterface): Promise<Preflight> {
   if (isPreflightPassed) return { problems: [], warnings: [] }
   const works = (argv: string[]) => $.process.run(argv, { timeoutMs: 15_000 }).then(ran => ran.exitCode === 0, () => false)
-  if (!(await works(['uname', '-s']))) return { problems: ['Hydra runs on macOS and Linux only for now.'], warnings: [] }
+  if (!(await works(['uname', '-s']))) return { problems: ['Hydra runs on macOS and Linux only for now. On Windows, run Claude Code under WSL.'], warnings: [] }
   const problems: string[] = []
   if (!(await works(['/usr/bin/env', 'commandcode', '--version']))) {
     problems.push('The Command Code CLI is not installed. Run `npm i -g command-code`, then `commandcode` once in a terminal to sign in.')
@@ -533,7 +533,18 @@ async function writeRules($: EngineInterface, cwd: string): Promise<string | und
   return undefined
 }
 
+/**
+ * Command Code 1.65 anchors a path rule at `/` or the project, so no rule can name `D:/…`: on a Windows path the
+ * outside-the-project deny list cannot be written and a --yolo Head could write anywhere (verified with a live Head).
+ */
+export const windowsPathRefusal = (cwd: string) =>
+  /^[A-Za-z]:|^\\\\|\\/.test(cwd)
+    ? `${cwd} is a Windows path, and Command Code cannot deny writes to one (its rules cannot name a drive), so Hydra cannot lock a Head into it. Run Claude Code under WSL instead.`
+    : undefined
+
 async function joinProject($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, minutes: number) {
+  const unsupported = windowsPathRefusal(cwd)
+  if (unsupported) return unsupported
   const heads = projects.get(cwd) ?? new Map<string, HeadEntry>()
   const until = (await $.clock.now()) + minutes * 60_000 + UNTIL_SLACK_MS
   heads.set(id, { ...needs, key: `${await $.session.id()}/${id}`, until })
