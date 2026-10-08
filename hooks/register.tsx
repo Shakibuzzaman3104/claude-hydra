@@ -362,6 +362,8 @@ async function outsideDenyRules($: EngineInterface, cwd: string) {
   const rules: string[] = []
   let base = ''
   for (const part of parts) {
+    // Entries that do not exist yet: a new file directly in an ancestor folder (the home folder, say) must be denied too.
+    rules.push(`Edit(/${base}/*)`)
     const entries = await $.fs.list(base || '/')
     for (const entry of entries) {
       if (entry.name === part) continue
