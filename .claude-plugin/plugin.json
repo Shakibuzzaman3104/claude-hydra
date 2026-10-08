@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "Claude leads, cheaper Command Code agents (Heads) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
