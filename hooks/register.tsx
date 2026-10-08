@@ -30,7 +30,7 @@ const LEAD_LABELS: Record<string, string> = {
 export const HYDRA_POLICY = (headModel: string) => `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
-- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
+- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the files the Head edited and every call that was denied.
@@ -189,8 +189,14 @@ export const DANGEROUS_SHELL = [
   'Shell(pip install*)', 'Shell(brew *)',
 ]
 
-/** Inside the project a Head may edit anything except the repo's history and Hydra's own rules. */
-export const PROJECT_DENY = ['Edit(/.git/**)', 'Edit(/.commandcode/**)']
+/**
+ * Inside the project a Head may edit anything except the repo's history, Hydra's own rules and secret files.
+ * `.env` files are neither read nor edited; a Read rule only covers the read tool, so `cat .env` needs its own Shell rule.
+ */
+export const PROJECT_DENY = [
+  'Edit(/.git/**)', 'Edit(/.commandcode/**)',
+  'Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(*.env*)',
+]
 
 type Permissions = { allow?: string[]; deny?: string[]; additionalDirectories?: string[] }
 type HeadSettings = { managedBy?: string; permissions?: Permissions }

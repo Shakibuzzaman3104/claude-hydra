@@ -79,6 +79,13 @@ test('denies shell outright unless a running Head asked for it, and always prote
   expect(mixed.permissions?.additionalDirectories).toEqual(['/a', '/b'])
 })
 
+test('never lets a Head read or edit .env files, with or without shell', async () => {
+  for (const shell of [false, true]) {
+    const deny = headSettings([{ addDirs: [], shell }], []).permissions?.deny
+    for (const rule of ['Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(*.env*)']) expect(deny).toContain(rule)
+  }
+})
+
 test('flags any write outside the project', async () => {
   expect(outsideFiles('/repo', ['/repo/a.swift', '/repository/x', '/etc/hosts', 'relative.txt'])).toEqual(['/repository/x', '/etc/hosts'])
   const text = formatReport({
