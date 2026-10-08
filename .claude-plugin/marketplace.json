@@ -1,0 +1,12 @@
+{
+  "name": "claude-hydra",
+  "owner": {
+    "name": "Shakib"
+  },
+  "plugins": [
+    {
+      "name": "hydra",
+      "source": "./"
+    }
+  ]
+}
