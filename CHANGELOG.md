@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.0 — 2026-10-09
+- Under `effort=auto` the Lead picks any level from `low` to `max` per Head, not only `high` and above. The policy now gives a rubric by task complexity, based on measured effort curves: `low` for spelled-out mechanical edits the Lead will check, `medium` for small pattern-following changes, `high` (still the default) for real features and fixes, `xhigh` for multi-file design work, `max` for subtle bugs, concurrency, algorithms and work that can't be checked cheaply. It moves one level up for open choices or no check, one down for exact edits, and retries one level above the failed run.
+- Evidence: on DeepSeek V4-Flash in Claude Code (GameASG-Bench, 47 tasks) strict success was 15% at low, 40% at high and 38% at max, with max using 37% more reasoning tokens than high; DeepSeek reports efforts 60–80 recover most of max at under half the tokens, and the step to max makes trajectories 1.6–1.8x longer; Anthropic measures low-then-retry-failures-at-high beating high throughout on SWE-bench Pro at ~60% of the cost.
+- With a DeepSeek V4.1 Flash Head the policy tells the Lead that `medium` runs as `high` and `xhigh` as `max` (the model takes `off`, `low`, `high`, `max`).
+
 ## 0.7.5 — 2026-10-09
 - Heads default to `deepseek/deepseek-v4.1-flash`, the standard V4.1 Flash deployment, instead of the `-fast` one. Set `headModel` to `deepseek/deepseek-v4.1-flash-fast` to go back.
 

@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "0.7.5",
+  "version": "0.8.0",
   "description": "Claude leads, cheaper Command Code agents (Heads) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
@@ -16,7 +16,7 @@
     "headEffort": {
       "type": "string",
       "title": "Hydra head effort",
-      "description": "auto (the Lead picks high, xhigh or max per Head) or a level every Head runs at: off, low, medium, high, xhigh or max; changeable with /hydra effort=<level>",
+      "description": "auto (the Lead picks low to max per Head by task complexity) or a level every Head runs at: off, low, medium, high, xhigh or max; changeable with /hydra effort=<level>",
       "default": "auto",
       "options": [
         "auto",

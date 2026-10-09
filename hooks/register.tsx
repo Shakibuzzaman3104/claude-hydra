@@ -36,14 +36,25 @@ const LEAD_LABELS: Record<string, string> = {
   seven_day_fable: 'Weekly · Fable',
 }
 
-const effortRule = (effort: EffortMode) =>
+/** Spells out how the Head model rounds the levels it lacks, for models whose levels are known. */
+const headLevelsNote = (headModel: string) =>
+  /deepseek-v4\.1/i.test(headModel) ? ` ${shortModel(headModel)} takes low, high and max: medium runs as high, xhigh as max.` : ''
+
+const effortRule = (effort: EffortMode, headModel: string) =>
   effort === 'auto'
-    ? `- You pick each Head's reasoning effort with \`effort\`, never lower than high: \`high\` (the default) for a well-specified implementation; \`xhigh\` for multi-file work with some design judgement, non-trivial logic, edge-case tests or matching a mockup; \`max\` for a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, or a retry after a Head got it wrong. A model without xhigh (DeepSeek V4.1 Flash) runs it as max.`
+    ? `- You pick each Head's reasoning \`effort\`, \`low\` to \`max\`, by how hard the task is. Effort buys accuracy on coding but not linearly: \`high\` is the best value, \`max\` runs ~1.7x longer for a few points, \`low\` thinks about a quarter as much and fails most open-ended work.
+  - \`low\`: mechanical edits you spell out (rename, move, apply a given pattern or template, strings, docs, boilerplate) that your build or tests will check.
+  - \`medium\`: a small, well-specified change in one or two files that follows an existing pattern.
+  - \`high\` (the default): a feature or fix that needs some judgement, several steps or new tests.
+  - \`xhigh\`: multi-file work with design judgement, non-trivial logic, edge-case tests or matching a mockup.
+  - \`max\`: a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, or work you cannot check cheaply.
+  - One level up when the task leaves real choices open or has no check you can run; one down when you give exact edits. A retry goes one level above the run that failed (low, then high, then max).
+  - A level the Head model lacks is raised to its nearest one.${headLevelsNote(headModel)}`
     : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
 
 export const HYDRA_POLICY = (headModel: string, effort: EffortMode) => `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
-${effortRule(effort)}
+${effortRule(effort, headModel)}
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
 - A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
@@ -107,7 +118,7 @@ Then add "refreshInterval": 2 to the statusLine block of ~/.claude/settings.json
 A full script is in the repo's examples/statusline.sh. Without it, the band above the prompt and /heads show the same.`
 
 export const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
-export const HEAD_EFFORTS = ['high', 'xhigh', 'max'] as const
+export const HEAD_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export const EFFORT_MODES = ['auto', ...EFFORTS] as const
 export const DEFAULT_EFFORT = 'high'
 
@@ -120,7 +131,7 @@ export const isEffortMode = (value: unknown): value is EffortMode => typeof valu
 /** The session's effort mode; anything else stored there reads as auto. */
 export const effortModeOf = (hydra: HydraMode | null) => (isEffortMode(hydra?.effort) ? hydra.effort : 'auto')
 
-/** The person's fixed level wins, any level; under auto the Lead's pick (high, xhigh or max) does, and high when it gave none. */
+/** The person's fixed level wins, any level; under auto the Lead's pick (low to max) does, and high when it gave none. */
 export const headEffort = (mode: EffortMode, leadPick: string | undefined) => (mode !== 'auto' ? mode : isHeadEffort(leadPick) ? leadPick : DEFAULT_EFFORT)
 
 /** The model's levels from Command Code's refusal: `Unknown effort "medium". Supported: off, low, high, max.` */
@@ -1092,7 +1103,7 @@ export const register: Register = (on, options) => {
           writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
           name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
-          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head: high (default), xhigh or max. Ignored while the person has fixed a level with /hydra effort=<level>.' },
+          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head, low to max, picked by task complexity (default high). Ignored while the person has fixed a level with /hydra effort=<level>.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
@@ -1161,7 +1172,7 @@ export const register: Register = (on, options) => {
     }
 
     if (unknown) return { text: `Unknown option "${unknown}". A task needs a few words; /hydra help lists the options.` }
-    if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks high, xhigh or max per Head) or one of: ${EFFORTS.join(', ')}.` }
+    if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks low to max per Head) or one of: ${EFFORTS.join(', ')}.` }
     const next = { isOn: true, headModel: headModel ?? current.headModel, effort: effort ?? currentEffort }
     const check = await preflight($)
     if (check.problems.length > 0) return { text: preflightText(check) }
@@ -1172,7 +1183,7 @@ export const register: Register = (on, options) => {
     const model = await $.session.model()
     const switchHint = leadModel && !model.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
     const changed = current.isOn && next.effort !== currentEffort ? ' Running Heads switch at their next round.' : ''
-    const effortText = next.effort === 'auto' ? 'effort auto (Lead picks high, xhigh or max)' : `effort ${next.effort}`
+    const effortText = next.effort === 'auto' ? 'effort auto (Lead picks low to max)' : `effort ${next.effort}`
     const warnings = check.warnings.map(warning => `\n⚠ ${warning}`).join('')
     const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} · ${effortText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}`
 
@@ -1203,7 +1214,7 @@ export const register: Register = (on, options) => {
     const hydra = await read($, mode)
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
-    if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be high, xhigh or max; Heads never run lower than high.' }
+    if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be low, medium, high, xhigh or max.' }
     const cwd = typeof e.cwd === 'string' && e.cwd ? e.cwd : await $.session.root()
     const writable = await resolveWriteDirs($, cwd, strings(e.writeDirs))
     if ('refusal' in writable) return { deny: writable.refusal }
