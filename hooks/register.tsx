@@ -42,13 +42,11 @@ const headLevelsNote = (headModel: string) =>
 
 const effortRule = (effort: EffortMode, headModel: string) =>
   effort === 'auto'
-    ? `- You pick each Head's reasoning \`effort\`, \`low\` to \`max\`, by how hard the task is. Effort buys accuracy on coding but not linearly: \`high\` is the best value, \`max\` runs ~1.7x longer for a few points, \`low\` thinks about a quarter as much and fails most open-ended work.
-  - \`low\`: mechanical edits you spell out (rename, move, apply a given pattern or template, strings, docs, boilerplate) that your build or tests will check.
-  - \`medium\`: a small, well-specified change in one or two files that follows an existing pattern.
-  - \`high\` (the default): a feature or fix that needs some judgement, several steps or new tests.
-  - \`xhigh\`: multi-file work with design judgement, non-trivial logic, edge-case tests or matching a mockup.
-  - \`max\`: a subtle bug, concurrency or state, an algorithm, a fragile cross-file change, or work you cannot check cheaply.
-  - One level up when the task leaves real choices open or has no check you can run; one down when you give exact edits. A retry goes one level above the run that failed (low, then high, then max).
+    ? `- You pick each Head's reasoning \`effort\`. Measured over 126 Hydra runs (DeepSeek V4.1 Flash, 15 tasks from a rename to a spreadsheet engine): \`low\` passed 95% for 0.7x the cost of \`high\` (95%) and 0.3x \`max\` (98%); \`low\` with a retry one level up on failure passed 100% for less than \`high\` alone. Higher effort mostly buys longer runs, not fewer failures, so:
+  - \`low\` (the default) for every Head whose result you will check by running something (tests, a build, the app) or, for mechanical edits, by reading the diff. That includes long, multi-file and algorithmic work, as long as the task text is a full spec.
+  - When the check fails, send the Head back one level up with the failure in the task: \`low\`, then \`high\`, then \`max\`. If \`max\` fails too, rewrite the brief or do it yourself.
+  - \`max\` first only when you cannot check the result cheaply (nothing to run or test) and the work is subtle: state, cycles, concurrency, an algorithm, or a bug known only by its symptoms.
+  - Never raise effort to make up for a vague brief: write the spec first.
   - A level the Head model lacks is raised to its nearest one.${headLevelsNote(headModel)}`
     : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
 
@@ -120,7 +118,7 @@ A full script is in the repo's examples/statusline.sh. Without it, the band abov
 export const EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 export const HEAD_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 export const EFFORT_MODES = ['auto', ...EFFORTS] as const
-export const DEFAULT_EFFORT = 'high'
+export const DEFAULT_EFFORT = 'low'
 
 export type EffortMode = (typeof EFFORT_MODES)[number]
 
@@ -131,7 +129,7 @@ export const isEffortMode = (value: unknown): value is EffortMode => typeof valu
 /** The session's effort mode; anything else stored there reads as auto. */
 export const effortModeOf = (hydra: HydraMode | null) => (isEffortMode(hydra?.effort) ? hydra.effort : 'auto')
 
-/** The person's fixed level wins, any level; under auto the Lead's pick (low to max) does, and high when it gave none. */
+/** The person's fixed level wins, any level; under auto the Lead's pick (low to max) does, and low when it gave none. */
 export const headEffort = (mode: EffortMode, leadPick: string | undefined) => (mode !== 'auto' ? mode : isHeadEffort(leadPick) ? leadPick : DEFAULT_EFFORT)
 
 /** The model's levels from Command Code's refusal: `Unknown effort "medium". Supported: off, low, high, max.` */
@@ -1103,7 +1101,7 @@ export const register: Register = (on, options) => {
           writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
           name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
-          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head, low to max, picked by task complexity (default high). Ignored while the person has fixed a level with /hydra effort=<level>.' },
+          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head (default low). Use low when you will check the result, one level up on each retry after a failed check, max first only for subtle work you cannot check. Ignored while the person has fixed a level with /hydra effort=<level>.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
