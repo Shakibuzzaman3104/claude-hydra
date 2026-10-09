@@ -1,0 +1,20 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hydra",
+  "version": "0.8.1",
+  "description": "Use Codex as the lead and guarded Command Code Heads for implementation tasks.",
+  "author": { "name": "Shakib" },
+  "repository": "https://github.com/Shakibuzzaman3104/claude-hydra",
+  "extensions": {
+    "com.openai": {
+      "hooks": "./codex/hooks.json",
+      "interface": {
+        "displayName": "Hydra",
+        "shortDescription": "Delegate implementation to guarded Command Code Heads",
+        "developerName": "Shakib",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"]
+      }
+    }
+  }
+}

@@ -1,5 +1,10 @@
 # Developing Hydra
 
+## Codex CLI integration
+The repo root is also a Codex plugin (`plugin.json`, `skills/hydra/SKILL.md`). Its local marketplace is `.agents/plugins/marketplace.json`. Install from a checkout with `codex plugin marketplace add /absolute/path/to/claude-hydra` and `codex plugin add hydra@hydra-local`, then start a new Codex session. The Codex skill calls `bin/hydra-codex.py` to run Heads. `codex/hooks.json` is intentionally empty so Codex does not interpret Claude Code's `hooks/hooks.json` as Codex lifecycle hooks.
+
+The Python runner writes the same `.commandcode/settings.local.json` shape as the Claude plugin, uses `bin/head-guard.py`, and reports through `bin/cc-usage.py`. It runs Heads in the foreground; Codex can issue independent runner calls in parallel. The runner has no live pane, status line or slash commands. Its temporary rules are protected by a per-project file lock and removed in `finally`. To test without model access, run `python3 -m unittest bin/test_hydra_codex.py -v`; to test the package, use an isolated `CODEX_HOME` and install through `codex plugin` as above. A live smoke test needs Command Code API access and should use the throwaway project procedure below.
+
 ## Running a working copy
 1. Clone the repo and copy it where Claude Code loads it, leaving out the generated types:
    ```

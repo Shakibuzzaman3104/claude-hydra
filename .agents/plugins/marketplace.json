@@ -1,0 +1,12 @@
+{
+  "name": "hydra-local",
+  "interface": { "displayName": "Hydra" },
+  "plugins": [
+    {
+      "name": "hydra",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
+      "category": "Productivity"
+    }
+  ]
+}

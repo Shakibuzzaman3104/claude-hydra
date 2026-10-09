@@ -1,6 +1,6 @@
 # Hydra
 
-Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin. With it on, Claude plans the work, hands self-contained implementation tasks to **Heads** (Command Code agents on a cheaper model), then reviews their diffs and runs the build itself.
+Claude or Codex leads, cheaper coding agents do the typing. Hydra hands self-contained implementation tasks to **Heads** (Command Code agents on a cheaper model), then the lead reviews their diffs and runs the build itself. The Claude Code plugin has live views and slash commands; the Codex CLI integration uses a skill and a local Head runner.
 
 ```
 🐉 Hydra 2 running · 1 done · /heads for detail
@@ -16,19 +16,31 @@ Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin
 
 ## Requirements
 - macOS or Linux (on Windows, use WSL), with `git` and `python3`
-- Claude Code
+- Claude Code or Codex CLI
 - The [Command Code](https://commandcode.ai) CLI, signed in:
   ```
   npm i -g command-code
   commandcode        # once, to sign in
   ```
 
-## Install
+## Install for Claude Code
 In Claude Code:
 ```
 /plugin install hydra --marketplace Shakibuzzaman3104/claude-hydra
 ```
 Answer `y` to add the marketplace and pick the user scope. Then run `/hydra`. The first time, it checks your setup and asks before anything is sent to the Head model.
+
+## Install for Codex CLI
+From a checkout of this repository:
+```
+codex plugin marketplace add /absolute/path/to/claude-hydra
+codex plugin add hydra@hydra-local
+```
+Start a new Codex session, then ask Codex to **use Hydra** for a coding task (or invoke the `hydra` skill). Codex writes a Head brief, calls the bundled `bin/hydra-codex.py` runner, reviews the result, and runs the project's checks. A direct runner call also works:
+```
+python3 /absolute/path/to/claude-hydra/bin/hydra-codex.py run --cwd "$PWD" --name example 'Implement the specified change in example.py.'
+```
+The Codex runner accepts `--model`, `--effort`, `--max-turns`, `--max-minutes`, `--add-dir`, `--write-dir`, and `--shell`. Run `python3 /absolute/path/to/claude-hydra/bin/hydra-codex.py usage` for Command Code spend. It requires `python3` and the signed-in Command Code CLI. The first Head call sends its task and files it reads to the selected Command Code model. Codex CLI does not have Hydra's Claude-specific `/heads`, `/hydra-usage`, status line, or `/hydra` command.
 
 ## What a Head can and can't do
 A Head runs Command Code unattended (`--yolo`; its headless mode can't edit otherwise), locked down by deny rules that Hydra writes before the Head starts and removes after it ends:
