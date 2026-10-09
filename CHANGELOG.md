@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.7.5 — 2026-10-09
+- Heads default to `deepseek/deepseek-v4.1-flash`, the standard V4.1 Flash deployment, instead of the `-fast` one. Set `headModel` to `deepseek/deepseek-v4.1-flash-fast` to go back.
+
 ## 0.7.4 — 2026-10-08
 - Reports list a write the write guard blocked under `denied`, not `edited` (Command Code words it "Blocked by hook policy").
 - When the last Head leaves, the empty `.commandcode` folder Hydra made goes too; one holding the person's own files stays.
