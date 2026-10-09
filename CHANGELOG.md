@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 — 2026-10-09
+- `effort=auto` now follows a rule measured on real Heads instead of a guess. A new benchmark (`bench/effort/`: 15 tasks from a rename to a spreadsheet engine, hidden tests, reference solutions) ran 126 Heads on DeepSeek V4.1 Flash at `low`, `high` and `max`, three times each. `low` passed 95.2% at $0.0087 and 72 s a task; `high` 95.2% at $0.0118 and 94 s; `max` 97.6% at $0.0294 and 260 s. Starting at `low` and retrying one level up after a failed check passed 100% at $0.0103 and 86 s: as reliable as anything, for less than `high` alone.
+- The rule the Lead gets: `low` (now also the default when it gives none) for every Head whose result it will check by running something, or by reading the diff for mechanical edits; one level up on each retry, with the failure in the task (`low`, `high`, `max`), then rewrite the brief or do it itself; `max` first only for subtle work it cannot check cheaply; never raise effort to make up for a vague brief. The Lead may pass any level from `low` to `max`.
+- Checked the rule itself: five fresh Leads (three Opus, two Sonnet) given only the rule picked the expected level in all 24 situations of `bench/effort/select/` (first Heads with and without a check, retries, a migration, a hotfix).
+- With a DeepSeek V4.1 Flash Head the rule notes that `medium` runs as `high` and `xhigh` as `max` (the model takes `off`, `low`, `high`, `max`), so those levels could not be measured separately.
+
 ## 0.7.5 — 2026-10-09
 - Heads default to `deepseek/deepseek-v4.1-flash`, the standard V4.1 Flash deployment, instead of the `-fast` one. Set `headModel` to `deepseek/deepseek-v4.1-flash-fast` to go back.
 

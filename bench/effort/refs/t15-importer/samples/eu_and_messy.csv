@@ -1,0 +1,5 @@
+id,name,email,balance
+1,Ann,ann@x.io,"1,234.50"
+2,Bob,bob@x.io, 7 
+3,Cy,cy@x.io,
+4,Di,not-a-number,abc

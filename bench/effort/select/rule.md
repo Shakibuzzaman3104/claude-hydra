@@ -1,0 +1,6 @@
+- You pick each Head's reasoning `effort`. Measured over 126 Hydra runs (DeepSeek V4.1 Flash, 15 tasks from a rename to a spreadsheet engine): `low` passed 95% for 0.7x the cost of `high` (95%) and 0.3x `max` (98%); `low` with a retry one level up on failure passed 100% for less than `high` alone. Higher effort mostly buys longer runs, not fewer failures, so:
+  - `low` (the default) for every Head whose result you will check by running something (tests, a build, the app) or, for mechanical edits, by reading the diff. That includes long, multi-file and algorithmic work, as long as the task text is a full spec.
+  - When the check fails, send the Head back one level up with the failure in the task: `low`, then `high`, then `max`. If `max` fails too, rewrite the brief or do it yourself.
+  - `max` first only when you cannot check the result cheaply (nothing to run or test) and the work is subtle: state, cycles, concurrency, an algorithm, or a bug known only by its symptoms.
+  - Never raise effort to make up for a vague brief: write the spec first.
+  - A level the Head model lacks is raised to its nearest one. deepseek-v4.1-flash takes low, high and max: medium runs as high, xhigh as max.
