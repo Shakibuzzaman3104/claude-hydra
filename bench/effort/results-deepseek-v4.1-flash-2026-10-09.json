@@ -1,0 +1,2345 @@
+[
+ {
+  "run": "t01-rename-high-r1",
+  "task": "t01-rename",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00366,
+  "out_tokens": 2331,
+  "turns": 6,
+  "secs": 26,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t01-rename-high-r2",
+  "task": "t01-rename",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00296,
+  "out_tokens": 2059,
+  "turns": 5,
+  "secs": 17,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t01-rename-high-r3",
+  "task": "t01-rename",
+  "effort": "high",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t01-rename-low-r1",
+  "task": "t01-rename",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00336,
+  "out_tokens": 1749,
+  "turns": 4,
+  "secs": 18,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t01-rename-low-r2",
+  "task": "t01-rename",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.003,
+  "out_tokens": 2136,
+  "turns": 5,
+  "secs": 19,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t01-rename-low-r3",
+  "task": "t01-rename",
+  "effort": "low",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t01-rename-max-r1",
+  "task": "t01-rename",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00672,
+  "out_tokens": 6276,
+  "turns": 8,
+  "secs": 55,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t01-rename-max-r2",
+  "task": "t01-rename",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00454,
+  "out_tokens": 4050,
+  "turns": 9,
+  "secs": 35,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t01-rename-max-r3",
+  "task": "t01-rename",
+  "effort": "max",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t02-field-high-r1",
+  "task": "t02-field",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00223,
+  "out_tokens": 903,
+  "turns": 3,
+  "secs": 12,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t02-field-high-r2",
+  "task": "t02-field",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00252,
+  "out_tokens": 1564,
+  "turns": 4,
+  "secs": 20,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t02-field-high-r3",
+  "task": "t02-field",
+  "effort": "high",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t02-field-low-r1",
+  "task": "t02-field",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00242,
+  "out_tokens": 1008,
+  "turns": 5,
+  "secs": 20,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t02-field-low-r2",
+  "task": "t02-field",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00228,
+  "out_tokens": 1187,
+  "turns": 4,
+  "secs": 13,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t02-field-low-r3",
+  "task": "t02-field",
+  "effort": "low",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t02-field-max-r1",
+  "task": "t02-field",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00321,
+  "out_tokens": 2042,
+  "turns": 7,
+  "secs": 29,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t02-field-max-r2",
+  "task": "t02-field",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00408,
+  "out_tokens": 3501,
+  "turns": 9,
+  "secs": 32,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t02-field-max-r3",
+  "task": "t02-field",
+  "effort": "max",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t03-subcommand-high-r1",
+  "task": "t03-subcommand",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00274,
+  "out_tokens": 1302,
+  "turns": 5,
+  "secs": 22,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t03-subcommand-high-r2",
+  "task": "t03-subcommand",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00284,
+  "out_tokens": 1577,
+  "turns": 6,
+  "secs": 19,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t03-subcommand-high-r3",
+  "task": "t03-subcommand",
+  "effort": "high",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t03-subcommand-low-r1",
+  "task": "t03-subcommand",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00264,
+  "out_tokens": 1288,
+  "turns": 4,
+  "secs": 18,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t03-subcommand-low-r2",
+  "task": "t03-subcommand",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00273,
+  "out_tokens": 1383,
+  "turns": 6,
+  "secs": 19,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t03-subcommand-low-r3",
+  "task": "t03-subcommand",
+  "effort": "low",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t03-subcommand-max-r1",
+  "task": "t03-subcommand",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00346,
+  "out_tokens": 2397,
+  "turns": 5,
+  "secs": 26,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t03-subcommand-max-r2",
+  "task": "t03-subcommand",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00371,
+  "out_tokens": 3147,
+  "turns": 5,
+  "secs": 23,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t03-subcommand-max-r3",
+  "task": "t03-subcommand",
+  "effort": "max",
+  "rep": 3,
+  "state": "not-started"
+ },
+ {
+  "run": "t04-duration-high-r1",
+  "task": "t04-duration",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00436,
+  "out_tokens": 3850,
+  "turns": 4,
+  "secs": 34,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-high-r2",
+  "task": "t04-duration",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00384,
+  "out_tokens": 3711,
+  "turns": 5,
+  "secs": 26,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-high-r3",
+  "task": "t04-duration",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00552,
+  "out_tokens": 6530,
+  "turns": 4,
+  "secs": 44,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-low-r1",
+  "task": "t04-duration",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00412,
+  "out_tokens": 3508,
+  "turns": 4,
+  "secs": 31,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-low-r2",
+  "task": "t04-duration",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00341,
+  "out_tokens": 2954,
+  "turns": 5,
+  "secs": 24,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-low-r3",
+  "task": "t04-duration",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00357,
+  "out_tokens": 3221,
+  "turns": 5,
+  "secs": 25,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-max-r1",
+  "task": "t04-duration",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00852,
+  "out_tokens": 9084,
+  "turns": 5,
+  "secs": 72,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-max-r2",
+  "task": "t04-duration",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00947,
+  "out_tokens": 12952,
+  "turns": 5,
+  "secs": 65,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t04-duration-max-r3",
+  "task": "t04-duration",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.0093,
+  "out_tokens": 12700,
+  "turns": 5,
+  "secs": 63,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-high-r1",
+  "task": "t05-lru",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00463,
+  "out_tokens": 3999,
+  "turns": 5,
+  "secs": 41,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-high-r2",
+  "task": "t05-lru",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00434,
+  "out_tokens": 4124,
+  "turns": 7,
+  "secs": 31,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-high-r3",
+  "task": "t05-lru",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00446,
+  "out_tokens": 4699,
+  "turns": 4,
+  "secs": 27,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-low-r1",
+  "task": "t05-lru",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00421,
+  "out_tokens": 3427,
+  "turns": 5,
+  "secs": 33,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-low-r2",
+  "task": "t05-lru",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00367,
+  "out_tokens": 3253,
+  "turns": 5,
+  "secs": 24,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-low-r3",
+  "task": "t05-lru",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00393,
+  "out_tokens": 3729,
+  "turns": 5,
+  "secs": 26,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-max-r1",
+  "task": "t05-lru",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.02567,
+  "out_tokens": 29378,
+  "turns": 6,
+  "secs": 297,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-max-r2",
+  "task": "t05-lru",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.01265,
+  "out_tokens": 18104,
+  "turns": 5,
+  "secs": 90,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t05-lru-max-r3",
+  "task": "t05-lru",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01574,
+  "out_tokens": 23041,
+  "turns": 5,
+  "secs": 115,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-high-r1",
+  "task": "t06-ini",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00967,
+  "out_tokens": 11094,
+  "turns": 5,
+  "secs": 91,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-high-r2",
+  "task": "t06-ini",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00811,
+  "out_tokens": 10408,
+  "turns": 6,
+  "secs": 57,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-high-r3",
+  "task": "t06-ini",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01421,
+  "out_tokens": 14798,
+  "turns": 8,
+  "secs": 82,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-low-r1",
+  "task": "t06-ini",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00805,
+  "out_tokens": 8917,
+  "turns": 5,
+  "secs": 74,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-low-r2",
+  "task": "t06-ini",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.0066,
+  "out_tokens": 8049,
+  "turns": 5,
+  "secs": 46,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-low-r3",
+  "task": "t06-ini",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00803,
+  "out_tokens": 10246,
+  "turns": 6,
+  "secs": 65,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-max-r1",
+  "task": "t06-ini",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.03611,
+  "out_tokens": 45921,
+  "turns": 6,
+  "secs": 336,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-max-r2",
+  "task": "t06-ini",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.04983,
+  "out_tokens": 78478,
+  "turns": 8,
+  "secs": 564,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t06-ini-max-r3",
+  "task": "t06-ini",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.03618,
+  "out_tokens": 51103,
+  "turns": 8,
+  "secs": 248,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-high-r1",
+  "task": "t07-pagination",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.01334,
+  "out_tokens": 15380,
+  "turns": 9,
+  "secs": 118,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-high-r2",
+  "task": "t07-pagination",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00644,
+  "out_tokens": 7084,
+  "turns": 9,
+  "secs": 47,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-high-r3",
+  "task": "t07-pagination",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00724,
+  "out_tokens": 7919,
+  "turns": 12,
+  "secs": 57,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-low-r1",
+  "task": "t07-pagination",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00785,
+  "out_tokens": 8158,
+  "turns": 8,
+  "secs": 71,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-low-r2",
+  "task": "t07-pagination",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00553,
+  "out_tokens": 5686,
+  "turns": 9,
+  "secs": 41,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-low-r3",
+  "task": "t07-pagination",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00461,
+  "out_tokens": 4320,
+  "turns": 8,
+  "secs": 33,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-max-r1",
+  "task": "t07-pagination",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.02382,
+  "out_tokens": 28535,
+  "turns": 10,
+  "secs": 234,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-max-r2",
+  "task": "t07-pagination",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.03327,
+  "out_tokens": 44354,
+  "turns": 11,
+  "secs": 218,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t07-pagination-max-r3",
+  "task": "t07-pagination",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01563,
+  "out_tokens": 21589,
+  "turns": 9,
+  "secs": 111,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-high-r1",
+  "task": "t08-refactor",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00843,
+  "out_tokens": 8190,
+  "turns": 12,
+  "secs": 77,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-high-r2",
+  "task": "t08-refactor",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00934,
+  "out_tokens": 10988,
+  "turns": 14,
+  "secs": 107,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-high-r3",
+  "task": "t08-refactor",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00563,
+  "out_tokens": 5663,
+  "turns": 9,
+  "secs": 40,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-low-r1",
+  "task": "t08-refactor",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00662,
+  "out_tokens": 5965,
+  "turns": 11,
+  "secs": 59,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-low-r2",
+  "task": "t08-refactor",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.0061,
+  "out_tokens": 6346,
+  "turns": 11,
+  "secs": 66,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-low-r3",
+  "task": "t08-refactor",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00628,
+  "out_tokens": 6298,
+  "turns": 12,
+  "secs": 49,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-max-r1",
+  "task": "t08-refactor",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.01337,
+  "out_tokens": 15686,
+  "turns": 6,
+  "secs": 113,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-max-r2",
+  "task": "t08-refactor",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.02159,
+  "out_tokens": 26167,
+  "turns": 9,
+  "secs": 126,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t08-refactor-max-r3",
+  "task": "t08-refactor",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01239,
+  "out_tokens": 17077,
+  "turns": 7,
+  "secs": 83,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-high-r1",
+  "task": "t09-ratelimit",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00608,
+  "out_tokens": 6101,
+  "turns": 4,
+  "secs": 50,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-high-r2",
+  "task": "t09-ratelimit",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00727,
+  "out_tokens": 9177,
+  "turns": 5,
+  "secs": 51,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-high-r3",
+  "task": "t09-ratelimit",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00656,
+  "out_tokens": 7564,
+  "turns": 6,
+  "secs": 44,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-low-r1",
+  "task": "t09-ratelimit",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00497,
+  "out_tokens": 4841,
+  "turns": 3,
+  "secs": 38,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-low-r2",
+  "task": "t09-ratelimit",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00429,
+  "out_tokens": 4313,
+  "turns": 5,
+  "secs": 34,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-low-r3",
+  "task": "t09-ratelimit",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00438,
+  "out_tokens": 4443,
+  "turns": 5,
+  "secs": 29,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-max-r1",
+  "task": "t09-ratelimit",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.02325,
+  "out_tokens": 25950,
+  "turns": 6,
+  "secs": 207,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-max-r2",
+  "task": "t09-ratelimit",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.01333,
+  "out_tokens": 19230,
+  "turns": 5,
+  "secs": 98,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t09-ratelimit-max-r3",
+  "task": "t09-ratelimit",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01014,
+  "out_tokens": 14063,
+  "turns": 4,
+  "secs": 70,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 6,
+  "total": 6,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-high-r1",
+  "task": "t10-intervals",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.01454,
+  "out_tokens": 17545,
+  "turns": 5,
+  "secs": 124,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-high-r2",
+  "task": "t10-intervals",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.01173,
+  "out_tokens": 16238,
+  "turns": 6,
+  "secs": 79,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-high-r3",
+  "task": "t10-intervals",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00974,
+  "out_tokens": 13221,
+  "turns": 4,
+  "secs": 65,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-low-r1",
+  "task": "t10-intervals",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00619,
+  "out_tokens": 5991,
+  "turns": 5,
+  "secs": 46,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-low-r2",
+  "task": "t10-intervals",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00722,
+  "out_tokens": 8323,
+  "turns": 9,
+  "secs": 56,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-low-r3",
+  "task": "t10-intervals",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00642,
+  "out_tokens": 7521,
+  "turns": 6,
+  "secs": 46,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-max-r1",
+  "task": "t10-intervals",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.03675,
+  "out_tokens": 45988,
+  "turns": 7,
+  "secs": 622,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-max-r2",
+  "task": "t10-intervals",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.03135,
+  "out_tokens": 42506,
+  "turns": 9,
+  "secs": 401,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t10-intervals-max-r3",
+  "task": "t10-intervals",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.03275,
+  "out_tokens": 38630,
+  "turns": 7,
+  "secs": 186,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 4,
+  "total": 4,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-high-r1",
+  "task": "t11-expr",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.01386,
+  "out_tokens": 16298,
+  "turns": 6,
+  "secs": 114,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-high-r2",
+  "task": "t11-expr",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.01416,
+  "out_tokens": 18734,
+  "turns": 11,
+  "secs": 100,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-high-r3",
+  "task": "t11-expr",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01587,
+  "out_tokens": 21713,
+  "turns": 8,
+  "secs": 104,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-low-r1",
+  "task": "t11-expr",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.01077,
+  "out_tokens": 11336,
+  "turns": 9,
+  "secs": 97,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-low-r2",
+  "task": "t11-expr",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.0103,
+  "out_tokens": 11872,
+  "turns": 10,
+  "secs": 71,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-low-r3",
+  "task": "t11-expr",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.0086,
+  "out_tokens": 11052,
+  "turns": 6,
+  "secs": 58,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": false,
+  "passed": 1,
+  "total": 2,
+  "fails": [
+   "test_values"
+  ]
+ },
+ {
+  "run": "t11-expr-max-r1",
+  "task": "t11-expr",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.04123,
+  "out_tokens": 33008,
+  "turns": 15,
+  "secs": 241,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-max-r2",
+  "task": "t11-expr",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.03341,
+  "out_tokens": 45786,
+  "turns": 8,
+  "secs": 208,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t11-expr-max-r3",
+  "task": "t11-expr",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.03133,
+  "out_tokens": 48087,
+  "turns": 6,
+  "secs": 216,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": false,
+  "passed": 1,
+  "total": 2,
+  "fails": [
+   "test_values"
+  ]
+ },
+ {
+  "run": "t12-diff-high-r1",
+  "task": "t12-diff",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.02001,
+  "out_tokens": 19486,
+  "turns": 7,
+  "secs": 144,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-high-r2",
+  "task": "t12-diff",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00578,
+  "out_tokens": 6582,
+  "turns": 4,
+  "secs": 32,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-high-r3",
+  "task": "t12-diff",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00927,
+  "out_tokens": 12219,
+  "turns": 6,
+  "secs": 57,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-low-r1",
+  "task": "t12-diff",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00737,
+  "out_tokens": 7570,
+  "turns": 5,
+  "secs": 57,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-low-r2",
+  "task": "t12-diff",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00589,
+  "out_tokens": 6596,
+  "turns": 6,
+  "secs": 37,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-low-r3",
+  "task": "t12-diff",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.0101,
+  "out_tokens": 13328,
+  "turns": 7,
+  "secs": 65,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-max-r1",
+  "task": "t12-diff",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.05461,
+  "out_tokens": 66070,
+  "turns": 8,
+  "secs": 477,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-max-r2",
+  "task": "t12-diff",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.0324,
+  "out_tokens": 50449,
+  "turns": 5,
+  "secs": 341,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t12-diff-max-r3",
+  "task": "t12-diff",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.04035,
+  "out_tokens": 57000,
+  "turns": 8,
+  "secs": 248,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 3,
+  "total": 3,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-high-r1",
+  "task": "t13-ledger",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00804,
+  "out_tokens": 7946,
+  "turns": 10,
+  "secs": 75,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-high-r2",
+  "task": "t13-ledger",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.0065,
+  "out_tokens": 7241,
+  "turns": 9,
+  "secs": 49,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-high-r3",
+  "task": "t13-ledger",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00699,
+  "out_tokens": 8077,
+  "turns": 8,
+  "secs": 51,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-low-r1",
+  "task": "t13-ledger",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00678,
+  "out_tokens": 6305,
+  "turns": 8,
+  "secs": 59,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-low-r2",
+  "task": "t13-ledger",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00522,
+  "out_tokens": 5207,
+  "turns": 8,
+  "secs": 37,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-low-r3",
+  "task": "t13-ledger",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.00547,
+  "out_tokens": 5642,
+  "turns": 8,
+  "secs": 40,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-max-r1",
+  "task": "t13-ledger",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.01765,
+  "out_tokens": 21052,
+  "turns": 6,
+  "secs": 155,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-max-r2",
+  "task": "t13-ledger",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.01032,
+  "out_tokens": 13939,
+  "turns": 6,
+  "secs": 69,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t13-ledger-max-r3",
+  "task": "t13-ledger",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.01578,
+  "out_tokens": 22646,
+  "turns": 7,
+  "secs": 112,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-high-r1",
+  "task": "t14-sheet",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.04829,
+  "out_tokens": 60797,
+  "turns": 6,
+  "secs": 437,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-high-r2",
+  "task": "t14-sheet",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.05338,
+  "out_tokens": 65421,
+  "turns": 12,
+  "secs": 503,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-high-r3",
+  "task": "t14-sheet",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.05575,
+  "out_tokens": 73300,
+  "turns": 9,
+  "secs": 437,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": false,
+  "passed": 4,
+  "total": 5,
+  "fails": [
+   "test_formulas"
+  ]
+ },
+ {
+  "run": "t14-sheet-low-r1",
+  "task": "t14-sheet",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.05268,
+  "out_tokens": 62636,
+  "turns": 17,
+  "secs": 509,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-low-r2",
+  "task": "t14-sheet",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.0382,
+  "out_tokens": 45137,
+  "turns": 15,
+  "secs": 384,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": false,
+  "passed": 2,
+  "total": 5,
+  "fails": [
+   "test_cycles",
+   "test_propagation_and_recalc",
+   "test_undo"
+  ]
+ },
+ {
+  "run": "t14-sheet-low-r3",
+  "task": "t14-sheet",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.04612,
+  "out_tokens": 48361,
+  "turns": 8,
+  "secs": 345,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-max-r1",
+  "task": "t14-sheet",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.11854,
+  "out_tokens": 124334,
+  "turns": 11,
+  "secs": 951,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-max-r2",
+  "task": "t14-sheet",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.11502,
+  "out_tokens": 136857,
+  "turns": 8,
+  "secs": 841,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t14-sheet-max-r3",
+  "task": "t14-sheet",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.0862,
+  "out_tokens": 104640,
+  "turns": 9,
+  "secs": 611,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 5,
+  "total": 5,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-high-r1",
+  "task": "t15-importer",
+  "effort": "high",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.0178,
+  "out_tokens": 21120,
+  "turns": 8,
+  "secs": 172,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-high-r2",
+  "task": "t15-importer",
+  "effort": "high",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.01524,
+  "out_tokens": 17520,
+  "turns": 10,
+  "secs": 138,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": false,
+  "passed": 1,
+  "total": 2,
+  "fails": [
+   "test_variants"
+  ]
+ },
+ {
+  "run": "t15-importer-high-r3",
+  "task": "t15-importer",
+  "effort": "high",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.02083,
+  "out_tokens": 24685,
+  "turns": 11,
+  "secs": 137,
+  "effort_seen": [
+   "high"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-low-r1",
+  "task": "t15-importer",
+  "effort": "low",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.00963,
+  "out_tokens": 10344,
+  "turns": 8,
+  "secs": 95,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-low-r2",
+  "task": "t15-importer",
+  "effort": "low",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.00731,
+  "out_tokens": 7450,
+  "turns": 6,
+  "secs": 69,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-low-r3",
+  "task": "t15-importer",
+  "effort": "low",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.0083,
+  "out_tokens": 9782,
+  "turns": 9,
+  "secs": 67,
+  "effort_seen": [
+   "low"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-max-r1",
+  "task": "t15-importer",
+  "effort": "max",
+  "rep": 1,
+  "state": "settled",
+  "cost": 0.03242,
+  "out_tokens": 41253,
+  "turns": 6,
+  "secs": 308,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-max-r2",
+  "task": "t15-importer",
+  "effort": "max",
+  "rep": 2,
+  "state": "settled",
+  "cost": 0.06075,
+  "out_tokens": 78714,
+  "turns": 9,
+  "secs": 1283,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ },
+ {
+  "run": "t15-importer-max-r3",
+  "task": "t15-importer",
+  "effort": "max",
+  "rep": 3,
+  "state": "settled",
+  "cost": 0.04743,
+  "out_tokens": 68896,
+  "turns": 11,
+  "secs": 357,
+  "effort_seen": [
+   "max"
+  ],
+  "ok": true,
+  "passed": 2,
+  "total": 2,
+  "fails": []
+ }
+]

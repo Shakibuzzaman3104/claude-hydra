@@ -174,10 +174,12 @@ test('reads the levels a model supports from its refusal and rounds a missing on
   expect(isEffort('ultra')).toBe(false)
 })
 
-test('lets the Lead pick only high, xhigh or max under auto, and lets the person fix any level', async () => {
-  expect(headEffort('auto', undefined)).toBe('high')
+test('lets the Lead pick low to max under auto, and lets the person fix any level', async () => {
+  expect(headEffort('auto', undefined)).toBe('low')
   expect(headEffort('auto', 'max')).toBe('max')
-  expect(headEffort('auto', 'low')).toBe('high')
+  expect(headEffort('auto', 'low')).toBe('low')
+  expect(headEffort('auto', 'medium')).toBe('medium')
+  expect(headEffort('auto', 'off')).toBe('low')
   expect(headEffort('high', 'max')).toBe('high')
   expect(headEffort('max', undefined)).toBe('max')
   expect(headEffort('low', 'max')).toBe('low')
@@ -186,21 +188,23 @@ test('lets the Lead pick only high, xhigh or max under auto, and lets the person
   expect(effortModeOf({ isOn: true, headModel: 'm', effort: 'ultra' })).toBe('auto')
   expect(effortModeOf(null)).toBe('auto')
   expect(headEffort('auto', 'xhigh')).toBe('xhigh')
-  expect(isHeadEffort('xhigh')).toBe(true)
-  for (const level of ['off', 'low', 'medium']) {
-    expect(isHeadEffort(level)).toBe(false)
-    expect(isEffortMode(level)).toBe(true)
-  }
+  for (const level of ['low', 'medium', 'high', 'xhigh', 'max']) expect(isHeadEffort(level)).toBe(true)
+  expect(isHeadEffort('off')).toBe(false)
+  expect(isEffortMode('off')).toBe(true)
   expect(isEffortMode('ultra')).toBe(false)
   expect(isEffortMode('auto')).toBe(true)
   expect(isHeadEffort('auto')).toBe(false)
 })
 
-test('tells the Lead who picks the effort', async () => {
+test('tells the Lead who picks the effort and how to pick it', async () => {
   const auto = HYDRA_POLICY('deepseek/x', 'auto')
-  expect(auto).toContain('You pick each Head\'s reasoning effort with `effort`, never lower than high')
-  for (const level of ['`high`', '`xhigh`', '`max`']) expect(auto).toContain(level)
+  expect(auto).toContain("`low` (the default) for every Head whose result you will check")
+  for (const level of ['`low`', '`high`', '`max`']) expect(auto).toContain(level)
+  expect(auto).toContain('send the Head back one level up with the failure in the task')
+  expect(auto).toContain('`max` first only when you cannot check the result cheaply')
   expect(auto).not.toContain('\\`')
+  expect(auto).not.toContain('medium runs as high')
+  expect(HYDRA_POLICY('deepseek/deepseek-v4.1-flash', 'auto')).toContain('deepseek-v4.1-flash takes low, high and max: medium runs as high, xhigh as max.')
   expect(HYDRA_POLICY('deepseek/x', 'max')).toContain('fixed every Head\'s effort at max')
 })
 
