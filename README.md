@@ -46,7 +46,7 @@ Change these in `/config` (the Hydra rows) or when installing:
 | Option | Default | What it does |
 | --- | --- | --- |
 | `headModel` | `deepseek/deepseek-v4.1-flash` | Command Code model the Heads run on (`/hydra head=<model>` for one session) |
-| `headEffort` | `auto` | `auto` lets Claude pick `high`, `xhigh` or `max` per Head; a level fixes it (`/hydra effort=<level>`) |
+| `headEffort` | `auto` | `auto` lets Claude pick `low` to `max` per Head by task complexity; a level fixes it (`/hydra effort=<level>`) |
 | `headsFiveHourUsd`, `headsWeeklyUsd` | `0` | Your Command Code plan's spend caps; with `0`, spend is shown without a limit |
 | `headsPlan` | empty | Your plan's name, shown in `/hydra-usage` |
 
