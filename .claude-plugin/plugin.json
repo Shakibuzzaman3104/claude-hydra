@@ -16,7 +16,7 @@
     "headEffort": {
       "type": "string",
       "title": "Hydra head effort",
-      "description": "auto (the Lead picks low to max per Head by task complexity) or a level every Head runs at: off, low, medium, high, xhigh or max; changeable with /hydra effort=<level>",
+      "description": "auto (the Lead picks per Head: low when it can check the result, one level up per retry) or a level every Head runs at: off, low, medium, high, xhigh or max; changeable with /hydra effort=<level>",
       "default": "auto",
       "options": [
         "auto",

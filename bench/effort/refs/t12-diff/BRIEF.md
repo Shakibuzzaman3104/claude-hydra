@@ -1,0 +1,6 @@
+Implement `unified_diff(a, b, fromfile="a", tofile="b", n=3)` in udiff.py WITHOUT importing difflib (or any diff library).
+- `a` and `b` are lists of lines that each end with "\n". Return a list of output lines, each ending with "\n".
+- The output must be identical to `list(difflib.unified_diff(a, b, fromfile, tofile, n=n))` from CPython 3.13 for any input: the "--- a\n" / "+++ b\n" headers (no dates), `@@ -l,s +l,s @@` hunk headers with difflib's exact rules for line numbers and for the `,s` part (a count of 1 is omitted; an empty range is written as `l-1,0` style exactly as difflib does), context lines prefixed with " ", removals "-", additions "+", and hunks grouped/merged exactly the way difflib groups opcodes with `n` lines of context.
+- Identical inputs return [].
+- This means reproducing difflib.SequenceMatcher's matching (longest matching block first, recursively, with its "junk" heuristic disabled — use autojunk=False semantics: no popular-element pruning) and `get_grouped_opcodes(n)`.
+Acceptance: byte-identical to difflib.unified_diff(a, b, fromfile, tofile, n=n) when SequenceMatcher would be built with autojunk=False — the hidden tests compare against difflib with inputs shorter than 200 lines, where autojunk has no effect anyway.
