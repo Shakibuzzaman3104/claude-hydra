@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Claude leads, cheaper Command Code agents (Heads) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
@@ -11,7 +11,7 @@
       "type": "string",
       "title": "Hydra head model",
       "description": "Command Code model the Heads run on",
-      "default": "deepseek/deepseek-v4.1-flash-fast"
+      "default": "deepseek/deepseek-v4.1-flash"
     },
     "headEffort": {
       "type": "string",
