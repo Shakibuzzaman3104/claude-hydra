@@ -28,7 +28,20 @@ Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin
     npm i -g @tencent-ai/codebuddy-code
     codebuddy          # once, to sign in
     ```
-  Choose with the `headEngine` option, or `/hydra engine=codebuddy` for one session.
+  - or the Codex CLI (OpenAI, on your ChatGPT plan; its sandbox uses bubblewrap on Linux):
+
+    ```
+    npm i -g @openai/codex
+    codex login        # once, to sign in (codex login --device-auth on a remote machine)
+    ```
+
+  Codex Heads default to `gpt-6.1-sol`; the Lead passes `model: "gpt-6-luna"` for mechanical or small tasks. Codex has no per-tool rules, so a Head runs in Codex's OS sandbox with a filesystem profile Hydra writes: writes only in the project (and `writeDirs`), no `.git` writes, no `.env` reads, no credential folders, no network.
+
+  - or the Antigravity CLI (Google): `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then `agy` once to sign in (Google OAuth). Antigravity Heads always run `gemini-3.8-flash`. `agy` has one global settings file, so each Head gets its own `HOME` with permission rules; its sandbox keeps a shell inside the project with no network.
+
+  Choose with the `headEngine` option, or `/hydra engine=codebuddy` / `engine=codex` / `engine=agy` for one session.
+
+  **Auto:** `/hydra engine=auto` (all ready engines) or `/hydra engines=codex,agy,codebuddy` (a pool) lets Claude choose the engine for each Head from the task: hard or test-running work to Codex, bulk or reading work to Antigravity, well-specified edits to the cheap DeepSeek engines. `/hydra engines` shows which engines are ready and what each is for. The routing guide is Claude's judgement from how the engines run, not a cross-engine benchmark.
 
 ## Install
 In Claude Code:
@@ -45,14 +58,14 @@ A Head runs its CLI unattended. On Command Code that is `--yolo` (its headless m
 - it has no shell unless Claude asks for one. Even then, destructive git, `rm -r`/`-f`, `sudo`, network tools, builds and installs are denied;
 - every report lists the files the Head edited and every call that was denied. A write outside the project is flagged at the top.
 
-**Your code leaves your machine.** Each Head's task, and every file it reads, goes to the Head model through Command Code or CodeBuddy. Leave Hydra off in projects whose code must not leave your machine. A Head with shell access can still read a `.env` file through a command that doesn't name it (`grep -r KEY .`), so Claude avoids giving Heads a shell in projects with real secrets.
+**Your code leaves your machine.** Each Head's task, and every file it reads, goes to the Head model through Command Code, CodeBuddy, Codex or Antigravity. Leave Hydra off in projects whose code must not leave your machine. A Head with shell access can still read a `.env` file through a command that doesn't name it (`grep -r KEY .`), so Claude avoids giving Heads a shell in projects with real secrets.
 
 ## Settings
 Change these in `/config` (the Hydra rows) or when installing:
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `headEngine` | `codebuddy` | The CLI Heads run on: `commandcode` or `codebuddy` (`/hydra engine=<name>` for one session) |
+| `headEngine` | `codebuddy` | The CLI Heads run on: `commandcode`, `codebuddy`, `codex` or `agy` (`/hydra engine=<name>` for one session) |
 | `headModel` | `deepseek/deepseek-v4.1-flash` | Model the Heads run on (`/hydra head=<model>` for one session); on CodeBuddy the provider prefix is dropped (`deepseek-v4.1-flash`) |
 | `headEffort` | `auto` | `auto` lets Claude pick per Head: `low` when it will check the result, one level up on each retry, `max` first only for subtle work it cannot check (measured in `bench/effort/`); a level fixes it (`/hydra effort=<level>`) |
 | `headsFiveHourUsd`, `headsWeeklyUsd` | `0` | Your Command Code plan's spend caps; with `0`, spend is shown without a limit |
@@ -65,7 +78,7 @@ While Hydra is on, it writes `🐉 <head model> · <effort> | Heads 5h $… | 7d
 - **`/hydra` says it can't start:** it names what's missing and what to run.
 - **"settings.local.json holds your own Command Code rules":** Hydra needs that file to lock Heads down. Move your rules to `.commandcode/settings.json` (Command Code reads both).
 - **A Head failed:** its report gives the session id. On Command Code the transcript is at `~/.commandcode/projects/<project>/<session id>.jsonl` and `commandcode --resume <session id>` opens it; on CodeBuddy use `codebuddy --resume <session id>`.
-- **CodeBuddy shows tokens, not dollars:** it counts credits, so `/hydra-usage` has no Heads spend while the engine is CodeBuddy; each Head's report and `/heads` row show its tokens.
+- **CodeBuddy, Codex and Antigravity show tokens, not dollars:** they count credits, plan usage or account quota, so `/hydra-usage` has no Heads spend while the engine is one of them; each Head's report and `/heads` row show its tokens.
 - **A very large file (1,500+ lines)** can take a Head past its 40-minute limit. Ask Claude to split the work.
 
 Building on Hydra or changing how it works: see [DEVELOPING.md](DEVELOPING.md). Changes by version are in [CHANGELOG.md](CHANGELOG.md).
