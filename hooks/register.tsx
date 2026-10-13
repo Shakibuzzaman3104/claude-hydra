@@ -24,6 +24,8 @@ const LEADS = ['fable', 'opus', 'sonnet'] as const
 export const ENGINES = ['commandcode', 'codebuddy', 'codex', 'agy'] as const
 export type Engine = (typeof ENGINES)[number]
 export const DEFAULT_ENGINE: Engine = 'commandcode'
+/** The `headEngine` option, for code outside `register` that reads a stored mode without an engine. */
+let configuredEngine: Engine = DEFAULT_ENGINE
 /** The only model Antigravity Heads run on: the person's choice, whatever a Head's `model` says. */
 export const AGY_MODEL = 'gemini-3.8-flash'
 /** Where Antigravity keeps the sign-in token, relative to the home folder. */
@@ -461,6 +463,11 @@ export const CONSENT_QUESTION = (headModel: string, engine: Engine = DEFAULT_ENG
 
 const CONSENT_YES = 'Turn Hydra on'
 
+/** A control call that turns Hydra on or names an engine or pool must pass the readiness and consent checks `/hydra` runs. */
+export const needsEngineCheck = (action: string, input: Readonly<Record<string, unknown>>) =>
+  action === 'on' || input.engine !== undefined || input.engines !== undefined
+const NO_CONSENT = 'The person has not agreed to send code to this engine. They turn it on with /hydra engine=<name> (or engines=…), which asks them.'
+
 const consentKey = (engine: Engine) => (engine === 'commandcode' ? CONSENT_KEY : `${CONSENT_KEY}:${engine}`)
 
 const PROVIDER: Record<Engine, string> = { commandcode: 'DeepSeek', codebuddy: 'DeepSeek', codex: 'OpenAI', agy: 'Google (Gemini)' }
@@ -508,7 +515,7 @@ async function hasConsent($: EngineInterface, headModel: string, mayAsk: boolean
 
 async function refreshHeads($: EngineInterface, limits: HeadLimits) {
   const hydra = await read($, mode)
-  const engine = engineOf(hydra)
+  const engine = engineOf(hydra, configuredEngine)
   const hasCommandCode = isAuto(hydra) ? poolOf(hydra).includes('commandcode') : engine === 'commandcode'
   if (!hasCommandCode) {
     const measuredAt = await $.clock.now()
@@ -2216,6 +2223,7 @@ export const register: Register = (on, options) => {
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
   const defaultEffort: EffortMode = isEffortMode(options.headEffort) ? options.headEffort : 'auto'
   const defaultEngine: Engine = isEngine(options.headEngine) ? options.headEngine : DEFAULT_ENGINE
+  configuredEngine = defaultEngine
   const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {
@@ -2427,6 +2435,7 @@ export const register: Register = (on, options) => {
     const routed = resolveHeadEngine(hydra, e.engine, defaultEngine)
     if ('deny' in routed) return { deny: routed.deny }
     const engine = routed.engine
+    if (!(await hasConsent($, hydra.headModel, false, engine))) return { deny: NO_CONSENT }
     const headModel = headModelFor(engine, undefined, hydra.headModel, defaultHead)
     const asked = typeof e.model === 'string' && e.model ? e.model : undefined
     const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}) }
@@ -2489,10 +2498,10 @@ export const register: Register = (on, options) => {
       const effort = typeof e.effort === 'string' ? e.effort : undefined
       if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
       let pool: Engine[] = wanted
-      if (action === 'on' || listed) {
+      if (needsEngineCheck(action, e)) {
         const ready = await readyEngines($, wanted)
         if (ready.pool.length === 0) return { deny: ['No requested engine is ready:', ...ready.skipped.map(item => `${item.engine}: ${item.problem}`)].join(' ') }
-        if (!(await hasConsentAll($, ready.pool, false))) return { deny: 'The person turns Hydra on with /hydra the first time: it asks them to agree to sending code to the Head models.' }
+        if (!(await hasConsentAll($, ready.pool, false))) return { deny: NO_CONSENT }
         pool = ready.pool
       }
       const headModel = typeof e.headModel === 'string' && e.headModel ? e.headModel : isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead
@@ -2500,10 +2509,10 @@ export const register: Register = (on, options) => {
     } else if (action === 'on' || action === 'effort') {
       if (e.engine !== undefined && !isEngine(e.engine)) return { deny: `engine must be one of: ${[...ENGINES, AUTO].join(', ')}.` }
       const engine = isEngine(e.engine) ? e.engine : engineOf(stored, defaultEngine)
-      if (action === 'on') {
+      if (needsEngineCheck(action, e)) {
         const check = await preflight($, engine)
         if (check.problems.length > 0) return { deny: preflightText(check) }
-        if (!(await hasConsent($, current.headModel, false, engine))) return { deny: 'The person turns Hydra on with /hydra the first time: it asks them to agree to sending code to the Head model.' }
+        if (!(await hasConsent($, current.headModel, false, engine))) return { deny: NO_CONSENT }
       }
       const effort = typeof e.effort === 'string' ? e.effort : undefined
       if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }

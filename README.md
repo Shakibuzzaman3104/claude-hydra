@@ -65,7 +65,7 @@ Change these in `/config` (the Hydra rows) or when installing:
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `headEngine` | `codebuddy` | The CLI Heads run on: `commandcode`, `codebuddy`, `codex` or `agy` (`/hydra engine=<name>` for one session) |
+| `headEngine` | `commandcode` | The CLI Heads run on: `commandcode`, `codebuddy`, `codex` or `agy` (`/hydra engine=<name>` for one session) |
 | `headModel` | `deepseek/deepseek-v4.1-flash` | Model the Heads run on (`/hydra head=<model>` for one session); on CodeBuddy the provider prefix is dropped (`deepseek-v4.1-flash`) |
 | `headEffort` | `auto` | `auto` lets Claude pick per Head: `low` when it will check the result, one level up on each retry, `max` first only for subtle work it cannot check (measured in `bench/effort/`); a level fixes it (`/hydra effort=<level>`) |
 | `headsFiveHourUsd`, `headsWeeklyUsd` | `0` | Your Command Code plan's spend caps; with `0`, spend is shown without a limit |
