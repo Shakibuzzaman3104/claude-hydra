@@ -1,7 +1,7 @@
 {
   "name": "hydra",
-  "version": "0.8.0",
-  "description": "Claude leads, cheaper Command Code agents (Heads) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
+  "version": "0.9.0",
+  "description": "Claude leads, cheaper agents (Heads, on Command Code or CodeBuddy) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
   },
@@ -10,8 +10,18 @@
     "headModel": {
       "type": "string",
       "title": "Hydra head model",
-      "description": "Command Code model the Heads run on",
+      "description": "Model the Heads run on (CodeBuddy ids have no provider prefix: deepseek-v4.1-flash)",
       "default": "deepseek/deepseek-v4.1-flash"
+    },
+    "headEngine": {
+      "type": "string",
+      "title": "Hydra head engine",
+      "description": "The CLI Heads run on: commandcode or codebuddy; changeable with /hydra engine=<name>",
+      "default": "codebuddy",
+      "options": [
+        "commandcode",
+        "codebuddy"
+      ]
     },
     "headEffort": {
       "type": "string",

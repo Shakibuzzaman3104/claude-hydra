@@ -3,7 +3,7 @@
 @author Shakib
 @since 08/10/26
 
-Command Code PreToolUse hook for Hydra's Heads: denies a write or edit whose real path is outside the project
+PreToolUse hook (Command Code and CodeBuddy) for Hydra's Heads: denies a write or edit whose real path is outside the project
 and the folders the Heads may also write to.
 Usage: head-guard.py <project root> [<write dir> ...], with the hook's JSON on stdin.
 """
@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-WRITE_TOOLS = {"write_file", "edit_file"}
+WRITE_TOOLS = {"write_file", "edit_file", "Write", "Edit", "MultiEdit", "NotebookEdit"}
 WRITE_NAMES = {"WRITE", "EDIT"}
 
 
@@ -34,7 +34,7 @@ def main():
     if event.get("tool_name") not in WRITE_TOOLS and event.get("tool_display_name") not in WRITE_NAMES:
         return
     tool_input = event.get("tool_input") or {}
-    raw = tool_input.get("file_path") or tool_input.get("path")
+    raw = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
     if not isinstance(raw, str) or not raw.strip():
         deny("Hydra could not tell which file this call writes.")
         return
@@ -46,5 +46,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as error:  # A guard that cannot decide denies: Command Code runs the tool when a hook fails.
+    except Exception as error:  # A guard that cannot decide denies: the engine runs the tool when a hook fails.
         deny(f"Hydra's write guard failed ({error}).")
