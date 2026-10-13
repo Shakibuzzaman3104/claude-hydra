@@ -7,6 +7,9 @@ import { expect, test } from 'claude-code/testing'
 import {
   ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
+  ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexEffort, CODEX_SECRET_DIRS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
+  foldAgyRow, newAgyState, agySettings, agyArgs, agyEffort, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
+  AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -520,4 +523,410 @@ test('flags writes outside the project only when no granted folder holds them', 
   expect(outsideFiles('/r', ['/rx/a.kt'])).toEqual(['/rx/a.kt'])
   expect(formatReport({ id: 'h', model: 'm', cwd: '/r', finished: true, rounds: 1, turns: 1, usd: 0, files: ['/s/b.kt'], denied: [], finalText: '', exit: '0', writeDirs: ['/s'] }))
     .toContain('may also write: /s')
+})
+
+test('knows the four engines, and falls back to the default for anything else', async () => {
+  expect(ENGINES).toEqual(['commandcode', 'codebuddy', 'codex', 'agy'])
+  expect(isEngine('agy')).toBe(true)
+  expect(isEngine('codex')).toBe(true)
+  expect(isEngine('codebuddy')).toBe(true)
+  expect(isEngine('claude')).toBe(false)
+  expect(engineOf({ isOn: true, headModel: 'm', engine: 'codebuddy' }, 'commandcode')).toBe('codebuddy')
+  expect(engineOf({ isOn: true, headModel: 'm' }, 'codebuddy')).toBe('codebuddy')
+  expect(engineOf({ isOn: true, headModel: 'm', engine: 'nope' }, 'commandcode')).toBe('commandcode')
+  expect(engineOf(null)).toBe('commandcode')
+})
+
+test('drops the provider prefix of a model only for CodeBuddy', async () => {
+  expect(modelFor('codebuddy', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
+  expect(modelFor('codebuddy', 'deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
+  expect(modelFor('commandcode', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek/deepseek-v4.1-flash')
+})
+
+test('reads engine= and --engine from /hydra, only before the task', async () => {
+  expect(parseHydraArgs('engine=codebuddy')).toMatchObject({ action: 'on', engine: 'codebuddy', task: '' })
+  expect(parseHydraArgs('--engine CodeBuddy head=deepseek-v4.1-flash build it')).toMatchObject({ engine: 'codebuddy', headModel: 'deepseek-v4.1-flash', task: 'build it' })
+  expect(parseHydraArgs('fix the engine=commandcode label').engine).toBeUndefined()
+  expect(HYDRA_HELP).toContain('/hydra engine=<name>')
+})
+
+test('shows the engine in the status line only for CodeBuddy, and tells the Lead which lockdown applies', async () => {
+  const on = { isOn: true, headModel: 'deepseek-v4.1-flash', effort: 'low', engine: 'codebuddy' }
+  expect(statusLine(on, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 CodeBuddy deepseek-v4.1-flash · low')
+  const policy = HYDRA_POLICY('deepseek-v4.1-flash', 'auto', 'codebuddy')
+  expect(policy).toContain('CodeBuddy agents on deepseek-v4.1-flash')
+  expect(policy).toContain("CodeBuddy's headless mode")
+  expect(policy).not.toContain('--yolo')
+  expect(policy).not.toContain('Heads have no search tool')
+  expect(HYDRA_POLICY('m', 'auto')).toContain("Command Code's --yolo")
+})
+
+test('turns a CodeBuddy stream into live events: a turn per model message, tools queued then finished or refused', async () => {
+  const state = newBuddyState()
+  const assistant = (id: string, content: unknown[]) => ({ type: 'assistant', message: { id, content } })
+  const result = (id: string, text: string, isError = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content: [{ type: 'text', text }] }] } })
+
+  expect(foldBuddyRow(assistant('m1', [{ type: 'thinking', thinking: '…' }]), state)).toEqual([{ type: 'turn_end' }, { type: 'thinking_start' }])
+  expect(foldBuddyRow(assistant('m1', [{ type: 'text', text: 'on it' }]), state)).toEqual([])
+  const queued = foldBuddyRow(assistant('m1', [{ type: 'tool_use', id: 'c1', name: 'Edit', input: { file_path: '/p/a.txt' } }]), state)
+  expect(queued).toEqual([
+    { type: 'tool_queued', toolCallId: 'c1', toolName: 'edit_file', input: { file_path: '/p/a.txt' } },
+    { type: 'tool_running', toolCallId: 'c1', toolName: 'edit_file' },
+  ])
+  expect(foldBuddyRow(result('c1', 'Successfully edited file: /p/a.txt'), state)).toEqual([{ type: 'tool_completed', toolCallId: 'c1', toolName: 'edit_file', isError: false }])
+  expect(state.files).toEqual(new Set(['/p/a.txt']))
+
+  foldBuddyRow(assistant('m2', [{ type: 'tool_use', id: 'c2', name: 'Write', input: { file_path: '/out/x.txt' } }]), state)
+  expect(foldBuddyRow(result('c2', 'Error: Permission to use Write has been denied because this tool requires approval', true), state)).toEqual([{ type: 'tool_denied', toolCallId: 'c2', toolName: 'write_file', isError: true }])
+  expect(state.denied).toHaveLength(1)
+  expect(state.denied[0]).toMatchObject({ tool: 'write_file', target: '/out/x.txt' })
+  expect(state.files).toEqual(new Set(['/p/a.txt']))
+
+  foldBuddyRow(assistant('m3', [{ type: 'tool_use', id: 'c3', name: 'Write', input: { file_path: '/p/link/y.txt' } }]), state)
+  foldBuddyRow(result('c3', 'Error: Hydra: /p/link/y.txt is outside the project. Do not retry it', true), state)
+  expect(state.denied).toHaveLength(2)
+
+  foldBuddyRow(assistant('m4', [{ type: 'tool_use', id: 'c4', name: 'Read', input: { file_path: '/p/missing' } }]), state)
+  expect(foldBuddyRow(result('c4', 'Error: File does not exist', true), state)).toEqual([{ type: 'tool_completed', toolCallId: 'c4', toolName: 'read_file', isError: true }])
+  expect(state.denied).toHaveLength(2)
+  expect(state.messages.size).toBe(4)
+})
+
+test('does not count a failed edit as an edit, and still counts a refused call as a denial', async () => {
+  const run: HeadRun = { id: 'h', task: 't', model: 'm', state: 'running', turns: 0 }
+  const labels = new Map<string, string>()
+  const queued = applyEvent(run, { type: 'tool_queued', toolCallId: 'c', toolName: 'edit_file', input: { file_path: '/p/a.txt' } }, labels, '/p')
+  expect(queued).toEqual({})
+  expect(applyEvent(run, { type: 'tool_completed', toolCallId: 'c', toolName: 'edit_file', isError: true }, labels, '/p')).toMatchObject({ edits: 0, denials: 0 })
+  expect(applyEvent(run, { type: 'tool_completed', toolCallId: 'c', toolName: 'edit_file', isError: false }, labels, '/p')).toMatchObject({ edits: 1, denials: 0 })
+  expect(applyEvent(run, { type: 'tool_denied', toolCallId: 'c', toolName: 'edit_file', isError: true }, labels, '/p')).toMatchObject({ edits: 0, denials: 1 })
+})
+
+test('allows edits only under the project and granted folders, and protects history and secrets everywhere', async () => {
+  const settings = buddySettings('/work/app', { addDirs: ['/refs', '/work/pkg'], writeDirs: ['/work/pkg'], shell: false }, 'GUARD')
+  const { allow, deny } = settings.permissions
+  expect(allow).toEqual(['Edit(/work/app/**)', 'Write(/work/app/**)', 'Edit(/work/pkg/**)', 'Write(/work/pkg/**)', 'Read(/refs/**)', 'Read(/work/pkg/**)'])
+  expect(allow).not.toContain('Bash')
+  for (const root of ['/work/app', '/work/pkg']) {
+    expect(deny).toEqual(expect.arrayContaining([`Edit(${root}/.git/**)`, `Write(${root}/.git/**)`, `Edit(${root}/**/.env)`, `Read(${root}/**/.env.*)`]))
+  }
+  expect(deny).toEqual(expect.arrayContaining(['Edit(/refs/**)', 'Write(/refs/**)', 'Read(/refs/**/.env)']))
+  expect(deny).not.toContain('Edit(/work/pkg/**)')
+  expect(deny).not.toContain('Bash(git commit*)')
+  expect(settings.hooks?.PreToolUse[0]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: 'GUARD', timeout: 10 }] })
+  expect('hooks' in buddySettings('/work/app', { addDirs: [], shell: false })).toBe(false)
+})
+
+test('gives a CodeBuddy Head a shell only when asked, and never the dangerous commands', async () => {
+  const shell = buddySettings('/work/app', { addDirs: [], shell: true })
+  expect(shell.permissions.allow).toContain('Bash')
+  expect(shell.permissions.deny).toEqual(expect.arrayContaining(['Bash(git commit*)', 'Bash(rm -r*)', 'Bash(rm -f*)', 'Bash(curl*)', 'Bash(sudo*)', 'Bash(* .env*)', 'Bash(*/.env*)']))
+  expect(BUDDY_SHELL_DENY.every(rule => rule.startsWith('Bash('))).toBe(true)
+  expect(buddyTools(false)).toBe('Read,Write,Edit,Glob,Grep')
+  expect(buddyTools(true)).toBe('Read,Write,Edit,Glob,Grep,Bash')
+})
+
+test('builds the CodeBuddy command: no yolo, default permission mode, only the granted tools, and a session to resume', async () => {
+  const base = { prompt: 'do it', model: 'deepseek-v4.1-flash', maxTurns: 30, cwd: '/work/app', addDirs: ['/refs'], settings: '/h/s.json', shell: false, sessionId: 'hydra-x-1' }
+  const first = buddyArgs({ ...base, effort: 'low' })
+  expect(first.slice(0, 5)).toEqual(['/usr/bin/env', 'codebuddy', '-p', 'do it', '--model'])
+  expect(first).toEqual(expect.arrayContaining(['deepseek-v4.1-flash', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--tools', 'Read,Write,Edit,Glob,Grep', '--settings', '/h/s.json', '--setting-sources', 'local', '--max-turns', '30', '--add-dir', '/refs', '--effort', 'low', '--session-id', 'hydra-x-1']))
+  expect(first).not.toContain('--resume')
+  for (const unsafe of ['--yolo', '-y', '--dangerously-skip-permissions', 'bypassPermissions', 'acceptEdits']) expect(first).not.toContain(unsafe)
+  const resumed = buddyArgs({ ...base, resume: 'abc' })
+  expect(resumed).toEqual(expect.arrayContaining(['--resume', 'abc']))
+  expect(resumed).not.toContain('--session-id')
+  expect(resumed).not.toContain('--effort')
+  expect(buddyArgs({ ...base, effort: 'off' })).toEqual(expect.arrayContaining(['--effort', 'minimal']))
+  expect(buddyEffort('max')).toBe('max')
+})
+
+test('reports a CodeBuddy Head by tokens and how to resume it, not by dollars', async () => {
+  expect(tokensText(91_530, 421)).toBe('92k in / 421 out')
+  expect(tokensText(2_500, 18)).toBe('2.5k in / 18 out')
+  const text = formatReport({
+    id: 'h', model: 'deepseek-v4.1-flash', cwd: '/p', sessionId: 'hydra-h-1', finished: true, rounds: 1, turns: 4, usd: null,
+    files: ['/p/a.txt'], denied: [], finalText: 'ok HEAD DONE', exit: '0', engine: 'codebuddy', tokens: '92k in / 421 out',
+  })
+  expect(text).toContain('4 turns · 92k in / 421 out')
+  expect(text).toContain('(codebuddy --resume hydra-h-1)')
+  expect(text).not.toContain('$0.0000')
+  const old = formatReport({ id: 'h', model: 'm', cwd: '/p', sessionId: 's', finished: true, rounds: 1, turns: 1, usd: 0.5, files: [], denied: [], finalText: '', exit: '0' })
+  expect(old).toContain('$0.5000')
+  expect(old).toContain('(commandcode --resume s)')
+  expect(nowLine({ id: 'h', task: 't', model: 'm', state: 'done', turns: 1, tokens: '2.5k in / 18 out' })).toBe('done · 2.5k in / 18 out')
+})
+
+test('drops the provider prefix for Codex too, and picks a model the engine can run when the person switches engines', async () => {
+  expect(modelFor('codex', 'openai/gpt-6.1-sol')).toBe('gpt-6.1-sol')
+  expect(isModelFor('codex', 'gpt-6-luna')).toBe(true)
+  expect(isModelFor('codex', 'deepseek/deepseek-v4.1-flash')).toBe(false)
+  expect(isModelFor('codebuddy', 'gpt-6.1-sol')).toBe(false)
+  const deepseek = 'deepseek/deepseek-v4.1-flash'
+  expect(headModelFor('codex', undefined, deepseek, deepseek)).toBe('gpt-6.1-sol')
+  expect(headModelFor('codex', undefined, 'gpt-6-luna', deepseek)).toBe('gpt-6-luna')
+  expect(headModelFor('codex', 'gpt-6-astra', deepseek, deepseek)).toBe('gpt-6-astra')
+  expect(headModelFor('codebuddy', undefined, 'gpt-6.1-sol', deepseek)).toBe(deepseek)
+  expect(headModelFor('commandcode', undefined, deepseek, deepseek)).toBe(deepseek)
+})
+
+test('turns a Codex stream into live events: a turn per finished tool call, refused commands as denials', async () => {
+  const state = newCodexState()
+  const command = (id: string, text: string, exit: number | null, output = '') => ({ id, type: 'command_execution', command: text, aggregated_output: output, exit_code: exit, status: exit === null ? 'in_progress' : 'completed' })
+  expect(foldCodexRow({ type: 'thread.started', thread_id: 't-1' }, state)).toEqual([])
+  expect(state.threadId).toBe('t-1')
+  expect(foldCodexRow({ type: 'item.completed', item: { id: 'i0', type: 'agent_message', text: 'on it' } }, state)).toEqual([])
+  expect(state.finalText).toBe('on it')
+
+  expect(foldCodexRow({ type: 'item.started', item: command('i1', 'ls', null) }, state)).toEqual([
+    { type: 'tool_queued', toolCallId: 'i1', toolName: 'shell_command', input: { command: 'ls' } },
+    { type: 'tool_running', toolCallId: 'i1', toolName: 'shell_command' },
+  ])
+  expect(foldCodexRow({ type: 'item.completed', item: command('i1', 'ls', 0, 'a.txt') }, state)).toEqual([
+    { type: 'tool_completed', toolCallId: 'i1', toolName: 'shell_command', isError: false },
+    { type: 'turn_end' },
+  ])
+
+  // A completed item with no start row is queued, run and finished in one go.
+  const patch = { id: 'i2', type: 'file_change', status: 'completed', changes: [{ path: '/p/a.txt', kind: 'update' }] }
+  expect(foldCodexRow({ type: 'item.completed', item: patch }, state).map(event => event.type)).toEqual(['tool_queued', 'tool_running', 'tool_completed', 'turn_end'])
+  expect(state.files).toEqual(new Set(['/p/a.txt']))
+
+  const denied = foldCodexRow({ type: 'item.completed', item: command('i3', 'echo x > ../y', 1, 'sh: ../y: Read-only file system') }, state)
+  expect(denied[2]).toEqual({ type: 'tool_denied', toolCallId: 'i3', toolName: 'shell_command', isError: true })
+  expect(state.denied).toHaveLength(1)
+  expect(state.denied[0]).toMatchObject({ tool: 'shell_command', target: 'echo x > ../y' })
+
+  foldCodexRow({ type: 'item.completed', item: command('i4', 'cat nope', 1, 'cat: nope: No such file or directory') }, state)
+  expect(state.denied).toHaveLength(1)
+  expect(state.turns).toBe(4)
+
+  foldCodexRow({ type: 'turn.completed', usage: { input_tokens: 1200, output_tokens: 80 } }, state)
+  expect(state).toMatchObject({ isCompleted: true, inputTokens: 1200, outputTokens: 80 })
+  foldCodexRow({ type: 'turn.failed', error: { message: 'usage limit reached' } }, state)
+  expect(state.failure).toBe('usage limit reached')
+})
+
+test('builds the Codex filesystem profile: writes only in the project and granted folders, no .env, no credential folders', async () => {
+  const profile = codexFilesystem('/p/app/', { addDirs: ['/p/brief'], writeDirs: ['/p/pkg'], shell: false }, '/home/me')
+  expect(profile.startsWith('{"/"="read","/p/app"="write","/p/pkg"="write",')).toBe(true)
+  for (const dir of ['/p/app', '/p/pkg', '/p/brief']) {
+    expect(profile).toContain(`"${dir}/**/.env"="none"`)
+    expect(profile).toContain(`"${dir}/**/.env.*"="none"`)
+  }
+  expect(profile).not.toContain('"/p/brief"="write"')
+  for (const dir of CODEX_SECRET_DIRS) expect(profile).toContain(`"/home/me/${dir}"="none"`)
+  expect(profile).toContain('glob_scan_max_depth=6}')
+  expect(codexFilesystem('/p/app', { addDirs: [], shell: false })).not.toContain('/home')
+})
+
+test('builds the Codex command: stdin closed, the profile on the command line, no approvals, a thread to resume', async () => {
+  const base = { prompt: '-do it', model: 'gpt-6-luna', effort: 'off', maxTurns: 10, cwd: '/p', addDirs: [], filesystem: '{"/"="read"}' }
+  const first = codexArgs(base)
+  expect(first.slice(0, 7)).toEqual(['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', '/usr/bin/env', 'codex', 'exec'])
+  expect(first).toContain('--json')
+  expect(first).toContain('--ignore-user-config')
+  expect(first).not.toContain('resume')
+  expect(first).toContain('default_permissions="hydra"')
+  expect(first).toContain('permissions.hydra.filesystem={"/"="read"}')
+  expect(first).toContain('approval_policy="never"')
+  expect(first).toContain('model_reasoning_effort="low"')
+  expect(first.slice(-2)).toEqual(['--', '-do it'])
+  expect(first).not.toContain('--dangerously-bypass-approvals-and-sandbox')
+  const again = codexArgs({ ...base, effort: 'high', resume: 't-1' })
+  expect(again.slice(6, 9)).toEqual(['exec', 'resume', '--json'])
+  expect(again.slice(-3)).toEqual(['--', 't-1', '-do it'])
+  expect(again).toContain('model_reasoning_effort="high"')
+  expect(codexArgs({ ...base, effort: undefined }).join(' ')).not.toContain('model_reasoning_effort')
+  expect(codexEffort('off')).toBe('low')
+  expect(codexEffort('max')).toBe('max')
+})
+
+test('tells the Lead which lockdown and models apply on Codex, and shows the engine in the status line', async () => {
+  const policy = HYDRA_POLICY('gpt-6.1-sol', 'auto', 'codex')
+  expect(policy).toContain('Codex agents on gpt-6.1-sol')
+  expect(policy).toContain('gpt-6-luna')
+  expect(policy).toContain('no network')
+  expect(policy).not.toContain('--yolo')
+  expect(policy).not.toContain('Measured over 126')
+  expect(HYDRA_POLICY('gpt-6.1-sol', 'high', 'codex')).toContain('fixed every Head')
+  expect(statusLine({ isOn: true, headModel: 'gpt-6.1-sol', effort: 'auto', engine: 'codex' }, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 Codex gpt-6.1-sol · auto')
+  expect(formatReport({ id: 'h', model: 'gpt-6-luna', cwd: '/p', sessionId: 't-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [], finalText: 'ok', exit: '0', engine: 'codex', tokens: '1.2k in / 80 out' })).toContain('(codex --resume t-1)')
+})
+
+test('picks Google models for Antigravity and keeps them out of the other engines', async () => {
+  expect(AGY_MODEL).toBe('gemini-3.8-flash')
+  expect(isModelFor('agy', 'gemini-3.8-flash')).toBe(true)
+  expect(isModelFor('agy', 'google/gemini-3.8-flash')).toBe(true)
+  expect(isModelFor('agy', 'gpt-6-luna')).toBe(false)
+  expect(isModelFor('codex', 'gemini-3.8-flash')).toBe(false)
+  expect(isModelFor('codebuddy', 'gemini-3.8-flash')).toBe(false)
+  expect(isModelFor('commandcode', 'deepseek/deepseek-v4.1-flash')).toBe(true)
+  expect(modelFor('agy', 'google/gemini-3.8-flash')).toBe('gemini-3.8-flash')
+  const deepseek = 'deepseek/deepseek-v4.1-flash'
+  expect(headModelFor('agy', undefined, deepseek, deepseek)).toBe('gemini-3.8-flash')
+  expect(headModelFor('codex', undefined, 'gemini-3.8-flash', deepseek)).toBe('gpt-6.1-sol')
+  expect(headModelFor('codebuddy', undefined, 'gemini-3.8-flash', deepseek)).toBe(deepseek)
+})
+
+test('turns an Antigravity stream into live events: a turn per finished tool call, refused actions from the result', async () => {
+  const state = newAgyState()
+  const step = (fields: Record<string, unknown>) => ({ event: 'step_update', step_update: { conversation_id: 'c-1', ...fields } })
+  expect(foldAgyRow({ event: 'init', conversation_id: 'c-1' }, state)).toEqual([])
+  expect(state.conversationId).toBe('c-1')
+  expect(foldAgyRow(step({ step_index: 1, state: 'ACTIVE', step_type: 'agent_response' }), state)).toEqual([{ type: 'thinking_start' }])
+
+  const run = { step_index: 2, step_type: 'tool', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { CommandLine: 'ls' } } }
+  expect(foldAgyRow(step({ ...run, state: 'ACTIVE' }), state)).toEqual([
+    { type: 'tool_queued', toolCallId: '2', toolName: 'shell_command', input: { command: 'ls' } },
+    { type: 'tool_running', toolCallId: '2', toolName: 'shell_command' },
+  ])
+  expect(foldAgyRow(step({ ...run, state: 'DONE' }), state)).toEqual([{ type: 'tool_completed', toolCallId: '2', toolName: 'shell_command', isError: false }, { type: 'turn_end' }])
+
+  const edit = { step_index: 4, step_type: 'tool', tool_name: 'write_to_file', tool_info: { name: 'write_to_file', parameters: { TargetFile: '/out/t.txt' } } }
+  expect(foldAgyRow(step({ ...edit, state: 'DONE' }), state).map(event => event.type)).toEqual(['tool_queued', 'tool_running', 'tool_completed', 'turn_end'])
+  expect(state.turns).toBe(2)
+  expect(state.lastTarget).toBe('/out/t.txt')
+
+  foldAgyRow({
+    event: 'result',
+    result: { conversation_id: 'c-1', status: 'SUCCESS', response: '', usage: { input_tokens: 54000, output_tokens: 476 }, denied_actions: [{ action: 'write_file', display_name: 'WriteToFile' }] },
+  }, state)
+  expect(state).toMatchObject({ status: 'SUCCESS', finalText: '', inputTokens: 54000, outputTokens: 476 })
+  expect(state.denied).toHaveLength(1)
+  expect(state.denied[0]).toMatchObject({ tool: 'WriteToFile', target: '/out/t.txt' })
+})
+
+test('writes the Antigravity permission rules: writes only in the project, reads only addDirs, no .git, .env or credentials, a shell only when asked', async () => {
+  const none = agySettings('/p/app/', { addDirs: ['/p/brief'], writeDirs: ['/p/pkg'], shell: false }, '/home/me', ['/p/app/.env', '/p/app/sub/.env.local'])
+  expect(none.permissions.allow).toEqual(['write_file(/p/app/)', 'write_file(/p/pkg/)', 'read_file(/p/brief/)', 'read_file(/p/pkg/)'])
+  expect(none.permissions.deny).toContain('write_file(/p/app/.git/)')
+  expect(none.permissions.deny).toContain('write_file(/p/pkg/.git/)')
+  expect(none.permissions.deny).toContain('read_file(/p/app/.env)')
+  expect(none.permissions.deny).toContain('read_file(/p/app/sub/.env.local)')
+  for (const dir of AGY_SECRET_DIRS) expect(none.permissions.deny).toContain(`read_file(/home/me/${dir})`)
+  expect(AGY_SECRET_DIRS).toContain('.gemini')
+  expect(none.permissions.allow.some(rule => rule.startsWith('command'))).toBe(false)
+  expect(none.permissions.deny.some(rule => rule.startsWith('command'))).toBe(false)
+
+  const shell = agySettings('/p/app', { addDirs: [], shell: true })
+  expect(shell.permissions.allow).toContain('command(*)')
+  expect(shell.permissions.deny).toEqual(expect.arrayContaining(AGY_SHELL_DENY))
+  expect(AGY_SHELL_DENY).toContain('command(regex:(?:.*[;&|(]\\s*)?git commit.*)')
+  expect(AGY_SHELL_DENY).toContain('command(regex:(?:.*[;&|(]\\s*)?sudo.*)')
+  expect(AGY_SHELL_DENY).toContain('command(regex:(?:.*[;&|(]\\s*)?gh .*)')
+  const gh = new RegExp(`^${AGY_SHELL_DENY.find(rule => rule.includes('gh '))!.slice('command(regex:'.length, -1)}$`)
+  expect(gh.test('gh pr list')).toBe(true)
+  expect(gh.test('echo hi && gh pr list')).toBe(true)
+  expect(gh.test('echo through here')).toBe(false)
+  expect(AGY_SHELL_DENY.every(rule => rule.startsWith('command(regex:') && rule.endsWith(')'))).toBe(true)
+})
+
+test('builds the Antigravity command: stdin closed, own HOME, the one model, sandbox on, a conversation to resume', async () => {
+  const base = { prompt: 'do it', model: 'whatever', effort: 'max', maxTurns: 10, cwd: '/p', addDirs: ['/p/brief'], home: '/h/agy-1' }
+  const first = agyArgs(base)
+  expect(first.slice(0, 7)).toEqual(['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', '/usr/bin/env', 'HOME=/h/agy-1', 'agy'])
+  expect(first).toContain('--sandbox')
+  expect(first).not.toContain('--dangerously-skip-permissions')
+  expect(first.slice(first.indexOf('--model'), first.indexOf('--model') + 2)).toEqual(['--model', 'gemini-3.8-flash'])
+  expect(first.slice(first.indexOf('--output-format'), first.indexOf('--output-format') + 2)).toEqual(['--output-format', 'stream-json'])
+  expect(first.slice(first.indexOf('--effort'), first.indexOf('--effort') + 2)).toEqual(['--effort', 'high'])
+  expect(first).not.toContain('--add-dir')
+  expect(first).not.toContain('--conversation')
+  expect(agyArgs({ ...base, resume: 'c-1' }).slice(-2)).toEqual(['--conversation', 'c-1'])
+  expect(agyArgs({ ...base, effort: undefined })).not.toContain('--effort')
+  expect([agyEffort('off'), agyEffort('low'), agyEffort('medium'), agyEffort('high'), agyEffort('xhigh'), agyEffort('max')]).toEqual(['low', 'low', 'medium', 'high', 'high', 'high'])
+})
+
+test('tells the Lead which lockdown and model apply on Antigravity', async () => {
+  const policy = HYDRA_POLICY('gemini-3.8-flash', 'auto', 'agy')
+  expect(policy).toContain('Antigravity agents on gemini-3.8-flash')
+  expect(policy).toContain('always run `gemini-3.8-flash`')
+  expect(policy).toContain('sandbox')
+  expect(policy).not.toContain('--yolo')
+  expect(policy).not.toContain('Measured over 126')
+  expect(statusLine({ isOn: true, headModel: 'gemini-3.8-flash', effort: 'low', engine: 'agy' }, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 Antigravity gemini-3.8-flash · low')
+  expect(formatReport({ id: 'h', model: 'gemini-3.8-flash', cwd: '/p', sessionId: 'c-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [], finalText: 'ok', exit: '0', engine: 'agy', tokens: '1k in / 80 out' })).toContain('(agy --resume c-1)')
+})
+
+test('keeps system temp folders out of an Antigravity Head, unless its own folders live there', async () => {
+  expect(AGY_TEMP_DIRS).toEqual(['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp'])
+  expect(agyTempDeny(['/home/me/app'], ['/tmp', '/var/tmp'])).toEqual(['/tmp', '/var/tmp'])
+  expect(agyTempDeny(['/tmp/work/app'], ['/tmp', '/var/tmp'])).toEqual(['/var/tmp'])
+  expect(agyTempDeny(['/home/me/app', '/var/tmp/pkg/'], ['/tmp', '/var/tmp'])).toEqual(['/tmp'])
+  const settings = agySettings('/home/me/app', { addDirs: [], shell: false }, '/home/me', [], ['/tmp', '/var/tmp'])
+  expect(settings.permissions.deny).toEqual(expect.arrayContaining(['write_file(/tmp/)', 'write_file(/var/tmp/)']))
+  expect(agySettings('/home/me/app', { addDirs: [], shell: false }).permissions.deny.some(rule => rule.includes('/tmp'))).toBe(false)
+})
+
+test('reads engines= from /hydra and the engine list as names, flagging what is not an engine', async () => {
+  expect(parseHydraArgs('engine=auto')).toMatchObject({ action: 'on', engine: 'auto', task: '' })
+  expect(parseHydraArgs('engines=codex,agy build it')).toMatchObject({ engines: 'codex,agy', task: 'build it' })
+  expect(parseHydraArgs('--engines codex+agy')).toMatchObject({ engines: 'codex+agy' })
+  expect(parseHydraArgs('engines')).toMatchObject({ action: 'engines' })
+  expect(parseEngineList('codex, agy codex')).toEqual({ engines: ['codex', 'agy'], bad: [] })
+  expect(parseEngineList('Codex,gemini')).toEqual({ engines: ['codex'], bad: ['gemini'] })
+  expect(HYDRA_HELP).toContain('engine=auto'.slice(0, 11))
+  expect(HYDRA_HELP).toContain('engines=a,b')
+})
+
+test('keeps the pool of an auto session in engine order and labels it', async () => {
+  const auto = { isOn: true, headModel: 'm', engine: 'auto', engines: ['agy', 'codex', 'nope'] }
+  expect(AUTO).toBe('auto')
+  expect(isAuto(auto)).toBe(true)
+  expect(isAuto({ isOn: true, headModel: 'm', engine: 'codex' })).toBe(false)
+  expect(poolOf(auto)).toEqual(['codex', 'agy'])
+  expect(poolOf({ isOn: true, headModel: 'm', engine: 'auto' })).toEqual(['commandcode', 'codebuddy', 'codex', 'agy'])
+  expect(engineLabel(auto)).toBe('Auto (Codex + Antigravity)')
+  expect(engineLabel({ isOn: true, headModel: 'm', engine: 'codex' })).toBe('Codex')
+  expect(engineOf(auto, 'codebuddy')).toBe('codebuddy')
+})
+
+test('makes the Lead name an engine per Head in auto mode, and only the session engine otherwise', async () => {
+  const auto = { isOn: true, headModel: 'm', engine: 'auto', engines: ['codex', 'agy'] }
+  expect(resolveHeadEngine(auto, 'codex')).toEqual({ engine: 'codex' })
+  expect(resolveHeadEngine(auto, undefined)).toMatchObject({ deny: expect.stringContaining('name the engine') })
+  expect(resolveHeadEngine(auto, 'commandcode')).toMatchObject({ deny: expect.stringContaining('not in this session') })
+  expect(resolveHeadEngine(auto, 'gemini')).toMatchObject({ deny: expect.stringContaining('must be one of: codex, agy') })
+
+  const fixed = { isOn: true, headModel: 'm', engine: 'codebuddy' }
+  expect(resolveHeadEngine(fixed, undefined)).toEqual({ engine: 'codebuddy' })
+  expect(resolveHeadEngine(fixed, 'codebuddy')).toEqual({ engine: 'codebuddy' })
+  expect(resolveHeadEngine(fixed, 'codex')).toMatchObject({ deny: expect.stringContaining('engine=auto') })
+  expect(resolveHeadEngine(null, undefined, 'commandcode')).toEqual({ engine: 'commandcode' })
+})
+
+test('gives the Lead a routing guide for exactly the engines in the pool', async () => {
+  const policy = HYDRA_POLICY('deepseek/deepseek-v4.1-flash', 'auto', AUTO, ['codex', 'agy', 'codebuddy'])
+  expect(policy).toContain('auto engines')
+  expect(policy).toContain('one of: codex, agy, codebuddy')
+  expect(policy).toContain('`codex` (Codex)')
+  expect(policy).toContain('`agy` (Antigravity)')
+  expect(policy).toContain('`codebuddy` (CodeBuddy)')
+  expect(policy).not.toContain('`commandcode` (Command Code)')
+  expect(policy).toContain('gemini-3.8-flash only')
+  expect(policy).toContain('no network')
+  expect(policy).toContain('Measured: 95%')
+  expect(policy).toContain('then on a stronger engine')
+  expect(policy).not.toContain('--yolo')
+  expect(HYDRA_POLICY('m', 'high', AUTO, ['codex'])).toContain('fixed every Head')
+  expect(HYDRA_POLICY('m', 'auto', AUTO, ['commandcode'])).toContain('take the cheapest engine in the pool that can do it (commandcode)')
+  expect(HYDRA_POLICY('m', 'auto', 'codex')).not.toContain('auto engines')
+})
+
+test('shows auto sessions in the status line and asks consent for every engine in the pool', async () => {
+  const limits = { fiveHourUsd: 0, weeklyUsd: 0 }
+  expect(statusLine({ isOn: true, headModel: 'm', effort: 'low', engine: 'auto', engines: ['codex', 'agy'] }, null, limits)).toBe('🐉 Auto codex+agy · low')
+  const question = AUTO_CONSENT_QUESTION(['codex', 'agy', 'codebuddy'])
+  expect(question).toContain('Codex (OpenAI)')
+  expect(question).toContain('Antigravity (Google (Gemini))')
+  expect(question).toContain('CodeBuddy (DeepSeek)')
+})
+
+test('checks readiness and consent whenever the Lead turns Hydra on or changes the engine or pool', async () => {
+  expect(needsEngineCheck('on', {})).toBe(true)
+  expect(needsEngineCheck('effort', { engine: 'codex' })).toBe(true)
+  expect(needsEngineCheck('effort', { engine: 'auto' })).toBe(true)
+  expect(needsEngineCheck('effort', { engines: ['agy'] })).toBe(true)
+  expect(needsEngineCheck('effort', {})).toBe(false)
 })
