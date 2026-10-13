@@ -9,7 +9,7 @@ import {
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
   ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexEffort, CODEX_SECRET_DIRS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
   foldAgyRow, newAgyState, agySettings, agyArgs, agyEffort, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
-  AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION,
+  AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -921,4 +921,12 @@ test('shows auto sessions in the status line and asks consent for every engine i
   expect(question).toContain('Codex (OpenAI)')
   expect(question).toContain('Antigravity (Google (Gemini))')
   expect(question).toContain('CodeBuddy (DeepSeek)')
+})
+
+test('checks readiness and consent whenever the Lead turns Hydra on or changes the engine or pool', async () => {
+  expect(needsEngineCheck('on', {})).toBe(true)
+  expect(needsEngineCheck('effort', { engine: 'codex' })).toBe(true)
+  expect(needsEngineCheck('effort', { engine: 'auto' })).toBe(true)
+  expect(needsEngineCheck('effort', { engines: ['agy'] })).toBe(true)
+  expect(needsEngineCheck('effort', {})).toBe(false)
 })
