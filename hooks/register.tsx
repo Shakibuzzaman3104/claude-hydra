@@ -20,6 +20,20 @@ const REFRESH_MS = 120_000
 const WARN_AT = 90
 const LEADS = ['fable', 'opus', 'sonnet'] as const
 
+/** The CLI a Head runs on. Command Code is the original engine; CodeBuddy runs the same Heads through `codebuddy -p`. */
+export const ENGINES = ['commandcode', 'codebuddy'] as const
+export type Engine = (typeof ENGINES)[number]
+export const DEFAULT_ENGINE: Engine = 'commandcode'
+export const isEngine = (value: unknown): value is Engine => typeof value === 'string' && (ENGINES as readonly string[]).includes(value)
+export const ENGINE_LABEL: Record<Engine, string> = { commandcode: 'Command Code', codebuddy: 'CodeBuddy' }
+export const ENGINE_BIN: Record<Engine, string> = { commandcode: 'commandcode', codebuddy: 'codebuddy' }
+
+/** The session's engine; anything else stored there reads as `fallback`. */
+export const engineOf = (hydra: HydraMode | null, fallback: Engine = DEFAULT_ENGINE): Engine => (isEngine(hydra?.engine) ? hydra.engine : fallback)
+
+/** CodeBuddy model ids carry no provider prefix: `deepseek/deepseek-v4.1-flash` is `deepseek-v4.1-flash` there. */
+export const modelFor = (engine: Engine, model: string) => (engine === 'codebuddy' ? model.split('/').pop() || model : model)
+
 const lead = atom({ plugin: 'hydra', key: 'lead' } as const, [])
 const heads = atom({ plugin: 'hydra', key: 'heads' } as const, null)
 const warned = atom({ plugin: 'hydra', key: 'warned' } as const, [])
@@ -50,13 +64,23 @@ const effortRule = (effort: EffortMode, headModel: string) =>
   - A level the Head model lacks is raised to its nearest one.${headLevelsNote(headModel)}`
     : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
 
-export const HYDRA_POLICY = (headModel: string, effort: EffortMode) => `# Hydra mode (on)
-You are the Lead. Implementation goes to Heads: Command Code agents on ${headModel}, called through the ${HEAD_TOOL} tool.
+const lockdownRules = (engine: Engine) =>
+  engine === 'codebuddy'
+    ? `- Heads run through CodeBuddy's headless mode with permission rules Hydra writes for each Head, plus a write guard that checks real paths: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools and installs stay denied even then). Builds and tests are yours.`
+    : `- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.`
+
+const envRule = (engine: Engine) =>
+  engine === 'codebuddy'
+    ? `- \`.env\` files are denied to a Head's read, edit and search tools. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
+    : `- If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
+
+export const HYDRA_POLICY = (headModel: string, effort: EffortMode, engine: Engine = DEFAULT_ENGINE) => `# Hydra mode (on)
+You are the Lead. Implementation goes to Heads: ${ENGINE_LABEL[engine]} agents on ${headModel}, called through the ${HEAD_TOOL} tool.
 ${effortRule(effort, headModel)}
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
-- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.
+${lockdownRules(engine)}
 - A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
-- If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.
+${envRule(engine)}
 - Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
@@ -73,6 +97,7 @@ export const parseHydraArgs = (args: string) => {
   let leadModel: string | undefined
   let headModel: string | undefined
   let effort: string | undefined
+  let engine: string | undefined
   const rest: string[] = []
   for (let i = 0; i < words.length; i++) {
     const word = words[i]!
@@ -81,25 +106,28 @@ export const parseHydraArgs = (args: string) => {
     else if (rest.length === 0 && !leadModel && (LEADS as readonly string[]).includes(lower)) leadModel = lower
     else if (rest.length === 0 && lower.startsWith('head=')) headModel = word.slice(5)
     else if (rest.length === 0 && lower === '--head' && words[i + 1]) headModel = words[++i]
+    else if (rest.length === 0 && lower.startsWith('engine=')) engine = lower.slice(7)
+    else if (rest.length === 0 && lower === '--engine' && words[i + 1]) engine = words[++i]!.toLowerCase()
     else if (rest.length === 0 && lower.startsWith('effort=')) effort = lower.slice(7)
     else if (rest.length === 0 && lower === '--effort' && words[i + 1]) effort = words[++i]!.toLowerCase()
     else rest.push(word)
   }
   const first = rest[0] ?? ''
   const unknown = rest.length === 1 || /^[\w-]+=/.test(first) || first.startsWith('--') ? first : undefined
-  return { action, leadModel, headModel, effort, task: unknown ? '' : rest.join(' '), unknown }
+  return { action, leadModel, headModel, effort, ...(engine !== undefined ? { engine } : {}), task: unknown ? '' : rest.join(' '), unknown }
 }
 
-export const HYDRA_HELP = `🐉 Hydra: Claude leads, Command Code Heads implement.
+export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (Command Code or CodeBuddy agents) implement.
   /hydra                 turn Hydra on
   /hydra <task>          turn it on and hand Claude the task
   /hydra off             turn it off
   /hydra status          show what is set
   /hydra effort=<level>  auto (Claude picks per Head) or off, low, medium, high, xhigh, max
-  /hydra head=<model>    the Command Code model Heads run on
+  /hydra head=<model>    the model Heads run on
+  /hydra engine=<name>   commandcode or codebuddy: the CLI Heads run on
   /hydra statusline      show Hydra in your status line
   /heads                 watch the Heads work, live
-  /${USAGE_COMMAND}           Claude and Command Code usage`
+  /${USAGE_COMMAND}           Claude and Head usage`
 
 export const STATUSLINE_HELP = `Hydra writes its line to ~/.claude/hydra/status/<session id>.txt while it is on. To show it, add this before the final printf of your status line script, where $input is the JSON Claude Code passes and $out your line:
 
@@ -199,14 +227,16 @@ export const headsSummary = (list: readonly HeadRun[]) =>
 
 /** What a Head is doing now, or how it ended. */
 export const nowLine = (run: HeadRun) =>
-  run.state === 'done' ? `done${run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(4)}` : ''}` : run.activity ?? run.state
+  run.state === 'done' ? `done${run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(4)}` : run.tokens ? ` · ${run.tokens}` : ''}` : run.activity ?? run.state
 
 export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
+
+export const CODEBUDDY_NO_SPEND = 'CodeBuddy counts credits, not dollars, so Hydra shows tokens per Head instead of spend.'
 
 /** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
 export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
   if (!hydra?.isOn) return undefined
-  const parts = [`🐉 ${shortModel(hydra.headModel)} · ${effortModeOf(hydra)}`]
+  const parts = [`🐉 ${hydra.engine === 'codebuddy' ? 'CodeBuddy ' : ''}${shortModel(hydra.headModel)} · ${effortModeOf(hydra)}`]
   if (usage && !usage.error) {
     parts.push(`Heads 5h ${spentOf(usage.fiveHour.usd, limits.fiveHourUsd)}`, `7d ${spentOf(usage.weekly.usd, limits.weeklyUsd)}`)
   }
@@ -248,47 +278,60 @@ async function sweepStatusFiles($: EngineInterface) {
 
 export type Preflight = { problems: string[]; warnings: string[] }
 
-let isPreflightPassed = false
+const preflightPassed = new Set<Engine>()
 
 /** What stops Heads from running on this machine, each with what to run about it. */
-async function preflight($: EngineInterface): Promise<Preflight> {
-  if (isPreflightPassed) return { problems: [], warnings: [] }
+async function preflight($: EngineInterface, engine: Engine = DEFAULT_ENGINE): Promise<Preflight> {
+  if (preflightPassed.has(engine)) return { problems: [], warnings: [] }
   const works = (argv: string[]) => $.process.run(argv, { timeoutMs: 15_000 }).then(ran => ran.exitCode === 0, () => false)
   if (!(await works(['uname', '-s']))) return { problems: ['Hydra runs on macOS and Linux only for now. On Windows, run Claude Code under WSL.'], warnings: [] }
   const problems: string[] = []
-  if (!(await works(['/usr/bin/env', 'commandcode', '--version']))) {
-    problems.push('The Command Code CLI is not installed. Run `npm i -g command-code`, then `commandcode` once in a terminal to sign in.')
+  if (!(await works(['/usr/bin/env', ENGINE_BIN[engine], '--version']))) {
+    problems.push(
+      engine === 'codebuddy'
+        ? 'The CodeBuddy CLI is not installed. Run `npm i -g @tencent-ai/codebuddy-code`, then `codebuddy` once in a terminal to sign in.'
+        : 'The Command Code CLI is not installed. Run `npm i -g command-code`, then `commandcode` once in a terminal to sign in.',
+    )
   }
   if (!(await works(['/usr/bin/env', 'python3', '--version']))) {
     problems.push('python3 is missing; Hydra reads Head transcripts with it. Install it (on macOS: `xcode-select --install`).')
   }
   if (!(await works(['git', '--version']))) problems.push('git is missing. Install it (on macOS: `xcode-select --install`).')
   const home = await $.env.get('HOME')
-  const isSignedIn = home ? await $.fs.exists(`${home}/.commandcode/auth.json`).catch(() => false) : false
+  const isSignedIn = engine === 'codebuddy' || (home ? await $.fs.exists(`${home}/.commandcode/auth.json`).catch(() => false) : false)
   const warnings = isSignedIn || problems.length > 0 ? [] : ['Command Code looks signed out: run `commandcode` once in a terminal to sign in, or Heads will fail.']
-  isPreflightPassed = problems.length === 0
+  if (problems.length === 0) preflightPassed.add(engine)
   return { problems, warnings }
 }
 
 export const preflightText = (check: Preflight) =>
   [`🐉 Hydra can't start yet:`, ...check.problems.map(problem => `  • ${problem}`), 'Then run /hydra again.'].join('\n')
 
-export const CONSENT_QUESTION = (headModel: string) =>
-  `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through Command Code, and Heads edit this project unattended (Command Code's --yolo, locked down by Hydra: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
+export const CONSENT_QUESTION = (headModel: string, engine: Engine = DEFAULT_ENGINE) =>
+  engine === 'codebuddy'
+    ? `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through CodeBuddy, and Heads edit this project unattended (CodeBuddy's headless mode, locked down by Hydra's permission rules and write guard: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
+    : `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through Command Code, and Heads edit this project unattended (Command Code's --yolo, locked down by Hydra: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
 
 const CONSENT_YES = 'Turn Hydra on'
 
 /** Asks once, the first time Hydra turns on; the answer is kept across sessions. */
-async function hasConsent($: EngineInterface, headModel: string, mayAsk: boolean) {
-  if ((await $.store.get(CONSENT_KEY)) === true) return true
+async function hasConsent($: EngineInterface, headModel: string, mayAsk: boolean, engine: Engine = DEFAULT_ENGINE) {
+  const key = engine === 'codebuddy' ? `${CONSENT_KEY}:codebuddy` : CONSENT_KEY
+  if ((await $.store.get(key)) === true) return true
   if (!mayAsk) return false
-  const answer = await $.ui.ask(CONSENT_QUESTION(headModel), { options: [CONSENT_YES, 'Not now'], header: 'Hydra' }).catch(() => undefined)
+  const answer = await $.ui.ask(CONSENT_QUESTION(headModel, engine), { options: [CONSENT_YES, 'Not now'], header: 'Hydra' }).catch(() => undefined)
   if (answer !== CONSENT_YES) return false
-  await $.store.set(CONSENT_KEY, true)
+  await $.store.set(key, true)
   return true
 }
 
 async function refreshHeads($: EngineInterface, limits: HeadLimits) {
+  if (engineOf(await read($, mode)) === 'codebuddy') {
+    const measuredAt = await $.clock.now()
+    await update($, heads, () => ({ fiveHour: { usd: 0, resetsAt: null }, weekly: { usd: 0, resetsAt: null }, measuredAt, error: CODEBUDDY_NO_SPEND }))
+    await refreshStatus($, limits)
+    return
+  }
   try {
     const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`], { timeoutMs: 20_000 })
     const usage = JSON.parse(ran.stdout) as HeadsUsage
@@ -321,7 +364,7 @@ async function setRun($: EngineInterface, id: string, change: Partial<HeadRun> |
 }
 
 /** The events of Command Code's JSON stream the live view reads. */
-export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown> }
+export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown>; isError?: boolean }
 
 const WATCHED = new Set(['turn_end', 'thinking_start', 'tool_queued', 'tool_running', 'tool_completed', 'tool_denied'])
 const EDIT_TOOLS = new Set(['edit_file', 'write_file'])
@@ -356,7 +399,7 @@ export const applyEvent = (run: HeadRun, event: StreamEvent, labels: Map<string,
       const step: HeadStep = { isOk, text: label() }
       return {
         steps: [...(run.steps ?? []), step].slice(-MAX_STEPS),
-        edits: (run.edits ?? 0) + (isOk && EDIT_TOOLS.has(event.toolName ?? '') ? 1 : 0),
+        edits: (run.edits ?? 0) + (isOk && !event.isError && EDIT_TOOLS.has(event.toolName ?? '') ? 1 : 0),
         denials: (run.denials ?? 0) + (isOk ? 0 : 1),
       }
     }
@@ -670,7 +713,7 @@ const gate = createGate(MAX_PARALLEL)
  */
 type HeadResult = { text: string; isDone: boolean }
 /** `reply` hands a foreground call its result; it answers false once that call is gone, and the report goes out as a message. */
-type Job = { input: Record<string, unknown>; headModel: string; id: string; reply?: (result: HeadResult) => boolean }
+type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; reply?: (result: HeadResult) => boolean }
 
 /**
  * The foreground call's end of a worker-run Head. An interrupted call (the person typed, opened a pane, pressed Esc)
@@ -798,34 +841,24 @@ const backgroundJobs = createJobQueue()
 const pendingPrompts = createQueue<string>()
 let isWorkerRunning = false
 
-type Round = { finalText: string; sessionId?: string; subtype?: string; code: number | null; signal?: string; errors: string }
+type Round = { finalText: string; sessionId?: string; subtype?: string; code: number | null; signal?: string; errors: string; startedSession?: string }
+type RoundArgs = { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[] }
 
-async function runRound(
+/**
+ * Spawns a Head's CLI and feeds each stdout line to `onLine` (which returns true to stop the run early). The stream
+ * read is raced against `signal`, so a silent child (a model thinking, a hung CLI) cannot hold a stopped Head open.
+ */
+async function pump(
   $: EngineInterface,
-  argv: { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[] },
+  args: string[],
+  cwd: string,
   signal: AbortSignal,
-  onEvent: (event: StreamEvent) => Promise<void>,
-): Promise<Round> {
-  const args = ['/usr/bin/env', 'commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
-    '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
-  for (const dir of argv.addDirs) args.push('--add-dir', dir)
-  if (argv.effort) args.push('--effort', argv.effort)
-  if (argv.resume) args.push('--resume', argv.resume)
-  const child = $.process.spawn({ argv: args, cwd: argv.cwd })
+  onLine: (line: string) => Promise<boolean>,
+): Promise<{ errors: string; exit: { code: number | null; signal?: string }; isStopped: boolean }> {
+  const child = $.process.spawn({ argv: args, cwd })
   let pending = ''
   let errors = ''
-  let result: Record<string, unknown> | null = null
-  const take = async (line: string) => {
-    if (!line.trim().startsWith('{')) return
-    try {
-      const row = JSON.parse(line) as { type?: string; event?: StreamEvent }
-      if (row.type === 'result') result = row as Record<string, unknown>
-      if (row.event && WATCHED.has(row.event.type)) await onEvent(row.event)
-    } catch {
-      // A partial or non-JSON line from the CLI; the final result line is what counts.
-    }
-  }
-  // Raced against the abort, so a silent child (a model thinking, a hung CLI) cannot hold a stopped Head open.
+  let isStopped = false
   const aborted = new Promise<'aborted'>(resolve => {
     if (signal.aborted) resolve('aborted')
     else signal.addEventListener('abort', () => resolve('aborted'), { once: true })
@@ -844,25 +877,244 @@ async function runRound(
     }
     const lines = (pending + text).split('\n')
     pending = lines.pop() ?? ''
-    for (const line of lines) await take(line)
+    for (const line of lines) {
+      if (await onLine(line)) isStopped = true
+      if (isStopped) break
+    }
+    if (isStopped) {
+      void child.return({ code: null, signal: 'stopped' }).catch(() => undefined)
+      break
+    }
   }
-  await take(pending)
-  const exit = signal.aborted ? { code: null, signal: 'aborted' } : await child.result.catch(() => ({ code: null, signal: 'lost' }))
+  if (!isStopped && !signal.aborted && (await onLine(pending))) isStopped = true
+  const exit = signal.aborted ? { code: null, signal: 'aborted' } : isStopped ? { code: null, signal: 'stopped' } : await child.result.catch(() => ({ code: null, signal: 'lost' }))
+  return { errors, exit: { code: exit.code ?? null, signal: 'signal' in exit ? String(exit.signal ?? '') : undefined }, isStopped }
+}
+
+async function runRound(
+  $: EngineInterface,
+  argv: RoundArgs,
+  signal: AbortSignal,
+  onEvent: (event: StreamEvent) => Promise<void>,
+): Promise<Round> {
+  const args = ['/usr/bin/env', 'commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
+    '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
+  for (const dir of argv.addDirs) args.push('--add-dir', dir)
+  if (argv.effort) args.push('--effort', argv.effort)
+  if (argv.resume) args.push('--resume', argv.resume)
+  let result: Record<string, unknown> | null = null
+  const { errors, exit } = await pump($, args, argv.cwd, signal, async line => {
+    if (!line.trim().startsWith('{')) return false
+    try {
+      const row = JSON.parse(line) as { type?: string; event?: StreamEvent }
+      if (row.type === 'result') result = row as Record<string, unknown>
+      if (row.event && WATCHED.has(row.event.type)) await onEvent(row.event)
+    } catch {
+      // A partial or non-JSON line from the CLI; the final result line is what counts.
+    }
+    return false
+  })
   const final = result as Record<string, unknown> | null
   return {
     finalText: String(final?.finalText ?? ''),
     sessionId: typeof final?.sessionId === 'string' ? final.sessionId : undefined,
     subtype: typeof final?.subtype === 'string' ? final.subtype : undefined,
-    code: exit.code ?? null,
-    signal: 'signal' in exit ? String(exit.signal ?? '') : undefined,
+    code: exit.code,
+    signal: exit.signal,
     errors,
+  }
+}
+
+/** CodeBuddy tool names as the names Command Code's stream uses, so one live view reads both engines. */
+const BUDDY_TOOLS: Record<string, string> = {
+  Read: 'read_file', Edit: 'edit_file', MultiEdit: 'edit_file', NotebookEdit: 'edit_file', Write: 'write_file',
+  Bash: 'shell_command', Grep: 'grep', Glob: 'glob', LS: 'read_directory',
+}
+
+/** How CodeBuddy words a refused call in headless mode, and how Hydra's write guard words its own. */
+const BUDDY_DENIAL = /has been denied|requires approval|permission prompts are not available|blocked by|outside the project|write guard/i
+
+/** What a CodeBuddy Head did, accumulated from its stream: the turns it took, files it edited, calls refused, tokens used. */
+export type BuddyState = {
+  messages: Set<string>
+  calls: Map<string, { tool: string; input: Record<string, unknown> }>
+  files: Set<string>
+  denied: SessionReport['denied']
+  inputTokens: number
+  outputTokens: number
+}
+
+export const newBuddyState = (): BuddyState => ({ messages: new Set(), calls: new Map(), files: new Set(), denied: [], inputTokens: 0, outputTokens: 0 })
+
+type BuddyBlock = { type?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; is_error?: boolean; content?: unknown }
+export type BuddyRow = {
+  type?: string
+  subtype?: string
+  session_id?: string
+  message?: { id?: string; content?: unknown }
+  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+  result?: string
+  [key: string]: unknown
+}
+
+const blockText = (content: unknown): string =>
+  typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.map(part => (part && typeof part === 'object' && 'text' in part ? String((part as { text: unknown }).text) : '')).join(' ')
+      : ''
+
+/**
+ * Folds one line of CodeBuddy's `stream-json` into `state` and returns the live-view events it stands for: a new model
+ * message is a turn, a `tool_use` block a queued and running call, a `tool_result` a finished or refused one.
+ */
+export const foldBuddyRow = (row: BuddyRow, state: BuddyState): StreamEvent[] => {
+  const events: StreamEvent[] = []
+  const content = row.message?.content
+  if (!Array.isArray(content)) return events
+  if (row.type === 'assistant') {
+    const id = row.message?.id
+    if (id && !state.messages.has(id)) {
+      state.messages.add(id)
+      events.push({ type: 'turn_end' })
+    }
+    for (const block of content as BuddyBlock[]) {
+      if (block.type === 'thinking') events.push({ type: 'thinking_start' })
+      if (block.type === 'tool_use' && block.id && block.name) {
+        const tool = BUDDY_TOOLS[block.name] ?? block.name.toLowerCase()
+        const input = block.input ?? {}
+        state.calls.set(block.id, { tool, input })
+        events.push({ type: 'tool_queued', toolCallId: block.id, toolName: tool, input }, { type: 'tool_running', toolCallId: block.id, toolName: tool })
+      }
+    }
+  } else if (row.type === 'user') {
+    for (const block of content as BuddyBlock[]) {
+      if (block.type !== 'tool_result' || !block.tool_use_id) continue
+      const call = state.calls.get(block.tool_use_id)
+      const text = blockText(block.content)
+      const isDenied = block.is_error === true && BUDDY_DENIAL.test(text)
+      const path = call?.input.file_path ?? call?.input.notebook_path
+      if (isDenied) {
+        state.denied.push({ tool: call?.tool ?? 'tool', target: String(path ?? call?.input.path ?? call?.input.command ?? ''), text: text.replace(/\s+/g, ' ').trim() })
+      } else if (!block.is_error && call && EDIT_TOOLS.has(call.tool) && typeof path === 'string') {
+        state.files.add(path)
+      }
+      events.push({ type: isDenied ? 'tool_denied' : 'tool_completed', toolCallId: block.tool_use_id, toolName: call?.tool, isError: block.is_error === true })
+    }
+  }
+  return events
+}
+
+/** Shell commands a CodeBuddy Head never runs: Command Code's list in CodeBuddy's rule syntax, plus `.env` as a path. */
+export const BUDDY_SHELL_DENY = [
+  ...DANGEROUS_SHELL.map(rule => rule.replace(/^Shell\((.*)\)$/, 'Bash($1)')),
+  'Bash(* .env*)', 'Bash(*/.env*)', 'Bash(*=.env*)',
+]
+
+/** The built-in tools a CodeBuddy Head gets: files and search, and a shell only when its task asked for one. */
+export const buddyTools = (shell: boolean) => ['Read', 'Write', 'Edit', 'Glob', 'Grep', ...(shell ? ['Bash'] : [])].join(',')
+
+const trimSlash = (path: string) => (path.length > 1 ? path.replace(/\/+$/, '') : path)
+
+/**
+ * The permission settings one CodeBuddy Head runs with, passed with `--settings` (so no file lands in the project):
+ * edits are allowed only under the project and the folders it may write to, `.git` and `.env` files are denied
+ * everywhere, a folder it may only read is denied for edits, and the write guard checks each write's real path
+ * (a symlink in the project cannot lead out of it, which the path rules alone do not stop).
+ */
+export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string) => {
+  const own = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
+  const extra = union(head.addDirs.map(trimSlash), (head.writeDirs ?? []).map(trimSlash))
+  const readOnly = extra.filter(dir => !own.some(root => isWithin(dir, root)))
+  return {
+    permissions: {
+      allow: [...own.flatMap(root => [`Edit(${root}/**)`, `Write(${root}/**)`]), ...extra.map(dir => `Read(${dir}/**)`), ...(head.shell ? ['Bash'] : [])],
+      deny: [
+        ...own.flatMap(root => [
+          `Edit(${root}/.git/**)`, `Write(${root}/.git/**)`,
+          `Edit(${root}/**/.env)`, `Edit(${root}/**/.env.*)`, `Write(${root}/**/.env)`, `Write(${root}/**/.env.*)`,
+          `Read(${root}/**/.env)`, `Read(${root}/**/.env.*)`,
+        ]),
+        ...readOnly.flatMap(dir => [`Edit(${dir}/**)`, `Write(${dir}/**)`, `Read(${dir}/**/.env)`, `Read(${dir}/**/.env.*)`]),
+        ...(head.shell ? BUDDY_SHELL_DENY : []),
+      ],
+    },
+    ...(guard ? { hooks: { PreToolUse: [{ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command' as const, command: guard, timeout: 10 }] }] } } : {}),
+  }
+}
+
+/** CodeBuddy's `--effort` levels: Hydra's `off` is its `minimal`. */
+export const buddyEffort = (effort: string) => (effort === 'off' ? 'minimal' : effort)
+
+/**
+ * The CodeBuddy command line for one round. `default` permission mode plus the settings file means anything the rules
+ * do not allow is refused (headless mode cannot ask), so a Head cannot edit outside its folders or use a tool it was not given.
+ * The first round names its session; later rounds resume it.
+ */
+export const buddyArgs = (a: RoundArgs & { settings: string; shell: boolean; sessionId: string }) => {
+  const args = ['/usr/bin/env', 'codebuddy', '-p', a.prompt, '--model', a.model, '--output-format', 'stream-json', '--verbose',
+    '--permission-mode', 'default', '--tools', buddyTools(a.shell), '--settings', a.settings, '--setting-sources', 'local',
+    '--max-turns', String(a.maxTurns)]
+  for (const dir of a.addDirs) args.push('--add-dir', dir)
+  if (a.effort) args.push('--effort', buddyEffort(a.effort))
+  args.push(...(a.resume ? ['--resume', a.resume] : ['--session-id', a.sessionId]))
+  return args
+}
+
+/** 91530 and 421 as `91.5k in / 421 out`. */
+export const tokensText = (inputTokens: number, outputTokens: number) => {
+  const short = (n: number) => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+  return `${short(inputTokens)} in / ${short(outputTokens)} out`
+}
+
+/** A session id for a Head's first CodeBuddy round; later rounds resume it. */
+const buddySessionId = (id: string, now: number) => `hydra-${id}-${now.toString(36)}`
+
+async function runRoundBuddy(
+  $: EngineInterface,
+  argv: RoundArgs & { settings: string; shell: boolean; sessionId: string; state: BuddyState },
+  signal: AbortSignal,
+  onEvent: (event: StreamEvent) => Promise<void>,
+): Promise<Round> {
+  let result: BuddyRow | null = null
+  let started: string | undefined
+  let isCapped = false
+  const turnsBefore = argv.state.messages.size
+  const { errors, exit } = await pump($, buddyArgs(argv), argv.cwd, signal, async line => {
+    if (!line.trim().startsWith('{')) return false
+    let row: BuddyRow
+    try {
+      row = JSON.parse(line) as BuddyRow
+    } catch {
+      return false // A partial or non-JSON line; the result line is what counts.
+    }
+    if (row.type === 'system' && row.subtype === 'init' && typeof row.session_id === 'string') started = row.session_id
+    if (row.type === 'result') {
+      result = row
+      argv.state.inputTokens += (row.usage?.input_tokens ?? 0) + (row.usage?.cache_creation_input_tokens ?? 0) + (row.usage?.cache_read_input_tokens ?? 0)
+      argv.state.outputTokens += row.usage?.output_tokens ?? 0
+    }
+    for (const event of foldBuddyRow(row, argv.state)) await onEvent(event)
+    // CodeBuddy's own --max-turns is loose (a Head ran 13 turns under a cap of 2), so Hydra counts model messages itself.
+    if (argv.state.messages.size - turnsBefore > argv.maxTurns) isCapped = true
+    return isCapped
+  })
+  const final = result as BuddyRow | null
+  return {
+    finalText: String(final?.result ?? ''),
+    sessionId: typeof final?.session_id === 'string' ? final.session_id : undefined,
+    subtype: isCapped ? 'error_max_turns' : typeof final?.subtype === 'string' ? final.subtype : undefined,
+    code: isCapped ? 8 : exit.code,
+    signal: exit.signal,
+    errors,
+    startedSession: started,
   }
 }
 
 /** Runs a round at `effort`; if the model refuses that level, reruns once at its nearest supported one. */
 async function runRoundAt(
   $: EngineInterface,
-  argv: Parameters<typeof runRound>[1],
+  argv: RoundArgs,
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => Promise<void>,
 ): Promise<Round & { effort?: string }> {
@@ -888,11 +1140,11 @@ export const outsideFiles = (cwd: string, files: readonly string[], writeDirs: r
 export const formatReport = (head: {
   id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
-  writeDirs?: readonly string[]
+  writeDirs?: readonly string[]; engine?: Engine; tokens?: string
 }) => {
   const lines = [
-    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · $${(head.usd ?? 0).toFixed(4)}`,
-    `session ${head.sessionId ?? 'none'} (commandcode --resume ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
+    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}`,
+    `session ${head.sessionId ?? 'none'} (${ENGINE_BIN[head.engine ?? DEFAULT_ENGINE]} --resume ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
   if (head.writeDirs && head.writeDirs.length > 0) lines.push(`may also write: ${head.writeDirs.join(', ')}`)
@@ -907,10 +1159,10 @@ export const formatReport = (head: {
   return lines.join('\n')
 }
 
-async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, limits: HeadLimits, id: string) {
+async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, limits: HeadLimits, id: string, engine: Engine = DEFAULT_ENGINE) {
   const task = String(input.task ?? '').trim()
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : await $.session.root()
-  const model = typeof input.model === 'string' && input.model ? input.model : headModel
+  const model = modelFor(engine, typeof input.model === 'string' && input.model ? input.model : headModel)
   const maxTurns = Number(input.maxTurns ?? 60)
   const addDirs = strings(input.addDirs)
   const writeDirs = strings(input.writeDirs)
@@ -918,7 +1170,7 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
   const effort = isHeadEffort(input.effort) ? input.effort : undefined
 
-  const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot', cwd }
+  const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot', cwd, engine }
   await update($, runs, list => [...list, queued].slice(-RUN_HISTORY))
   await refreshStatus($, limits)
   await gate.enter()
@@ -927,7 +1179,7 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: stopReason(signal) })
     await refreshStatus($, limits)
     return {
-      text: formatReport({ id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '', exit: stopReason(signal) }),
+      text: formatReport({ id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '', exit: stopReason(signal), engine }),
       isDone: false,
     }
   }
@@ -935,7 +1187,7 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
   await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
   await update($, tick, () => startedAt)
   try {
-    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, signal, limits, id)
+    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine }, signal, limits, id)
   } finally {
     gate.leave()
   }
@@ -943,12 +1195,13 @@ async function runHead($: EngineInterface, input: Record<string, unknown>, headM
 
 async function runHeadInside(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort } = head
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine } = head
+  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort }, outer, limits, id)
   const refusal = await joinProject($, cwd, id, { addDirs, writeDirs, shell }, minutes)
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
@@ -1043,12 +1296,139 @@ async function runLockedHead(
   return { text, isDone }
 }
 
+type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string }
+
+const BUDDY_SETTINGS_DIR = '.claude/hydra/heads'
+
+/** Writes this Head's permission settings next to Hydra's status files, not in the project. Returns the file's path. */
+async function writeBuddySettings($: EngineInterface, cwd: string, id: string, needs: HeadNeeds): Promise<string> {
+  const home = (await $.env.get('HOME')) ?? ''
+  const dir = `${home}/${BUDDY_SETTINGS_DIR}`
+  await $.process.run(['/bin/mkdir', '-p', dir])
+  const path = `${dir}/${await $.session.id()}-${id}.json`
+  const settings = buddySettings(cwd, needs, guardCommand($.plugin.root, cwd, needs.writeDirs ?? []))
+  await $.fs.write(path, JSON.stringify(settings, null, 2) + '\n')
+  return path
+}
+
+/** Settings files a crashed session left behind: a Head never runs for a day. */
+async function sweepBuddySettings($: EngineInterface) {
+  const home = await $.env.get('HOME')
+  if (!home) return
+  const folder = `${home}/${BUDDY_SETTINGS_DIR}`
+  const now = await $.clock.now()
+  const entries = await $.fs.list(folder).catch(() => [])
+  const old = entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.json') && now - entry.mtimeMs > 86_400_000)
+  if (old.length > 0) await $.process.run(['/bin/rm', '-f', ...old.map(entry => `${folder}/${entry.name}`)]).catch(() => undefined)
+}
+
+const notStarted = (id: string, model: string, cwd: string, reason: string) => ({
+  text: formatReport({
+    id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '',
+    exit: 'not started', rulesNote: reason, engine: 'codebuddy' as const,
+  }),
+  isDone: false,
+})
+
+/** A Head on CodeBuddy: its own permission settings (no shared rules file), then rounds until it reports HEAD DONE. */
+async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: AbortSignal, limits: HeadLimits, id: string) {
+  const { cwd, model } = head
+  const unsupported = /^[A-Za-z]:|^\\\\|\\/.test(cwd) ? `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.` : undefined
+  let settings = ''
+  const refusal =
+    unsupported ??
+    (await writeBuddySettings($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell }).then(
+      path => {
+        settings = path
+        return undefined
+      },
+      error => `Hydra could not write the Head's permission settings (${String(error).slice(0, 160)}). Check that ~/.claude is writable, then run the Head again.`,
+    ))
+  if (refusal) {
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
+    await refreshStatus($, limits)
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`)
+  }
+  try {
+    return await runBuddyRounds($, head, settings, outer, limits, id)
+  } finally {
+    await $.process.run(['/bin/rm', '-f', settings]).catch(() => undefined)
+  }
+}
+
+async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: string, outer: AbortSignal, limits: HeadLimits, id: string) {
+  const { task, cwd, model, maxTurns, addDirs, shell, minutes } = head
+  // Read each round, so a /hydra effort change reaches a running Head at its next round.
+  const effortNow = async () => headEffort(effortModeOf(await read($, mode)), head.effort)
+  const controller = new AbortController()
+  outer.addEventListener('abort', () => controller.abort(), { once: true })
+  let timedOut = false
+  const timerStop = new AbortController()
+  void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(
+    () => {
+      timedOut = true
+      controller.abort()
+    },
+    () => undefined,
+  )
+  const signal = controller.signal
+
+  let turns = 0
+  const state = newBuddyState()
+  const labels = new Map<string, string>()
+  const onEvent = async (event: StreamEvent) => {
+    if (event.type === 'turn_end') turns++
+    await setRun($, id, run => applyEvent(run, event, labels, cwd))
+  }
+  const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
+    const effort = await effortNow()
+    await setRun($, id, { effort })
+    const ran = await runRoundBuddy($, { ...round, model, effort, cwd, addDirs, settings, shell, sessionId: buddySessionId(id, await $.clock.now()), state }, signal, onEvent)
+    return { ...ran, effort }
+  }
+
+  let round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
+  for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
+    await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
+    round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
+  }
+  const sessionId = round.sessionId ?? round.startedSession
+  let rounds = 1
+  while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
+    const denied = state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`)
+    await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
+    round = await roundAt({ prompt: continuePrompt(denied), maxTurns: maxTurns - turns, resume: sessionId })
+    rounds++
+  }
+
+  timerStop.abort()
+  const files = [...state.files]
+  const tokens = tokensText(state.inputTokens, state.outputTokens)
+  const finished = isFinished(round.finalText)
+  const isDone = round.code === 0 && round.subtype === 'success' && finished
+  const stopped = outer.aborted ? stopReason(outer) : undefined
+  await setRun($, id, {
+    state: isDone ? 'done' : 'failed', turns, tokens, endedAt: await $.clock.now(),
+    files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
+    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
+  })
+  void refreshHeads($, limits)
+
+  const text = formatReport({
+    id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: null, files, denied: state.denied,
+    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
+    writeDirs: head.writeDirs, engine: 'codebuddy', tokens,
+  })
+  return { text, isDone }
+}
+
 export const register: Register = (on, options) => {
   const fiveHourUsd = Number(options.headsFiveHourUsd ?? 0) || 0
   const weeklyUsd = Number(options.headsWeeklyUsd ?? 0) || 0
   const plan = String(options.headsPlan ?? '')
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
   const defaultEffort: EffortMode = isEffortMode(options.headEffort) ? options.headEffort : 'auto'
+  const defaultEngine: Engine = isEngine(options.headEngine) ? options.headEngine : DEFAULT_ENGINE
   const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {
@@ -1065,7 +1445,7 @@ export const register: Register = (on, options) => {
           const job = await backgroundJobs.next()
           const controller = new AbortController()
           controllers.set(job.id, controller)
-          void runHead($, job.input, job.headModel, controller.signal, limits, job.id)
+          void runHead($, job.input, job.headModel, controller.signal, limits, job.id, job.engine)
             .catch(async error => {
               const reason = `failed before it reported: ${String(error).slice(0, 300)}`
               const now = await $.clock.now()
@@ -1080,22 +1460,22 @@ export const register: Register = (on, options) => {
         }
       })()
     }
-    await $.command.register({ name: USAGE_COMMAND, description: 'Hydra: Claude and Command Code usage limits', immediate: true })
+    await $.command.register({ name: USAGE_COMMAND, description: 'Hydra: Claude and Head usage limits', immediate: true })
     await $.command.register({ name: 'heads', description: 'Hydra: watch the Heads work, live (opens without interrupting Claude)', immediate: true })
     await $.command.register({
       name: 'hydra',
-      description: 'Turn on Hydra: Claude leads, Command Code heads implement',
-      argumentHint: '[task] [effort=<level>] [head=<model>] | off | status | help',
+      description: 'Turn on Hydra: Claude leads, Heads (Command Code or CodeBuddy agents) implement',
+      argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | off | status | help',
     })
     await $.tool.register({
       name: 'head',
-      description: 'Hydra: run one Command Code Head (a cheaper coding agent) headlessly on a self-contained implementation task. Returns its report, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
+      description: 'Hydra: run one Head (a cheaper coding agent on Command Code or CodeBuddy, per the person\'s engine setting) headlessly on a self-contained implementation task. Returns its report, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
       inputSchema: {
         type: 'object',
         properties: {
           task: { type: 'string', description: 'Self-contained spec: goal, exact files, constraints, acceptance check' },
           cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
-          model: { type: 'string', description: 'Command Code model id; defaults to the Hydra head model' },
+          model: { type: 'string', description: 'Head model id (CodeBuddy ids have no provider prefix); defaults to the Hydra head model' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
@@ -1110,14 +1490,15 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'control',
-      description: 'Hydra control for the Lead: list the Heads (with their state, turns, time and what they are doing), stop a stuck or wrong Head by id or all of them, clear finished ones from the views, or turn Hydra on/off and set the Head effort or model.',
+      description: 'Hydra control for the Lead: list the Heads (with their state, turns, time and what they are doing), stop a stuck or wrong Head by id or all of them, clear finished ones from the views, or turn Hydra on/off and set the Head effort, model or engine.',
       inputSchema: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['list', 'stop', 'clear', 'on', 'off', 'effort'], description: 'What to do (default list)' },
           id: { type: 'string', description: 'For stop: the Head name (e.g. prefs-utils), or all; default all' },
           effort: { type: 'string', enum: [...EFFORT_MODES], description: 'For on/effort: auto or a fixed level' },
-          headModel: { type: 'string', description: 'For on/effort: the Command Code model the Heads run on' },
+          headModel: { type: 'string', description: 'For on/effort: the model the Heads run on' },
+          engine: { type: 'string', enum: [...ENGINES], description: 'For on/effort: the CLI Heads run on, commandcode or codebuddy' },
         },
       },
     })
@@ -1128,6 +1509,7 @@ export const register: Register = (on, options) => {
     for (const cwd of new Set([...stranded, await $.session.root()])) await writeRules($, cwd).catch(() => undefined)
     await update($, runs, list => stopRuns(list, 'all', 'ended by a reload or restart', startNow))
     void sweepStatusFiles($)
+    void sweepBuddySettings($)
     const usage = await $.session.usage()
     await storeLead($, usage.rateLimits, limits)
     void refreshHeads($, limits)
@@ -1151,16 +1533,17 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'hydra' }, async ($, e) => {
-    const { action, leadModel, headModel, effort, task, unknown } = parseHydraArgs(e.args)
+    const { action, leadModel, headModel, effort, engine, task, unknown } = parseHydraArgs(e.args)
     const stored = await read($, mode)
-    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort }
+    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
     const currentEffort = stored ? effortModeOf(stored) : defaultEffort
+    const currentEngine = engineOf(stored, defaultEngine)
 
     if (action === 'help') return { text: HYDRA_HELP }
     if (action === 'statusline') return { text: STATUSLINE_HELP }
     if (action === 'status') {
       const model = await $.session.model()
-      return { text: current.isOn ? `🐉 Hydra on · Lead ${model} · Head ${current.headModel} · effort ${currentEffort}` : 'Hydra is off. Turn it on with /hydra.' }
+      return { text: current.isOn ? `🐉 Hydra on · Lead ${model} · Head ${current.headModel} on ${ENGINE_LABEL[currentEngine]} · effort ${currentEffort}` : 'Hydra is off. Turn it on with /hydra.' }
     }
     if (action === 'off') {
       await update($, mode, () => ({ ...current, isOn: false }))
@@ -1171,10 +1554,11 @@ export const register: Register = (on, options) => {
 
     if (unknown) return { text: `Unknown option "${unknown}". A task needs a few words; /hydra help lists the options.` }
     if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks low to max per Head) or one of: ${EFFORTS.join(', ')}.` }
-    const next = { isOn: true, headModel: headModel ?? current.headModel, effort: effort ?? currentEffort }
-    const check = await preflight($)
+    if (engine !== undefined && !isEngine(engine)) return { text: `Unknown engine "${engine}". Use ${ENGINES.join(' or ')}.` }
+    const next = { isOn: true, headModel: headModel ?? current.headModel, effort: effort ?? currentEffort, engine: engine ?? currentEngine }
+    const check = await preflight($, next.engine as Engine)
     if (check.problems.length > 0) return { text: preflightText(check) }
-    if (!(await hasConsent($, next.headModel, true))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
+    if (!(await hasConsent($, next.headModel, true, next.engine as Engine))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
     await update($, mode, () => next)
     $.ui.invalidate('tool.describe')
     await refreshStatus($, limits)
@@ -1183,7 +1567,7 @@ export const register: Register = (on, options) => {
     const changed = current.isOn && next.effort !== currentEffort ? ' Running Heads switch at their next round.' : ''
     const effortText = next.effort === 'auto' ? 'effort auto (Lead picks low to max)' : `effort ${next.effort}`
     const warnings = check.warnings.map(warning => `\n⚠ ${warning}`).join('')
-    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} · ${effortText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}`
+    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} on ${ENGINE_LABEL[next.engine as Engine]} · ${effortText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}`
 
     // A command's `context` only rides along with the next prompt; submitting the task starts the Lead's turn now.
     if (task) {
@@ -1199,7 +1583,7 @@ export const register: Register = (on, options) => {
     const hydra = await read($, mode)
     if (!hydra?.isOn) return composed
 
-    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, effortModeOf(hydra)), scope: 'session' as const }] }
+    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, effortModeOf(hydra), engineOf(hydra, defaultEngine)), scope: 'session' as const }] }
   })
 
   on('tool.describe', { tool: HEAD_TOOL }, async ($, e, next) => {
@@ -1217,24 +1601,25 @@ export const register: Register = (on, options) => {
     const writable = await resolveWriteDirs($, cwd, strings(e.writeDirs))
     if ('refusal' in writable) return { deny: writable.refusal }
     const input = { ...e, writeDirs: writable.dirs }
+    const engine = engineOf(hydra, defaultEngine)
     const taken = new Set([...usedNames, ...(await read($, runs)).map(run => run.id)])
     const id = headName(e.name, String(e.task ?? ''), taken)
     usedNames.add(id)
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment, or run this Head without background.' }
-      backgroundJobs.push({ input, headModel: hydra.headModel, id })
+      backgroundJobs.push({ input, headModel: hydra.headModel, id, engine })
 
-      return { result: `Head ${id} started in the background on ${hydra.headModel}. Its report arrives as a message from the hydra plugin when it finishes.` }
+      return { result: `Head ${id} started in the background on ${hydra.headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
-      const { text } = await runHead($, input, hydra.headModel, next.signal, limits, id)
+      const { text } = await runHead($, input, hydra.headModel, next.signal, limits, id, engine)
 
       return { result: text }
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
     // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
     const { box, reply } = createReplyBox<HeadResult>(next.signal)
-    backgroundJobs.push({ input, headModel: hydra.headModel, id, reply })
+    backgroundJobs.push({ input, headModel: hydra.headModel, id, engine, reply })
     const result = await waitForResult(box, next.signal, () => $.process.run(['/bin/sleep', '1'], { timeoutMs: 5_000 }).then(() => undefined))
 
     return { result: result?.text ?? `Head ${id} keeps running in the background after the call was interrupted; its report arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} if it is no longer wanted.` }
@@ -1248,7 +1633,7 @@ export const register: Register = (on, options) => {
     const ids = typeof e.id === 'string' && e.id && e.id !== 'all' ? [e.id] : ('all' as const)
     if (action === 'list') {
       const hydra = await read($, mode)
-      const head = hydra?.isOn ? `Hydra on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'Hydra off'
+      const head = hydra?.isOn ? `Hydra on · Head ${hydra.headModel} on ${ENGINE_LABEL[engineOf(hydra, defaultEngine)]} · effort ${effortModeOf(hydra)}` : 'Hydra off'
 
       return { result: `${head}\n${listRuns(await read($, runs), now, id => controllers.has(id))}` }
     }
@@ -1266,19 +1651,21 @@ export const register: Register = (on, options) => {
       return { result: 'Cleared finished and failed Heads from the views.' }
     }
     const stored = await read($, mode)
-    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort }
+    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
     if (action === 'off') {
       await update($, mode, () => ({ ...current, isOn: false }))
     } else if (action === 'on' || action === 'effort') {
+      if (e.engine !== undefined && !isEngine(e.engine)) return { deny: `engine must be one of: ${ENGINES.join(', ')}.` }
+      const engine = isEngine(e.engine) ? e.engine : engineOf(stored, defaultEngine)
       if (action === 'on') {
-        const check = await preflight($)
+        const check = await preflight($, engine)
         if (check.problems.length > 0) return { deny: preflightText(check) }
-        if (!(await hasConsent($, current.headModel, false))) return { deny: 'The person turns Hydra on with /hydra the first time: it asks them to agree to sending code to the Head model.' }
+        if (!(await hasConsent($, current.headModel, false, engine))) return { deny: 'The person turns Hydra on with /hydra the first time: it asks them to agree to sending code to the Head model.' }
       }
       const effort = typeof e.effort === 'string' ? e.effort : undefined
       if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
       const headModel = typeof e.headModel === 'string' && e.headModel ? e.headModel : current.headModel
-      await update($, mode, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored) }))
+      await update($, mode, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine }))
     } else {
       return { deny: `Unknown action "${action}". Use list, stop, clear, on, off or effort.` }
     }
@@ -1286,7 +1673,7 @@ export const register: Register = (on, options) => {
     await refreshStatus($, limits)
     const hydra = await read($, mode)
 
-    return { result: hydra?.isOn ? `Hydra on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'Hydra off.' }
+    return { result: hydra?.isOn ? `Hydra on · Head ${hydra.headModel} on ${ENGINE_LABEL[engineOf(hydra, defaultEngine)]} · effort ${effortModeOf(hydra)}` : 'Hydra off.' }
   }).catch(($, e, next) => ({ deny: `Hydra control failed (${next.error.message ?? next.error.kind}).` }))
 
   on('command.run', { command: 'heads' }, async $ => {
@@ -1340,7 +1727,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="column">
-        <Text bold>🐉 Hydra · {hydra?.isOn ? `${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
+        <Text bold>🐉 Hydra · {hydra?.isOn ? `${ENGINE_LABEL[engineOf(hydra, defaultEngine)]} · ${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
         <Text dimColor>{list.length > 0 ? `${headsSummary(list)} · 1-9 or j/k to pick a Head, s to stop it` : 'No Heads in this session yet. Claude starts them once Hydra is on (/hydra).'}</Text>
         {list.length > 1 && (
           <Box>
@@ -1375,7 +1762,7 @@ export const register: Register = (on, options) => {
               <Text color={glyphColor(chosen)}>{barOf(chosen.maxTurns ? (chosen.turns / chosen.maxTurns) * 100 : 0, barWidth)}</Text>
             </Box>
             <Text dimColor>
-              {chosen.edits ?? 0} edits · {chosen.denials ?? 0} denied{chosen.costUsd !== undefined ? ` · $${chosen.costUsd.toFixed(4)}` : ''}
+              {chosen.edits ?? 0} edits · {chosen.denials ?? 0} denied{chosen.costUsd !== undefined ? ` · $${chosen.costUsd.toFixed(4)}` : chosen.tokens ? ` · ${chosen.tokens}` : ''}
             </Text>
             <Box marginTop={1}>
               <Text color={glyphColor(chosen)}>{glyphOf(chosen, frame)} </Text>
@@ -1448,10 +1835,10 @@ export const register: Register = (on, options) => {
         {windows.length === 0 && <Text dimColor>No reading yet: limits arrive with the first reply on a subscription.</Text>}
         {windows.map(w => row(leadLabel(w.kind), w.percentUsed, resetsIn(w.resetsAt, now)))}
 
-        <Text bold>⌘ Heads · Command Code</Text>
+        <Text bold>⌘ Heads · {ENGINE_LABEL[engineOf(hydra, defaultEngine)]}</Text>
         <Text dimColor>{plan ? `Plan · ${plan} · ` : ''}estimated from local session costs</Text>
-        {!usage && <Text dimColor>Reading ~/.commandcode…</Text>}
-        {usage?.error && <Text color="red">{usage.error}</Text>}
+        {!usage && <Text dimColor>Reading Head usage…</Text>}
+        {usage?.error && <Text color={usage.error === CODEBUDDY_NO_SPEND ? undefined : 'red'} dimColor={usage.error === CODEBUDDY_NO_SPEND} wrap="wrap">{usage.error}</Text>}
         {usage && !usage.error && spend('5-hour', usage.fiveHour.usd, fiveHourUsd, usage.fiveHour.resetsAt)}
         {usage && !usage.error && spend('Weekly', usage.weekly.usd, weeklyUsd, usage.weekly.resetsAt)}
         {usage && !usage.error && (fiveHourUsd <= 0 || weeklyUsd <= 0) && (
@@ -1460,7 +1847,7 @@ export const register: Register = (on, options) => {
           </Box>
         )}
 
-        <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
+        <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} on ${ENGINE_LABEL[engineOf(hydra, defaultEngine)]} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
         {recent.length > 0 && <Text dimColor>{headsSummary(recent)} · /heads to watch them</Text>}
       </Box>
     )

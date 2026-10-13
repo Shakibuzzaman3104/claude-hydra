@@ -7,6 +7,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
+  ENGINES, engineOf, isEngine, modelFor, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -520,4 +521,134 @@ test('flags writes outside the project only when no granted folder holds them', 
   expect(outsideFiles('/r', ['/rx/a.kt'])).toEqual(['/rx/a.kt'])
   expect(formatReport({ id: 'h', model: 'm', cwd: '/r', finished: true, rounds: 1, turns: 1, usd: 0, files: ['/s/b.kt'], denied: [], finalText: '', exit: '0', writeDirs: ['/s'] }))
     .toContain('may also write: /s')
+})
+
+test('knows the two engines, and falls back to the default for anything else', async () => {
+  expect(ENGINES).toEqual(['commandcode', 'codebuddy'])
+  expect(isEngine('codebuddy')).toBe(true)
+  expect(isEngine('claude')).toBe(false)
+  expect(engineOf({ isOn: true, headModel: 'm', engine: 'codebuddy' }, 'commandcode')).toBe('codebuddy')
+  expect(engineOf({ isOn: true, headModel: 'm' }, 'codebuddy')).toBe('codebuddy')
+  expect(engineOf({ isOn: true, headModel: 'm', engine: 'nope' }, 'commandcode')).toBe('commandcode')
+  expect(engineOf(null)).toBe('commandcode')
+})
+
+test('drops the provider prefix of a model only for CodeBuddy', async () => {
+  expect(modelFor('codebuddy', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
+  expect(modelFor('codebuddy', 'deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
+  expect(modelFor('commandcode', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek/deepseek-v4.1-flash')
+})
+
+test('reads engine= and --engine from /hydra, only before the task', async () => {
+  expect(parseHydraArgs('engine=codebuddy')).toMatchObject({ action: 'on', engine: 'codebuddy', task: '' })
+  expect(parseHydraArgs('--engine CodeBuddy head=deepseek-v4.1-flash build it')).toMatchObject({ engine: 'codebuddy', headModel: 'deepseek-v4.1-flash', task: 'build it' })
+  expect(parseHydraArgs('fix the engine=commandcode label').engine).toBeUndefined()
+  expect(HYDRA_HELP).toContain('/hydra engine=<name>')
+})
+
+test('shows the engine in the status line only for CodeBuddy, and tells the Lead which lockdown applies', async () => {
+  const on = { isOn: true, headModel: 'deepseek-v4.1-flash', effort: 'low', engine: 'codebuddy' }
+  expect(statusLine(on, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 CodeBuddy deepseek-v4.1-flash · low')
+  const policy = HYDRA_POLICY('deepseek-v4.1-flash', 'auto', 'codebuddy')
+  expect(policy).toContain('CodeBuddy agents on deepseek-v4.1-flash')
+  expect(policy).toContain("CodeBuddy's headless mode")
+  expect(policy).not.toContain('--yolo')
+  expect(policy).not.toContain('Heads have no search tool')
+  expect(HYDRA_POLICY('m', 'auto')).toContain("Command Code's --yolo")
+})
+
+test('turns a CodeBuddy stream into live events: a turn per model message, tools queued then finished or refused', async () => {
+  const state = newBuddyState()
+  const assistant = (id: string, content: unknown[]) => ({ type: 'assistant', message: { id, content } })
+  const result = (id: string, text: string, isError = false) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: isError, content: [{ type: 'text', text }] }] } })
+
+  expect(foldBuddyRow(assistant('m1', [{ type: 'thinking', thinking: '…' }]), state)).toEqual([{ type: 'turn_end' }, { type: 'thinking_start' }])
+  expect(foldBuddyRow(assistant('m1', [{ type: 'text', text: 'on it' }]), state)).toEqual([])
+  const queued = foldBuddyRow(assistant('m1', [{ type: 'tool_use', id: 'c1', name: 'Edit', input: { file_path: '/p/a.txt' } }]), state)
+  expect(queued).toEqual([
+    { type: 'tool_queued', toolCallId: 'c1', toolName: 'edit_file', input: { file_path: '/p/a.txt' } },
+    { type: 'tool_running', toolCallId: 'c1', toolName: 'edit_file' },
+  ])
+  expect(foldBuddyRow(result('c1', 'Successfully edited file: /p/a.txt'), state)).toEqual([{ type: 'tool_completed', toolCallId: 'c1', toolName: 'edit_file', isError: false }])
+  expect(state.files).toEqual(new Set(['/p/a.txt']))
+
+  foldBuddyRow(assistant('m2', [{ type: 'tool_use', id: 'c2', name: 'Write', input: { file_path: '/out/x.txt' } }]), state)
+  expect(foldBuddyRow(result('c2', 'Error: Permission to use Write has been denied because this tool requires approval', true), state)).toEqual([{ type: 'tool_denied', toolCallId: 'c2', toolName: 'write_file', isError: true }])
+  expect(state.denied).toHaveLength(1)
+  expect(state.denied[0]).toMatchObject({ tool: 'write_file', target: '/out/x.txt' })
+  expect(state.files).toEqual(new Set(['/p/a.txt']))
+
+  foldBuddyRow(assistant('m3', [{ type: 'tool_use', id: 'c3', name: 'Write', input: { file_path: '/p/link/y.txt' } }]), state)
+  foldBuddyRow(result('c3', 'Error: Hydra: /p/link/y.txt is outside the project. Do not retry it', true), state)
+  expect(state.denied).toHaveLength(2)
+
+  foldBuddyRow(assistant('m4', [{ type: 'tool_use', id: 'c4', name: 'Read', input: { file_path: '/p/missing' } }]), state)
+  expect(foldBuddyRow(result('c4', 'Error: File does not exist', true), state)).toEqual([{ type: 'tool_completed', toolCallId: 'c4', toolName: 'read_file', isError: true }])
+  expect(state.denied).toHaveLength(2)
+  expect(state.messages.size).toBe(4)
+})
+
+test('does not count a failed edit as an edit, and still counts a refused call as a denial', async () => {
+  const run: HeadRun = { id: 'h', task: 't', model: 'm', state: 'running', turns: 0 }
+  const labels = new Map<string, string>()
+  const queued = applyEvent(run, { type: 'tool_queued', toolCallId: 'c', toolName: 'edit_file', input: { file_path: '/p/a.txt' } }, labels, '/p')
+  expect(queued).toEqual({})
+  expect(applyEvent(run, { type: 'tool_completed', toolCallId: 'c', toolName: 'edit_file', isError: true }, labels, '/p')).toMatchObject({ edits: 0, denials: 0 })
+  expect(applyEvent(run, { type: 'tool_completed', toolCallId: 'c', toolName: 'edit_file', isError: false }, labels, '/p')).toMatchObject({ edits: 1, denials: 0 })
+  expect(applyEvent(run, { type: 'tool_denied', toolCallId: 'c', toolName: 'edit_file', isError: true }, labels, '/p')).toMatchObject({ edits: 0, denials: 1 })
+})
+
+test('allows edits only under the project and granted folders, and protects history and secrets everywhere', async () => {
+  const settings = buddySettings('/work/app', { addDirs: ['/refs', '/work/pkg'], writeDirs: ['/work/pkg'], shell: false }, 'GUARD')
+  const { allow, deny } = settings.permissions
+  expect(allow).toEqual(['Edit(/work/app/**)', 'Write(/work/app/**)', 'Edit(/work/pkg/**)', 'Write(/work/pkg/**)', 'Read(/refs/**)', 'Read(/work/pkg/**)'])
+  expect(allow).not.toContain('Bash')
+  for (const root of ['/work/app', '/work/pkg']) {
+    expect(deny).toEqual(expect.arrayContaining([`Edit(${root}/.git/**)`, `Write(${root}/.git/**)`, `Edit(${root}/**/.env)`, `Read(${root}/**/.env.*)`]))
+  }
+  expect(deny).toEqual(expect.arrayContaining(['Edit(/refs/**)', 'Write(/refs/**)', 'Read(/refs/**/.env)']))
+  expect(deny).not.toContain('Edit(/work/pkg/**)')
+  expect(deny).not.toContain('Bash(git commit*)')
+  expect(settings.hooks?.PreToolUse[0]).toMatchObject({ matcher: 'Write|Edit|MultiEdit|NotebookEdit', hooks: [{ type: 'command', command: 'GUARD', timeout: 10 }] })
+  expect('hooks' in buddySettings('/work/app', { addDirs: [], shell: false })).toBe(false)
+})
+
+test('gives a CodeBuddy Head a shell only when asked, and never the dangerous commands', async () => {
+  const shell = buddySettings('/work/app', { addDirs: [], shell: true })
+  expect(shell.permissions.allow).toContain('Bash')
+  expect(shell.permissions.deny).toEqual(expect.arrayContaining(['Bash(git commit*)', 'Bash(rm -r*)', 'Bash(rm -f*)', 'Bash(curl*)', 'Bash(sudo*)', 'Bash(* .env*)', 'Bash(*/.env*)']))
+  expect(BUDDY_SHELL_DENY.every(rule => rule.startsWith('Bash('))).toBe(true)
+  expect(buddyTools(false)).toBe('Read,Write,Edit,Glob,Grep')
+  expect(buddyTools(true)).toBe('Read,Write,Edit,Glob,Grep,Bash')
+})
+
+test('builds the CodeBuddy command: no yolo, default permission mode, only the granted tools, and a session to resume', async () => {
+  const base = { prompt: 'do it', model: 'deepseek-v4.1-flash', maxTurns: 30, cwd: '/work/app', addDirs: ['/refs'], settings: '/h/s.json', shell: false, sessionId: 'hydra-x-1' }
+  const first = buddyArgs({ ...base, effort: 'low' })
+  expect(first.slice(0, 5)).toEqual(['/usr/bin/env', 'codebuddy', '-p', 'do it', '--model'])
+  expect(first).toEqual(expect.arrayContaining(['deepseek-v4.1-flash', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--tools', 'Read,Write,Edit,Glob,Grep', '--settings', '/h/s.json', '--setting-sources', 'local', '--max-turns', '30', '--add-dir', '/refs', '--effort', 'low', '--session-id', 'hydra-x-1']))
+  expect(first).not.toContain('--resume')
+  for (const unsafe of ['--yolo', '-y', '--dangerously-skip-permissions', 'bypassPermissions', 'acceptEdits']) expect(first).not.toContain(unsafe)
+  const resumed = buddyArgs({ ...base, resume: 'abc' })
+  expect(resumed).toEqual(expect.arrayContaining(['--resume', 'abc']))
+  expect(resumed).not.toContain('--session-id')
+  expect(resumed).not.toContain('--effort')
+  expect(buddyArgs({ ...base, effort: 'off' })).toEqual(expect.arrayContaining(['--effort', 'minimal']))
+  expect(buddyEffort('max')).toBe('max')
+})
+
+test('reports a CodeBuddy Head by tokens and how to resume it, not by dollars', async () => {
+  expect(tokensText(91_530, 421)).toBe('92k in / 421 out')
+  expect(tokensText(2_500, 18)).toBe('2.5k in / 18 out')
+  const text = formatReport({
+    id: 'h', model: 'deepseek-v4.1-flash', cwd: '/p', sessionId: 'hydra-h-1', finished: true, rounds: 1, turns: 4, usd: null,
+    files: ['/p/a.txt'], denied: [], finalText: 'ok HEAD DONE', exit: '0', engine: 'codebuddy', tokens: '92k in / 421 out',
+  })
+  expect(text).toContain('4 turns · 92k in / 421 out')
+  expect(text).toContain('(codebuddy --resume hydra-h-1)')
+  expect(text).not.toContain('$0.0000')
+  const old = formatReport({ id: 'h', model: 'm', cwd: '/p', sessionId: 's', finished: true, rounds: 1, turns: 1, usd: 0.5, files: [], denied: [], finalText: '', exit: '0' })
+  expect(old).toContain('$0.5000')
+  expect(old).toContain('(commandcode --resume s)')
+  expect(nowLine({ id: 'h', task: 't', model: 'm', state: 'done', turns: 1, tokens: '2.5k in / 18 out' })).toBe('done · 2.5k in / 18 out')
 })

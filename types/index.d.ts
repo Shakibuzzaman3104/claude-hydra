@@ -13,7 +13,7 @@ export type HeadsUsage = {
   error?: string
 }
 
-export type HydraMode = { isOn: boolean; headModel: string; effort?: string }
+export type HydraMode = { isOn: boolean; headModel: string; effort?: string; /** The CLI Heads run on: 'commandcode' (default) or 'codebuddy'. */ engine?: string }
 
 export type HeadStep = { isOk: boolean; text: string }
 
@@ -24,6 +24,7 @@ export type HeadRun = {
   state: 'queued' | 'running' | 'done' | 'failed'
   turns: number
   costUsd?: number
+  tokens?: string
   effort?: string
   maxTurns?: number
   startedAt?: number
@@ -33,6 +34,7 @@ export type HeadRun = {
   edits?: number
   denials?: number
   cwd?: string
+  engine?: string
   files?: string[]
   summary?: string
 }
