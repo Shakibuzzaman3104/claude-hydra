@@ -56,7 +56,7 @@ const lockdownRules = (engine: Engine) =>
   engine === 'agy'
     ? `- Heads run through \`agy -p\` in Antigravity's terminal sandbox with permission rules Hydra writes for each Head: they can write only inside \`cwd\` (and \`writeDirs\`), never \`.git\`, read outside it only the folders you list in \`addDirs\` (and no credential folders), and have no shell unless you pass \`shell: true\` (then a sandboxed shell with no network: destructive git, rm -r/-f, sudo, installs and downloads stay denied or fail). A refused call ends the Head's turn, and Hydra resumes it. Builds and tests are yours.`
     : engine === 'codex'
-    ? `- Heads run through \`codex exec\` inside Codex's OS sandbox with a filesystem profile Hydra writes for each Head: they can write only inside \`cwd\` (and \`writeDirs\`), never \`.git\` or \`.env\` files, and read the rest of the disk except credential folders (\`~/.ssh\`, \`~/.aws\`, \`~/.codex\`, \`~/.claude\`…). They always have a shell, but it has no network: installs, \`git push\`, downloads and builds that fetch dependencies fail, and \`git commit\` fails because \`.git\` is read-only. Run those yourself. \`shell\` and \`addDirs\` change nothing for them.`
+    ? `- Heads run through \`codex exec\` inside Codex's OS sandbox with a filesystem profile Hydra writes for each Head: they can write only inside \`cwd\` (and \`writeDirs\`), never \`.git\` or \`.env\` files, and read the system, the project, \`addDirs\` folders and toolchain folders (git config, nvm, cargo, gradle…) but nothing else in the home folder: other repos, documents and credential folders are unreadable. Put any other folder a Head must read in \`addDirs\`. They always have a shell, but it has no network: installs, \`git push\`, downloads and builds that fetch dependencies fail, and \`git commit\` fails because \`.git\` is read-only. Run those yourself. \`shell\` changes nothing for them.`
     : engine === 'codebuddy'
     ? `- Heads run through CodeBuddy's headless mode with permission rules Hydra writes for each Head, plus a write guard that checks real paths: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools and installs stay denied even then). Builds and tests are yours.`
     : `- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.`
@@ -69,6 +69,14 @@ const envRule = (engine: Engine) =>
     : engine === 'codebuddy'
     ? `- \`.env\` files are denied to a Head's read, edit and search tools. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
     : `- If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
+
+/** One line per engine for auto mode, where the pool's full lockdown paragraphs would repeat themselves. */
+const LOCKDOWN_BRIEF: Record<Engine, string> = {
+  codex: 'OS sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads the project, `addDirs` and toolchains but nothing else in home, no `.env`; always a shell, never network (no installs, push or commit).',
+  agy: 'permission rules + sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads only `addDirs` outside, no credential folders; shell only with `shell: true`, never network; a refused call ends a round (Hydra resumes it).',
+  codebuddy: 'permission rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), reads `addDirs`; shell only with `shell: true` (dangerous commands stay denied).',
+  commandcode: '--yolo with deny rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), no credential folders; shell only with `shell: true`; no search tool while a `.env` is in reach (name exact files).',
+}
 
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
 export const ROUTES: Record<Engine, string> = {
@@ -87,8 +95,6 @@ const autoEffortRule = (effort: EffortMode) =>
   - Never raise effort to make up for a vague brief: write the spec first.`
     : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
 
-/** The policy lines that differ per engine, one sub-bullet per engine in the pool. */
-const perEngine = (pool: readonly Engine[], text: (engine: Engine) => string) => pool.map(engine => `  - ${ENGINE_LABEL[engine]}: ${text(engine).replace(/^- /, '')}`).join('\n')
 
 const autoPolicy = (effort: EffortMode, pool: readonly Engine[]) => `# Hydra mode (on, auto engines)
 You are the Lead. Implementation goes to Heads, called through the ${HEAD_TOOL} tool, and you choose the engine for each Head with its \`engine\` field (one of: ${pool.join(', ')}). A call without one is refused.
@@ -97,11 +103,10 @@ ${pool.map(engine => `  - \`${engine}\` (${ENGINE_LABEL[engine]}): ${ROUTES[engi
 - Routing rules: when unsure, take the cheapest engine in the pool that can do it (${pool.includes('codebuddy') ? 'codebuddy' : pool.includes('commandcode') ? 'commandcode' : pool[0]}); put the hard 20% on the strongest (${pool.includes('codex') ? 'codex' : pool[0]}). A Head that fails its check goes back on the same engine one effort level up, then on a stronger engine. Do not switch engines for a vague brief: rewrite it. Say in your plan which engine each task goes to, and why in a few words.
 ${autoEffortRule(effort)}
 - Plan first: each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
-- How each engine locks a Head down:
-${perEngine(pool, lockdownRules)}
+- How each engine locks a Head down (builds and tests are yours):
+${pool.map(engine => `  - ${ENGINE_LABEL[engine]}: ${LOCKDOWN_BRIEF[engine]}`).join('\n')}
 - A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
-- About secrets:
-${perEngine(pool, envRule)}
+- About secrets: \`.env\` files are kept from Heads, but other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable, and on ${pool.filter(engine => engine === 'codebuddy' || engine === 'commandcode').map(engine => ENGINE_LABEL[engine]).join(' and ') || 'some engines'} a Head with \`shell: true\` can still read a \`.env\` through a command that does not name it. Avoid shell, and keep Heads out of projects where that matters.
 - Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Dependent tasks run in sequence; independent ones in parallel.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
