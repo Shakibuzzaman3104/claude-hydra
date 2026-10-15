@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in Hydra is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please do not report security issues here; use the Security tab instead.
+  - type: input
+    id: hydra-version
+    attributes:
+      label: Hydra version
+      description: The version from `.claude-plugin/plugin.json` or the CHANGELOG.
+      placeholder: "0.12.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine
+      description: Which Head engine was running when this happened?
+      options:
+        - commandcode
+        - codebuddy
+        - codex
+        - agy
+        - opencode
+        - workbuddy
+        - auto
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Windows (native)
+    validations:
+      required: true
+  - type: input
+    id: claude-code-version
+    attributes:
+      label: Claude Code version
+      description: The output of `claude --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: head-report
+    attributes:
+      label: The Head's report text
+      description: Paste the report the Head returned, if there was one. Remove anything private first.
+      render: text
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that shows the problem.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
