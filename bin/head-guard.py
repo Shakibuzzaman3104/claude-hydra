@@ -24,13 +24,16 @@ def deny(reason):
 
 
 def is_inside(path, root):
-    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+    # normcase makes the comparison case-insensitive and slash-agnostic on Windows, and is a no-op elsewhere.
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    prefix = root if root.endswith(os.sep) else root + os.sep  # a drive root ("C:\") or "/" already ends with one
+    return path == root or path.startswith(prefix)
 
 
 def main():
     roots = [os.path.realpath(root) for root in sys.argv[1:]]
     root = roots[0]
-    event = json.load(sys.stdin)
+    event = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))  # the hook's JSON is UTF-8, whatever the console code page
     if event.get("tool_name") not in WRITE_TOOLS and event.get("tool_display_name") not in WRITE_NAMES:
         return
     tool_input = event.get("tool_input") or {}

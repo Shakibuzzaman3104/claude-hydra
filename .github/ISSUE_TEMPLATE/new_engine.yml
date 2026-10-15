@@ -1,0 +1,45 @@
+name: New engine request
+description: Propose a new coding-agent CLI to use as a Head
+labels: ["engine"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A Head engine must be launchable headless and lockable. Answer the questions below as far as you can; "unknown" is fine.
+  - type: input
+    id: cli-name
+    attributes:
+      label: CLI name and install command
+      description: The command name and how to install it.
+      placeholder: "mycli — npm install -g mycli"
+    validations:
+      required: true
+  - type: input
+    id: headless-flag
+    attributes:
+      label: Headless / print flag
+      description: The flag that runs one prompt non-interactively and exits (for example `-p` or `exec`).
+    validations:
+      required: true
+  - type: textarea
+    id: output-format
+    attributes:
+      label: Structured output format
+      description: Does it emit JSON, JSONL or another machine-readable stream? Show a short sample if you can.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: permissions
+    attributes:
+      label: How can permissions or sandbox be restricted?
+      description: Flags, config keys or modes that limit writes to the project, block network access and block shell commands.
+    validations:
+      required: true
+  - type: textarea
+    id: auth-config
+    attributes:
+      label: How is the auth or config directory chosen?
+      description: Environment variables or flags that set the config and credential location, so Hydra can keep it out of the Head's reach.
+    validations:
+      required: true

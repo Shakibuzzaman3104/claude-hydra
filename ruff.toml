@@ -1,0 +1,6 @@
+line-length = 140
+target-version = "py39"
+
+[lint]
+# Pinned so a newer ruff's default rule set cannot break CI.
+select = ["E4", "E7", "E9", "F"]

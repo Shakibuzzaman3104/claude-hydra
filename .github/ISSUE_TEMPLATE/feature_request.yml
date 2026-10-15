@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an idea or improvement for Hydra
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the task or pain point, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you imagine it working.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about, if any.
+  - type: checkboxes
+    id: lockdown
+    attributes:
+      label: Lockdown impact
+      description: Does this change what a Head is allowed to do?
+      options:
+        - label: This change may affect how a Head is launched or locked down (writes, reads, network or shell rules).

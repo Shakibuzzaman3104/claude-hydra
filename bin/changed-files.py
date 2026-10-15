@@ -20,7 +20,7 @@ def candidates(root):
         if ran.returncode == 0:
             for name in ran.stdout.decode('utf-8', 'replace').split('\0'):
                 if name:
-                    yield os.path.join(root, name)
+                    yield os.path.join(root, name.replace('/', os.sep))  # the listing uses forward slashes, also on Windows
             return
     except (OSError, subprocess.SubprocessError):
         pass

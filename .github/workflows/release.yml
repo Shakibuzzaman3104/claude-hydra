@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check the tag matches the plugin version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 -c 'import json; print(json.load(open(".claude-plugin/plugin.json"))["version"])')
+          if [ "$version" != "${TAG#v}" ]; then
+            echo "::error::Tag $TAG does not match .claude-plugin/plugin.json version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # The CHANGELOG.md section "## <version> ..." up to the next "## ", if there is one.
+          awk -v v="$VERSION" '
+            /^## / { if (found) exit; found = (index($0, "## " v) == 1 && substr($0, 4 + length(v), 1) ~ /^([[:space:]]|$)/); next }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ -s release-notes.md ]; then
+            gh release create "$TAG" --title "$TAG" --notes-file release-notes.md
+          else
+            echo "No CHANGELOG.md section for $VERSION; using generated notes only."
+            gh release create "$TAG" --generate-notes
+          fi
