@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { failureReason } from './engines/agy'
-import { buddySecretDeny, buddySettings } from './engines/codebuddy'
+import { buddySecretDeny, buddySettings, isSignedOutRow } from './engines/codebuddy'
 import { CODEX_PLAN_MODEL, CODEX_PLAN_REFUSAL, codexFilesystem, foldCodexRow, newCodexState } from './engines/codex'
 import { headSettings, secretReadDeny } from './engines/commandcode'
 import { REPORT_HEAD, reportContext, reportNotice } from './lib/format'
@@ -143,4 +143,12 @@ test('recognises Codex refusing a model the ChatGPT plan does not offer', async 
   expect(CODEX_PLAN_REFUSAL.test(`{"type":"error","status":400,"error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}`)).toBe(true)
   expect(CODEX_PLAN_REFUSAL.test('usage limit reached')).toBe(false)
   expect(CODEX_PLAN_MODEL).toBe('gpt-6-luna')
+})
+
+test('a CodeBuddy sign-in prompt stops the Head instead of looking like a reply', async () => {
+  const signedOut = { type: 'assistant', message: { id: 'm', content: [{ type: 'text', text: 'Authentication required. Please use /login command to sign in to your account' }], usage: { output_tokens: 0 } } }
+  expect(isSignedOutRow(signedOut)).toBe(true)
+  // A model that writes about /login spends tokens doing it.
+  expect(isSignedOutRow({ ...signedOut, message: { ...signedOut.message, usage: { output_tokens: 40 } } })).toBe(false)
+  expect(isSignedOutRow({ type: 'assistant', message: { id: 'm', content: [{ type: 'text', text: 'Done.' }], usage: { output_tokens: 0 } } })).toBe(false)
 })

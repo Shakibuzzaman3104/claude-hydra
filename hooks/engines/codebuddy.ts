@@ -35,12 +35,12 @@ export type BuddyState = {
 
 export const newBuddyState = (): BuddyState => ({ messages: new Set(), calls: new Map(), files: new Set(), denied: [], inputTokens: 0, outputTokens: 0 })
 
-type BuddyBlock = { type?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; is_error?: boolean; content?: unknown }
+type BuddyBlock = { type?: string; text?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; is_error?: boolean; content?: unknown }
 export type BuddyRow = {
   type?: string
   subtype?: string
   session_id?: string
-  message?: { id?: string; content?: unknown }
+  message?: { id?: string; content?: unknown; usage?: { output_tokens?: number } }
   usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
   result?: string
   [key: string]: unknown
@@ -163,6 +163,14 @@ const buddySessionId = (id: string, now: number) => `hydra-${id}-${now.toString(
 const isBuddyError = (row: BuddyRow | null) =>
   row !== null && (row.is_error === true || (typeof row.subtype === 'string' && row.subtype.startsWith('error') && row.subtype !== 'error_max_turns'))
 
+/** How CodeBuddy answers in a round when its config folder has no sign-in: a reply, not an error, so the round looks finished. */
+export const BUDDY_SIGNED_OUT = /Authentication required\. Please use \/login/i
+
+/** Whether a stream row is that sign-in reply (it costs no tokens, which a model's own mention of /login would). */
+export const isSignedOutRow = (row: BuddyRow) =>
+  row.type === 'assistant' && Array.isArray(row.message?.content) && (row.message?.usage?.output_tokens ?? 0) === 0 &&
+  (row.message?.content as BuddyBlock[]).some(block => block.type === 'text' && BUDDY_SIGNED_OUT.test(block.text ?? ''))
+
 async function runRoundBuddy(
   $: EngineInterface,
   argv: RoundArgs & { settings: string; shell: boolean; sessionId: string; state: BuddyState },
@@ -172,6 +180,7 @@ async function runRoundBuddy(
   let result: BuddyRow | null = null
   let started: string | undefined
   let isCapped = false
+  let isSignedOut = false
   const turnsBefore = argv.state.messages.size
   const { errors, exit } = await pump($, buddyArgs(argv), argv.cwd, signal, async line => {
     if (!line.trim().startsWith('{')) return false
@@ -182,6 +191,10 @@ async function runRoundBuddy(
       return false // A partial or non-JSON line; the result line is what counts.
     }
     if (row.type === 'system' && row.subtype === 'init' && typeof row.session_id === 'string') started = row.session_id
+    if (isSignedOutRow(row)) {
+      isSignedOut = true
+      return true
+    }
     if (row.type === 'result') {
       result = row
       argv.state.inputTokens += (row.usage?.input_tokens ?? 0) + (row.usage?.cache_creation_input_tokens ?? 0) + (row.usage?.cache_read_input_tokens ?? 0)
@@ -193,6 +206,10 @@ async function runRoundBuddy(
     return isCapped
   }, argv.env)
   const final = result as BuddyRow | null
+  if (isSignedOut) {
+    // Not resumable: every later round would get the same answer.
+    return { finalText: '', sessionId: started, subtype: 'error', code: 41, signal: exit.signal, errors: 'The CLI is not signed in: it answered "Authentication required. Please use /login". Sign it in (see /hydra engines) and run the Head again.', startedSession: started }
+  }
   return {
     finalText: String(final?.result ?? ''),
     sessionId: typeof final?.session_id === 'string' ? final.session_id : undefined,
