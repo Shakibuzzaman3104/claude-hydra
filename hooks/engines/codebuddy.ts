@@ -11,6 +11,7 @@ import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isRe
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
 
 /** CodeBuddy tool names as the names Command Code's stream uses, so one live view reads both engines. */
@@ -138,7 +139,7 @@ export const buddyEffort = (effort: string) => (effort === 'off' ? 'minimal' : e
  * The first round names its session; later rounds resume it.
  */
 export const buddyArgs = (a: RoundArgs & { settings: string; shell: boolean; sessionId: string }) => {
-  const args = ['/usr/bin/env', 'codebuddy', '-p', a.prompt, '--model', a.model, '--output-format', 'stream-json', '--verbose',
+  const args = ['codebuddy', '-p', a.prompt, '--model', a.model, '--output-format', 'stream-json', '--verbose',
     '--permission-mode', 'default', '--tools', buddyTools(a.shell), '--settings', a.settings, '--setting-sources', 'local',
     '--max-turns', String(a.maxTurns)]
   for (const dir of a.addDirs) args.push('--add-dir', dir)
@@ -197,7 +198,7 @@ const BUDDY_SETTINGS_DIR = '.claude/hydra/heads'
 
 /** Writes this Head's permission settings next to Hydra's status files, not in the project. Returns the file's path. */
 async function writeBuddySettings($: EngineInterface, cwd: string, id: string, needs: HeadNeeds): Promise<string> {
-  const home = (await $.env.get('HOME')) ?? ''
+  const home = await homeOf($)
   const dir = `${home}/${BUDDY_SETTINGS_DIR}`
   await $.process.run(['/bin/mkdir', '-p', dir])
   const path = `${dir}/${await $.session.id()}-${id}.json`
@@ -208,7 +209,7 @@ async function writeBuddySettings($: EngineInterface, cwd: string, id: string, n
 
 /** Settings files a crashed session left behind: a Head never runs for a day. */
 export async function sweepBuddySettings($: EngineInterface) {
-  const home = await $.env.get('HOME')
+  const home = await homeOf($)
   if (!home) return
   const folder = `${home}/${BUDDY_SETTINGS_DIR}`
   const now = await $.clock.now()

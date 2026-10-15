@@ -12,6 +12,7 @@ import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, is
 import type { Round, RoundArgs } from '../lib/runtime'
 import { CODEX_SECRET_DIRS, DANGEROUS_SHELL, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
 
 /** Antigravity's tool names as the names Command Code's stream uses, so one live view reads every engine. */
@@ -141,11 +142,11 @@ export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: r
 }
 
 /**
- * The Antigravity command line for one round. The shell wrapper closes stdin, `HOME` points at the Head's own settings folder
+ * The Antigravity command line for one round, started with stdin closed and `HOME` pointing at the Head's own settings folder
  * (there is no flag for settings), and `--sandbox` is what keeps a shell inside the project. Later rounds `--conversation` the first.
  */
 export const agyArgs = (a: RoundArgs & { home: string }) => {
-  const args = ['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', '/usr/bin/env', `HOME=${a.home}`, 'agy', '-p', a.prompt,
+  const args = ['agy', '-p', a.prompt,
     '--model', AGY_MODEL, '--sandbox', '--output-format', 'stream-json']
   if (a.effort) args.push('--effort', agyEffort(a.effort))
   // No --add-dir: it turns the project read-only in the sandbox. The permission rules already open the folders the Head may use.
@@ -175,7 +176,7 @@ async function runRoundAgy(
     for (const event of foldAgyRow(row, state)) await onEvent(event)
     if (state.turns - turnsBefore > argv.maxTurns) isCapped = true
     return isCapped
-  })
+  }, { HOME: argv.home })
   return {
     finalText: state.finalText,
     sessionId: state.conversationId,
@@ -205,7 +206,7 @@ async function findEnvFiles($: EngineInterface, roots: readonly string[]): Promi
  * in `~/.claude`, owner-only. Removed when the Head ends. Returns the folder.
  */
 async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: HeadNeeds): Promise<string> {
-  const real = (await $.env.get('HOME')) ?? ''
+  const real = await homeOf($)
   const dir = `${real}/${AGY_HOME_DIR}/agy-${await $.session.id()}-${id}`
   const config = `${dir}/.gemini/antigravity-cli`
   await $.process.run(['/bin/mkdir', '-p', config])
@@ -217,7 +218,7 @@ async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: 
 
 /** (Re)writes the Head's rules, looking again for `.env` files: a rule names a file, so each round covers the ones made since the last. */
 async function writeAgySettings($: EngineInterface, dir: string, cwd: string, needs: HeadNeeds) {
-  const real = (await $.env.get('HOME')) ?? ''
+  const real = await homeOf($)
   const roots = [cwd, ...(needs.writeDirs ?? [])]
   const envFiles = await findEnvFiles($, union(roots, needs.addDirs))
   const present: string[] = []
@@ -232,7 +233,7 @@ async function removeAgyHome($: EngineInterface, dir: string) {
 
 /** Head folders a crashed session left behind: a Head never runs for a day. */
 export async function sweepAgyHomes($: EngineInterface) {
-  const home = await $.env.get('HOME')
+  const home = await homeOf($)
   if (!home) return
   const folder = `${home}/${AGY_HOME_DIR}`
   const now = await $.clock.now()

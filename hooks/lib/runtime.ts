@@ -5,12 +5,13 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { HeadRun, HeadsUsage, LeadWindow } from '../../types'
-import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, engineOf, isAuto, poolOf } from './engines'
+import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
 import type { Engine } from './engines'
 import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, WARN_AT, formatReport, leadLabel, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
 import { AUTO_CONSENT_QUESTION, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, union } from './safety'
+import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
 import { readHeads, readMode, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
 
 const STATUS_KEEP_MS = 7 * 86_400_000
@@ -40,7 +41,7 @@ let lastStatus: string | undefined
 export async function refreshStatus($: EngineInterface, limits: HeadLimits) {
   const line = statusLine(await readMode($), await readHeads($), limits) ?? ''
   if (line === lastStatus) return
-  const home = await $.env.get('HOME')
+  const home = await homeOf($)
   if (!home) return
   await $.fs.write(statusFile(home, await $.session.id()), line ? `${line}\n` : '')
   lastStatus = line
@@ -48,7 +49,7 @@ export async function refreshStatus($: EngineInterface, limits: HeadLimits) {
 
 /** Deletes other sessions' status files untouched for a week. */
 export async function sweepStatusFiles($: EngineInterface) {
-  const home = await $.env.get('HOME')
+  const home = await homeOf($)
   if (!home) return
   const folder = `${home}/.claude/hydra/status`
   const now = await $.clock.now()
@@ -62,29 +63,40 @@ export type Preflight = { problems: string[]; warnings: string[] }
 
 const preflightPassed = new Set<Engine>()
 
+/** How to install each engine's CLI and sign in, as one line the person can act on. */
+export const INSTALL_HINT: Record<Engine, string> = {
+  commandcode: 'The Command Code CLI is not installed. Run `npm i -g command-code`, then `commandcode` once in a terminal to sign in.',
+  codebuddy: 'The CodeBuddy CLI is not installed. Run `npm i -g @tencent-ai/codebuddy-code`, then `codebuddy` once in a terminal to sign in.',
+  codex: 'The Codex CLI is not installed. Run `npm i -g @openai/codex`, then `codex login` in a terminal to sign in.',
+  agy: 'The Antigravity CLI is not installed. Run `curl -fsSL https://antigravity.google/cli/install.sh | bash` (read the script first if you like), then `agy` once in a terminal to sign in.',
+}
+
+/**
+ * Engines whose lockdown has been verified on native Windows. An engine left out refuses to start there instead of
+ * running a Head unlocked: Command Code's path rules do not match drive paths (see DEVELOPING.md), and the others have
+ * not been smoke-tested on Windows yet. Under WSL Hydra is on Linux and every engine runs.
+ */
+export const WINDOWS_ENGINES: ReadonlySet<Engine> = new Set<Engine>()
+
+export const windowsRefusal = (engine: Engine) =>
+  `${ENGINE_LABEL[engine]} Heads are not locked down on native Windows yet, so Hydra will not start them there. Run Claude Code under WSL (every engine works there)${WINDOWS_ENGINES.size > 0 ? `, or use ${[...WINDOWS_ENGINES].map(name => ENGINE_LABEL[name]).join(' or ')}` : ''}.`
+
 /** What stops Heads from running on this machine, each with what to run about it. */
 export async function preflight($: EngineInterface, engine: Engine = DEFAULT_ENGINE): Promise<Preflight> {
   if (preflightPassed.has(engine)) return { problems: [], warnings: [] }
-  const works = (argv: string[]) => $.process.run(argv, { timeoutMs: 15_000 }).then(ran => ran.exitCode === 0, () => false)
-  if (!(await works(['uname', '-s']))) return { problems: ['Hydra runs on macOS and Linux only for now. On Windows, run Claude Code under WSL.'], warnings: [] }
+  const works = (argv: readonly string[]) => $.process.run(argv, { timeoutMs: 15_000 }).then(ran => ran.exitCode === 0, () => false)
+  const isWindows = (await platformOf($)) === 'windows'
+  if (isWindows && !WINDOWS_ENGINES.has(engine)) return { problems: [windowsRefusal(engine)], warnings: [] }
   const problems: string[] = []
-  if (!(await works(['/usr/bin/env', ENGINE_BIN[engine], '--version']))) {
-    problems.push(
-      engine === 'agy'
-        ? 'The Antigravity CLI is not installed. Run `curl -fsSL https://antigravity.google/cli/install.sh | bash` (read the script first if you like), then `agy` once in a terminal to sign in.'
-        : engine === 'codex'
-        ? 'The Codex CLI is not installed. Run `npm i -g @openai/codex`, then `codex login` in a terminal to sign in.'
-        : engine === 'codebuddy'
-        ? 'The CodeBuddy CLI is not installed. Run `npm i -g @tencent-ai/codebuddy-code`, then `codebuddy` once in a terminal to sign in.'
-        : 'The Command Code CLI is not installed. Run `npm i -g command-code`, then `commandcode` once in a terminal to sign in.',
-    )
-  }
-  if (!(await works(['/usr/bin/env', 'python3', '--version']))) {
-    problems.push('python3 is missing; Hydra reads Head transcripts with it. Install it (on macOS: `xcode-select --install`).')
+  if (!(await canRun($, ENGINE_BIN[engine]))) problems.push(INSTALL_HINT[engine])
+  if (!(await pythonOf($))) {
+    problems.push(isWindows
+      ? 'Python 3 is missing; Hydra reads Head transcripts with it. Install it from python.org (it adds the `py` launcher).'
+      : 'python3 is missing; Hydra reads Head transcripts with it. Install it (on macOS: `xcode-select --install`).')
   }
   if (!(await works(['git', '--version']))) problems.push('git is missing. Install it (on macOS: `xcode-select --install`).')
-  const home = await $.env.get('HOME')
-  if (engine === 'codex' && problems.length === 0 && !(await works(['/usr/bin/env', 'codex', 'login', 'status']))) {
+  const home = await homeOf($)
+  if (engine === 'codex' && problems.length === 0 && !(await canRun($, 'codex', ['login', 'status']))) {
     problems.push('Codex is not signed in. Run `codex login` in a terminal (`codex login --device-auth` on a remote machine), then try again.')
   }
   if (engine === 'agy' && problems.length === 0 && !(home && (await $.fs.exists(`${home}/${AGY_TOKEN}`).catch(() => false)))) {
@@ -155,7 +167,7 @@ export async function refreshHeads($: EngineInterface, limits: HeadLimits) {
     return
   }
   try {
-    const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`], { timeoutMs: 20_000 })
+    const ran = await runScript($, 'cc-usage.py', [], 20_000)
     const usage = JSON.parse(ran.stdout) as HeadsUsage
     await updateHeads($, () => usage)
   } catch (error) {
@@ -210,7 +222,7 @@ export const isResumable = (code: number | null) => code === 0 || code === 8 || 
  * `/`, the home folder, a folder above the project or one inside it.
  */
 export async function resolveWriteDirs($: EngineInterface, cwd: string, dirs: readonly string[]): Promise<{ dirs: string[] } | { refusal: string }> {
-  const home = (await $.env.get('HOME')) ?? ''
+  const home = await homeOf($)
   const realCwd = (await $.fs.stat(cwd, { resolve: true }).catch(() => undefined))?.realPath ?? cwd
   const resolved: string[] = []
   for (const dir of dirs) {
@@ -338,8 +350,10 @@ export async function pump(
   cwd: string,
   signal: AbortSignal,
   onLine: (line: string) => Promise<boolean>,
+  env?: Record<string, string>,
 ): Promise<{ errors: string; exit: { code: number | null; signal?: string }; isStopped: boolean }> {
-  const child = $.process.spawn({ argv: args, cwd })
+  const [bin, ...rest] = args
+  const child = $.process.spawn({ argv: [...(await commandOf($, bin!)), ...rest], cwd, input: '', ...(env ? { env } : {}) })
   let pending = ''
   let errors = ''
   let isStopped = false
@@ -359,7 +373,7 @@ export async function pump(
       errors = (errors + text).slice(-2000)
       continue
     }
-    const lines = (pending + text).split('\n')
+    const lines = (pending + text).split(/\r?\n/)
     pending = lines.pop() ?? ''
     for (const line of lines) {
       if (await onLine(line)) isStopped = true
@@ -383,15 +397,24 @@ export const notStarted = (id: string, model: string, cwd: string, reason: strin
   isDone: false,
 })
 
+/** Prints the real path of each argument as a JSON list; one Python call works on every platform, unlike `realpath`. */
+const REALPATHS = 'import json, os, sys; print(json.dumps([os.path.realpath(p) for p in sys.argv[1:]]))'
+
 /** The real path of each folder, so the profile's rules match what the sandbox sees through a symlink. */
 export async function realPaths($: EngineInterface, paths: readonly string[]): Promise<string[]> {
-  return Promise.all(paths.map(path => $.process.run(['/usr/bin/env', 'realpath', '--', path], { timeoutMs: 5_000 }).then(ran => (ran.exitCode === 0 && ran.stdout.trim() ? ran.stdout.trim() : path), () => path)))
+  if (paths.length === 0) return []
+  const python = await pythonOf($)
+  const ran = python
+    ? await $.process.run([...python, '-I', '-c', REALPATHS, ...paths], { timeoutMs: 10_000 }).catch(() => undefined)
+    : undefined
+  const real = ran?.exitCode === 0 ? (JSON.parse(ran.stdout) as string[]) : []
+  return paths.map((path, index) => (real[index] ? toSlashes(real[index]!) : path))
 }
 
 /** Files under `dirs` written since `since` (ms), by the file system's own account: Codex's stream misses what a shell command writes. */
 export async function changedFiles($: EngineInterface, since: number, dirs: readonly string[]): Promise<string[]> {
   try {
-    const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/changed-files.py`, String(since - 2_000), ...dirs], { timeoutMs: 30_000 })
+    const ran = await runScript($, 'changed-files.py', [String(since - 2_000), ...dirs])
     return JSON.parse(ran.stdout) as string[]
   } catch {
     return []
