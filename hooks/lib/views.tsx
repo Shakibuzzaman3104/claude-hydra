@@ -5,12 +5,15 @@
 import type { EngineInterface, RenderInput } from 'claude-code'
 
 import { effortModeOf } from './effort'
-import { engineLabel, isAuto } from './engines'
+import { ENGINE_LABEL, engineLabel, isAuto, isEngine } from './engines'
 import type { Engine } from './engines'
-import { barOf, colorOf, elapsedOf, glyphColor, glyphOf, headsSummary, isLive, isNoSpend, leadLabel, nowLine, percentOf, resetsIn, shortModel } from './format'
+import { bandLayout, barOf, clockOf, colorOf, compactNumber, elapsedOf, engineMixOf, engineMixText, fitText, glyphColor, glyphOf, headsSummary, isLive, isNoSpend, leadLabel, nowLine, percentOf, resetsIn, shortModel, spendText, timelineBar, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf } from './format'
 import type { HeadLimits } from './format'
 import { stopHeadsNow } from './runtime'
 import { readHeads, readLead, readMode, readRuns, readSelected, readTick, updateSelected } from './state'
+
+/** Cells a view may draw across: the narrower of the site's own width and the surface's, 80 where neither is known. */
+const columnsOf = (e: { props: { bodyColumns?: number }; viewport?: { columns: number } }) => Math.min(e.props.bodyColumns ?? 80, e.viewport?.columns ?? 80)
 
 /** The band above the prompt: one row per live Head, or `undefined` when none is live (the engine then draws its own). */
 export async function bandView($: EngineInterface, e: RenderInput<'AbovePrompt'>) {
@@ -20,21 +23,23 @@ export async function bandView($: EngineInterface, e: RenderInput<'AbovePrompt'>
   if (live.length === 0) return undefined
   const isRouted = isAuto(await readMode($))
   const { Box, Text } = $.ui.resolve(e)
+  const layout = bandLayout(columnsOf(e), isRouted)
+  const spend = spendText(totalsOf(live, now))
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text bold>🐉 Hydra </Text>
-        <Text dimColor>{headsSummary(live)} · /heads for detail</Text>
+        <Text dimColor wrap="truncate-end">{headsSummary(live)}{spend ? ` · ${spend}` : ''} · /heads for detail</Text>
       </Box>
       {live.map(run => (
         <Box key={run.id}>
           <Text color={glyphColor(run)}>{glyphOf(run, frame)} </Text>
-          <Text bold>{run.id} </Text>
-          {isRouted && <Text color="cyan">{(run.engine ?? '').padEnd(11)} </Text>}
-          <Text dimColor>{(run.effort ?? '').padEnd(5)} </Text>
-          <Text color={glyphColor(run)}>{barOf(run.maxTurns ? (run.turns / run.maxTurns) * 100 : 0, 8)}</Text>
-          <Text dimColor> {String(run.turns).padStart(2)}/{run.maxTurns ?? '?'} {elapsedOf(run, now).padStart(5)} </Text>
+          <Text bold>{fitText(run.id, layout.idWidth)} </Text>
+          {isRouted && <Text color="cyan">{fitText(run.engine ?? '', layout.engineWidth)} </Text>}
+          {layout.showEffort && <Text dimColor>{(run.effort ?? '').padEnd(5)} </Text>}
+          {layout.showBar && <Text color={glyphColor(run)}>{barOf(run.maxTurns ? (run.turns / run.maxTurns) * 100 : 0, 8)} </Text>}
+          <Text dimColor>{layout.showTurns ? `${String(run.turns).padStart(2)}/${run.maxTurns ?? '?'} ` : ''}{elapsedOf(run, now).padStart(5)} </Text>
           <Text wrap="truncate-end" dimColor={run.state !== 'running'}>{nowLine(run)}</Text>
         </Box>
       ))}
@@ -57,16 +62,50 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
     if (target) void updateSelected($, () => target.id)
   }
   const barWidth = Math.max(10, Math.min(30, e.props.bodyColumns - 24))
+  // Oldest first, so the timeline reads top to bottom as the session went; the span covers only the rows shown.
+  const timeline = [...list].reverse().slice(-timelineRowCount(e.props.scroll?.bodyRows ?? 24, list.length))
+  const span = timelineSpan(timeline, now)
+  const layout = timelineLayout(columnsOf(e))
+  const [counts, work] = totalsLines(totalsOf(list, now))
+  const mixText = engineMixText(list, defaultEngine)
 
   return (
     <Box flexDirection="column">
       <Text bold>🐉 Hydra · {hydra?.isOn ? `${engineLabel(hydra, defaultEngine)} · ${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
-      <Text dimColor>{list.length > 0 ? `${headsSummary(list)} · 1-9 or j/k to pick a Head, s to stop it` : 'No Heads in this session yet. Claude starts them once Hydra is on (/hydra).'}</Text>
+      {list.length === 0 && <Text dimColor>No Heads in this session yet. Claude starts them once Hydra is on (/hydra).</Text>}
+      {list.length > 0 && <Text wrap="wrap">{counts}</Text>}
+      {list.length > 0 && <Text dimColor wrap="wrap">{work}</Text>}
+      {mixText !== '' && <Text dimColor wrap="wrap">{mixText}</Text>}
+      {list.length > 0 && <Text dimColor wrap="wrap">1-9 or j/k to pick a Head, s to stop it</Text>}
       {list.length > 1 && (
         <Box>
           <Button key="next-head" plain hotkey="j" label="next" onPress={() => pickAt(at + 1)} />
           <Text> </Text>
           <Button key="prev-head" plain hotkey="k" label="previous" onPress={() => pickAt(at - 1)} />
+        </Box>
+      )}
+      {timeline.length > 0 && (
+        <Box flexDirection="column" marginTop={1}>
+          <Text bold>Timeline <Text dimColor>{timeline.length < list.length ? `last ${timeline.length} of ${list.length} · ` : ''}{clockOf(span.end - span.start)} span</Text></Text>
+          {timeline.map(run => {
+            const cells = timelineBar(run, span, layout.barWidth, now)
+            return (
+              <Box key={`line-${run.id}`}>
+                <Text color={glyphColor(run)}>{glyphOf(run, frame)} </Text>
+                <Text bold={run.id === chosen?.id}>{fitText(run.id, layout.nameWidth)} </Text>
+                {run.startedAt === undefined ? (
+                  <Text dimColor>{'┄'.repeat(layout.barWidth)}</Text>
+                ) : (
+                  <Box>
+                    <Text dimColor>{'─'.repeat(cells.before)}</Text>
+                    <Text color={glyphColor(run)}>{'━'.repeat(cells.bar)}</Text>
+                    <Text dimColor>{'─'.repeat(cells.after)}</Text>
+                  </Box>
+                )}
+                <Text dimColor> {elapsedOf(run, now).padStart(5)}</Text>
+              </Box>
+            )
+          })}
         </Box>
       )}
       <Box flexDirection="column" marginTop={1}>
@@ -137,6 +176,7 @@ export async function usagePaneView(
   const usage = await readHeads($)
   const hydra = await readMode($)
   const recent = await readRuns($)
+  const mix = engineMixOf(recent, defaultEngine)
 
   const row = (label: string, percent: number, detail: string) => (
     <Box flexDirection="column" marginBottom={1}>
@@ -175,6 +215,18 @@ export async function usagePaneView(
       {usage && !usage.error && (fiveHourUsd <= 0 || weeklyUsd <= 0) && (
         <Box marginBottom={1}>
           <Text dimColor wrap="wrap">Set your Command Code plan's limits in /config (the Hydra rows) to see how close you are.</Text>
+        </Box>
+      )}
+
+      {mix.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold>This session</Text>
+          {mix.map(item => (
+            <Box key={`mix-${item.engine}`} justifyContent="space-between">
+              <Text>{isEngine(item.engine) ? ENGINE_LABEL[item.engine] : item.engine}</Text>
+              <Text dimColor>{[`${item.count} Head${item.count === 1 ? '' : 's'}`, item.tokens > 0 ? `${compactNumber(item.tokens)} tok` : '', item.hasUsd ? `$${item.usd.toFixed(4)}` : ''].filter(Boolean).join(' · ')}</Text>
+            </Box>
+          ))}
         </Box>
       )}
 

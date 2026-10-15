@@ -4,7 +4,7 @@
  */
 import type { HeadRun, HeadStep, HeadsUsage, HydraMode } from '../../types'
 import { effortModeOf } from './effort'
-import { DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, isAuto, isEngine, poolOf } from './engines'
+import { DEFAULT_ENGINE, ENGINES, ENGINE_BIN, ENGINE_LABEL, isAuto, isEngine, poolOf } from './engines'
 import type { Engine } from './engines'
 import { isWithin } from './safety'
 
@@ -71,6 +71,126 @@ export const headsSummary = (list: readonly HeadRun[]) =>
     .filter(([, count]) => count > 0)
     .map(([state, count]) => `${count} ${state}`)
     .join(' · ')
+
+/** `91.5k in / 421 out` (what `tokensText` writes) as one token count, or 0 for any other text. */
+export const parseTokens = (text: string | undefined) => {
+  const parts = /^(\d+(?:\.\d+)?)(k?) in \/ (\d+(?:\.\d+)?)(k?) out$/.exec((text ?? '').trim())
+  if (!parts) return 0
+  return Math.round(Number(parts[1]) * (parts[2] ? 1000 : 1) + Number(parts[3]) * (parts[4] ? 1000 : 1))
+}
+
+/** 421 as `421`, 18200 as `18k`, 1250000 as `1.3M`: short enough for a header. */
+export const compactNumber = (n: number) =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n))
+
+/** What a set of Heads add up to. `hasTokens` and `hasUsd` say whether any Head reported them, so unknown is not shown as zero. */
+export type HeadTotals = {
+  running: number; queued: number; done: number; failed: number
+  tokens: number; hasTokens: boolean; usd: number; hasUsd: boolean
+  edits: number; denials: number
+  /** First start to last end (or now, while one runs), in ms; 0 before any Head has started. */
+  wallMs: number
+}
+
+export const totalsOf = (list: readonly HeadRun[], now: number): HeadTotals => {
+  const started = list.filter(run => run.startedAt !== undefined)
+  const first = Math.min(...started.map(run => run.startedAt!))
+  const last = Math.max(...started.map(run => run.endedAt ?? now))
+  return {
+    running: list.filter(run => run.state === 'running').length,
+    queued: list.filter(run => run.state === 'queued').length,
+    done: list.filter(run => run.state === 'done').length,
+    failed: list.filter(run => run.state === 'failed').length,
+    tokens: list.reduce((sum, run) => sum + parseTokens(run.tokens), 0),
+    hasTokens: list.some(run => parseTokens(run.tokens) > 0),
+    usd: list.reduce((sum, run) => sum + (run.costUsd ?? 0), 0),
+    hasUsd: list.some(run => run.costUsd !== undefined),
+    edits: list.reduce((sum, run) => sum + (run.edits ?? 0), 0),
+    denials: list.reduce((sum, run) => sum + (run.denials ?? 0), 0),
+    wallMs: started.length > 0 ? Math.max(0, last - first) : 0,
+  }
+}
+
+/** `18k tok · $0.0821`, with only what some Head reported; empty when none did. */
+export const spendText = (totals: Pick<HeadTotals, 'tokens' | 'hasTokens' | 'usd' | 'hasUsd'>) =>
+  [totals.hasTokens ? `${compactNumber(totals.tokens)} tok` : '', totals.hasUsd ? `$${totals.usd.toFixed(4)}` : ''].filter(Boolean).join(' · ')
+
+/** What the Heads of one engine add up to. */
+export type EngineMix = { engine: string; count: number; tokens: number; usd: number; hasUsd: boolean }
+
+/** Heads, tokens and dollars per engine: the busiest engine first, ties in `ENGINES` order. `fallback` names the engine of a Head that never recorded one. */
+export const engineMixOf = (list: readonly HeadRun[], fallback: string = DEFAULT_ENGINE): EngineMix[] => {
+  const byEngine = new Map<string, EngineMix>()
+  for (const run of list) {
+    const engine = run.engine || fallback
+    const mix = byEngine.get(engine) ?? { engine, count: 0, tokens: 0, usd: 0, hasUsd: false }
+    byEngine.set(engine, {
+      ...mix, count: mix.count + 1, tokens: mix.tokens + parseTokens(run.tokens), usd: mix.usd + (run.costUsd ?? 0), hasUsd: mix.hasUsd || run.costUsd !== undefined,
+    })
+  }
+  const order = (engine: string) => (ENGINES as readonly string[]).indexOf(engine) + 1 || ENGINES.length + 1
+  return [...byEngine.values()].sort((a, b) => b.count - a.count || order(a.engine) - order(b.engine))
+}
+
+/** `codex 3 · agy 2` when more than one engine ran Heads, else empty (one engine is already named in the header). */
+export const engineMixText = (list: readonly HeadRun[], fallback: string = DEFAULT_ENGINE) => {
+  const mix = engineMixOf(list, fallback)
+  return mix.length > 1 ? mix.map(item => `${item.engine} ${item.count}`).join(' · ') : ''
+}
+
+/** The `/heads` summary as two lines: `2 running · 3 done · 4:12 wall`, then `37 edits · 2 denied · 18k tok · $0.0821`. */
+export const totalsLines = (totals: HeadTotals) => {
+  const states = (['running', 'queued', 'done', 'failed'] as const).filter(state => totals[state] > 0).map(state => `${totals[state]} ${state}`)
+  const counts = [...states, totals.wallMs > 0 ? `${clockOf(totals.wallMs)} wall` : ''].filter(Boolean).join(' · ')
+  const work = [`${totals.edits} edits`, `${totals.denials} denied`, spendText(totals)].filter(Boolean).join(' · ')
+  return [counts, work]
+}
+
+/** The time a timeline covers: the earliest start to the latest end (now, while a Head runs), at least a second wide. */
+export const timelineSpan = (list: readonly HeadRun[], now: number) => {
+  const started = list.filter(run => run.startedAt !== undefined)
+  if (started.length === 0) return { start: now, end: now + 1000 }
+  const start = Math.min(...started.map(run => run.startedAt!))
+  return { start, end: Math.max(start + 1000, ...started.map(run => run.endedAt ?? now)) }
+}
+
+/**
+ * A Head's bar across a timeline `width` cells wide, as the cells before it starts, the cells it covers (at least one) and
+ * the cells after it ends. A Head that has not started has no bar: all of it is `after`.
+ */
+export const timelineBar = (run: HeadRun, span: { start: number; end: number }, width: number, now: number) => {
+  if (run.startedAt === undefined) return { before: 0, bar: 0, after: width }
+  const cellOf = (time: number) => ((time - span.start) / (span.end - span.start)) * width
+  const before = Math.max(0, Math.min(width - 1, Math.floor(cellOf(run.startedAt))))
+  const bar = Math.max(1, Math.min(width - before, Math.ceil(cellOf(run.endedAt ?? now)) - before))
+  return { before, bar, after: width - before - bar }
+}
+
+/** How wide a timeline row's name and bar are, for a column count; the row also holds a glyph, the elapsed time and gaps. */
+export const timelineLayout = (columns: number) => {
+  const nameWidth = columns < 60 ? 10 : 14
+  return { nameWidth, barWidth: Math.max(6, Math.min(40, columns - nameWidth - 12)) }
+}
+
+/** How many timeline rows fit under the header and above the Head list: more room, more rows, from 3 to 10. */
+export const timelineRowCount = (bodyRows: number, total: number) => Math.min(total, Math.max(3, Math.min(10, bodyRows - 16)))
+
+/** Cuts `text` to `width` cells with an ellipsis, then pads it to exactly that. */
+export const fitText = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text).padEnd(width)
+
+/**
+ * Which columns a band row (one line per Head) keeps at a width: the effort and the bar go first, then the turn count, so
+ * the fixed part leaves the activity the rest. `fixed` is what the kept columns take, the glyph and the elapsed time included.
+ */
+export const bandLayout = (columns: number, isRouted: boolean) => {
+  const idWidth = columns < 60 ? 10 : columns < 80 ? 12 : 16
+  const engineWidth = isRouted ? (columns < 60 ? 6 : columns < 80 ? 8 : 11) : 0
+  const showEffort = columns >= 70
+  const showBar = columns >= 60
+  const showTurns = columns >= 50
+  const fixed = 2 + idWidth + 1 + (isRouted ? engineWidth + 1 : 0) + (showEffort ? 6 : 0) + (showBar ? 9 : 0) + (showTurns ? 6 : 0) + 6
+  return { idWidth, engineWidth, showEffort, showBar, showTurns, fixed }
+}
 
 /** What a Head is doing now, or how it ended. */
 export const nowLine = (run: HeadRun) =>

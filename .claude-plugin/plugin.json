@@ -16,8 +16,8 @@
     "headEngine": {
       "type": "string",
       "title": "Hydra head engine",
-      "description": "The CLI Heads run on: commandcode, codebuddy, codex or agy (Antigravity), or auto to let Claude pick an engine per Head; changeable with /hydra engine=<name>",
-      "default": "commandcode",
+      "description": "The CLI Heads run on: commandcode, codebuddy, codex or agy (Antigravity), or auto (the default): /hydra uses the engines that are installed and signed in here, and Claude picks one per Head when there are several; changeable with /hydra engine=<name>",
+      "default": "auto",
       "options": [
         "commandcode",
         "codebuddy",

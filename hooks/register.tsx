@@ -13,6 +13,7 @@ import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
 import type { Engine } from './lib/engines'
 import { REPORT_HEAD, headName, isLive, listRuns, reportNotice, stopRuns, strings } from './lib/format'
+import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
 import { HYDRA_HELP, HYDRA_POLICY, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
 import { backgroundJobs, controllers, createReplyBox, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
@@ -23,6 +24,7 @@ import { bandView, headsPaneView, usagePaneView } from './lib/views'
 export * from './lib/effort'
 export * from './lib/engines'
 export * from './lib/format'
+export * from './lib/onboarding'
 export * from './lib/policy'
 export * from './lib/runtime'
 export * from './lib/safety'
@@ -51,6 +53,8 @@ export const register: Register = (on, options) => {
   const defaultHead = String(options.headModel ?? 'deepseek/deepseek-v4.1-flash')
   const defaultEffort: EffortMode = isEffortMode(options.headEffort) ? options.headEffort : 'auto'
   const defaultEngine: Engine = isEngine(options.headEngine) ? options.headEngine : DEFAULT_ENGINE
+  // `auto` is a setting, not an engine: until the person picks one, /hydra uses whichever engines are ready here.
+  const isAutoDefault = options.headEngine === AUTO
   setConfiguredEngine(defaultEngine)
   setExtraHomeRead([String(options.headReadDirs ?? '')])
   const limits = { fiveHourUsd, weeklyUsd }
@@ -193,8 +197,13 @@ export const register: Register = (on, options) => {
     if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks low to max per Head) or one of: ${EFFORTS.join(', ')}.` }
     if (engine !== undefined && !isEngine(engine) && engine !== AUTO) return { text: `Unknown engine "${engine}". Use ${[...ENGINES, AUTO].join(', ')}.` }
     const keepsAuto = isAuto(stored) && engine === undefined && engines === undefined
-    if (engine === AUTO || engines !== undefined || keepsAuto) {
-      const parsed = engines !== undefined ? parseEngineList(engines) : { engines: keepsAuto ? poolOf(stored) : [...ENGINES], bad: [] as string[] }
+    // No engine named: use the configured one if it is ready, else whichever are (see onboardingPlan).
+    const planned = engine === undefined && engines === undefined && !keepsAuto ? await planOnboarding($, stored ? engineOf(stored, defaultEngine) : isAutoDefault ? AUTO : defaultEngine) : undefined
+    if (planned?.plan.kind === 'setup') return { text: setupCard(planned.skipped) }
+    const plannedPool = planned?.plan.kind === 'auto' ? planned.plan.pool : undefined
+    const plannedEngine = planned?.plan.kind === 'fixed' ? planned.plan.engine : undefined
+    if (engine === AUTO || engines !== undefined || keepsAuto || plannedPool) {
+      const parsed = engines !== undefined ? parseEngineList(engines) : { engines: plannedPool ?? (keepsAuto ? poolOf(stored) : [...ENGINES]), bad: [] as string[] }
       if (parsed.bad.length > 0) return { text: `Unknown engine "${parsed.bad[0]}". Use ${ENGINES.join(', ')}.` }
       if (parsed.engines.length === 0) return { text: 'engines= needs at least one of: ' + ENGINES.join(', ') + '.' }
       const ready = await readyEngines($, parsed.engines)
@@ -206,18 +215,18 @@ export const register: Register = (on, options) => {
       await refreshStatus($, limits)
       const autoModel = await $.session.model()
       const autoHint = leadModel && !autoModel.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
-      const left = ready.skipped.map(item => `\n⚠ ${ENGINE_LABEL[item.engine]} left out: ${item.problem}`).join('')
+      const left = plannedPool ? '' : ready.skipped.map(item => `\n⚠ ${ENGINE_LABEL[item.engine]} left out: ${item.problem}`).join('')
       const autoEffort = nextAuto.effort === 'auto' ? 'effort auto (Lead picks low to max)' : `effort ${nextAuto.effort}`
-      const autoText = `🐉 Hydra on · Lead ${autoModel} · Heads on ${engineLabel(nextAuto, defaultEngine)}, Claude picks the engine per Head · ${autoEffort}. /heads to watch, /hydra engines for what each is for, /hydra off to stop.${autoHint}${left}${ready.warnings.map(warning => `\n⚠ ${warning}`).join('')}`
+      const autoText = `🐉 Hydra on · Lead ${autoModel} · Heads on ${engineLabel(nextAuto, defaultEngine)}, Claude picks the engine per Head · ${autoEffort}. /heads to watch, /hydra engines for what each is for, /hydra off to stop.${autoHint}${left}${ready.warnings.map(warning => `\n⚠ ${warning}`).join('')}${await takeWelcome($)}`
       if (task) {
         if (isWorkerRunning) pendingPrompts.push(task)
         else return { text: autoText, context: [task] }
       }
       return { text: autoText }
     }
-    const nextEngine = (engine ?? currentEngine) as Engine
+    const nextEngine = (engine ?? plannedEngine ?? currentEngine) as Engine
     const next = { isOn: true, headModel: headModelFor(nextEngine, headModel, current.headModel, defaultHead), effort: effort ?? currentEffort, engine: nextEngine }
-    const check = await preflight($, next.engine as Engine)
+    const check = planned ? { problems: [] as string[], warnings: planned.warnings } : await preflight($, next.engine as Engine)
     if (check.problems.length > 0) return { text: preflightText(check) }
     if (!(await hasConsent($, next.headModel, true, next.engine as Engine))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
     await updateMode($, () => next)
@@ -228,7 +237,8 @@ export const register: Register = (on, options) => {
     const changed = current.isOn && next.effort !== currentEffort ? ' Running Heads switch at their next round.' : ''
     const effortText = next.effort === 'auto' ? 'effort auto (Lead picks low to max)' : `effort ${next.effort}`
     const warnings = check.warnings.map(warning => `\n⚠ ${warning}`).join('')
-    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} on ${ENGINE_LABEL[nextEngine]} · ${effortText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}`
+    const only = planned?.plan.kind === 'fixed' && planned.plan.isFallback ? `\n${onlyReadyNote(nextEngine)}` : ''
+    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} on ${ENGINE_LABEL[nextEngine]} · ${effortText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}${only}${await takeWelcome($)}`
 
     // A command's `context` only rides along with the next prompt; submitting the task starts the Lead's turn now.
     if (task) {
@@ -328,7 +338,7 @@ export const register: Register = (on, options) => {
     const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
     if (action === 'off') {
       await updateMode($, () => ({ ...current, isOn: false }))
-    } else if ((action === 'on' || action === 'effort') && (String(e.engine) === AUTO || Array.isArray(e.engines) || (isAuto(stored) && e.engine === undefined))) {
+    } else if ((action === 'on' || action === 'effort') && (String(e.engine) === AUTO || Array.isArray(e.engines) || (isAuto(stored) && e.engine === undefined) || (!stored && isAutoDefault && e.engine === undefined))) {
       const listed = Array.isArray(e.engines) ? parseEngineList(e.engines.map(String).join(',')) : undefined
       if (listed && (listed.bad.length > 0 || listed.engines.length === 0)) return { deny: `engines must be some of: ${ENGINES.join(', ')}.` }
       const wanted = listed ? listed.engines : isAuto(stored) ? poolOf(stored) : [...ENGINES]

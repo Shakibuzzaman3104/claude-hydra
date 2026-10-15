@@ -156,19 +156,19 @@ export const parseHydraArgs = (args: string) => {
   return { action, leadModel, headModel, effort, ...(engine !== undefined ? { engine } : {}), ...(engines !== undefined ? { engines } : {}), task: unknown ? '' : rest.join(' '), unknown }
 }
 
-export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (Command Code, CodeBuddy, Codex or Antigravity agents) implement.
-  /hydra                 turn Hydra on
+export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (${ENGINES.map(name => ENGINE_LABEL[name]).join(', ')} agents) implement.
+  /hydra                 turn Hydra on, on the engines ready here (a short setup card if none is)
   /hydra <task>          turn it on and hand Claude the task
   /hydra off             turn it off
   /hydra status          show what is set
   /hydra effort=<level>  auto (Claude picks per Head) or off, low, medium, high, xhigh, max
   /hydra head=<model>    the model Heads run on
-  /hydra engine=<name>   commandcode, codebuddy, codex or agy: the CLI Heads run on; auto lets Claude pick per Head
+  /hydra engine=<name>   ${ENGINES.join(', ')}: the CLI Heads run on; auto lets Claude pick per Head
   /hydra engines=a,b     the engines auto may use (implies engine=auto), e.g. engines=codex,agy,codebuddy
   /hydra engines         which engines are installed and signed in, and what each is for
   /hydra statusline      show Hydra in your status line
-  /heads                 watch the Heads work, live
-  /${USAGE_COMMAND}           Claude and Head usage`
+  /heads                 watch the Heads work, live: totals, a timeline and each Head's steps
+  /${USAGE_COMMAND}           Claude and Head usage, and what this session's Heads used per engine`
 
 export const STATUSLINE_HELP = `Hydra writes its line to ~/.claude/hydra/status/<session id>.txt while it is on. To show it, add this before the final printf of your status line script, where $input is the JSON Claude Code passes and $out your line:
 

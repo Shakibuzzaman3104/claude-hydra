@@ -3,16 +3,39 @@
 Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin. With it on, Claude plans the work, hands self-contained implementation tasks to **Heads** (agents on a cheaper model, run through the Command Code or CodeBuddy CLI), then reviews their diffs and runs the build itself.
 
 ```
-🐉 Hydra 2 running · 1 done · /heads for detail
-⠹ login-tests  xhigh ███░░░░░ 14/60  3:12 edit LoginViewModelTest.kt
-⠹ prefs-utils  high  █░░░░░░░  5/60  1:04 search "SharedPreferences"
-✓ api-client   high  ██░░░░░░ 11/60  2:40 done · $0.0213
+🐉 Hydra 2 running · 1 done · 31k tok · $0.0213 · /heads for detail
+⠹ login-tests  codex       high   ███░░░░░ 14/150 3:12 edit LoginViewModelTest.kt
+⠹ prefs-utils  agy         medium █░░░░░░░  5/150 1:04 search "SharedPreferences"
+✓ api-client   commandcode high   ██░░░░░░ 11/60  2:40 done · $0.0213
 ```
 
-- **`/hydra`** turns it on for the session. `/hydra <task>` turns it on and hands Claude the task.
-- **`/heads`** shows each Head live: its turn count, current step, edits, denied calls and final report. Press `s` to stop one.
-- **`/hydra-usage`** shows Claude's limits next to what the Heads have spent.
+The engine shows on each row when Claude picks one per Head (auto mode). `/heads` adds the totals and a timeline of the session:
+
+```
+🐉 Hydra · Auto (Command Code + Codex + Antigravity) · gpt-6.1-sol · effort auto
+1 running · 1 queued · 2 done · 1 failed · 4:00 wall
+12 edits · 1 denied · 105k tok · $0.0336
+codex 2 · agy 2 · commandcode 1
+Timeline 4:00 span
+✓ api-client     ━━━━━━━━━━━━━━━━━━━━────────────────────  2:00
+✓ prefs-utils    ──────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━───  3:00
+⠋ login-tests    ───────────────────────━━━━━━━━━━━━━━━━━  1:40
+✗ flaky-spec     ───────────────────────────────━━━──────  0:10
+◌ docs-pass      ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄     –
+```
+
+- **`/hydra`** turns it on for the session, on whichever engines are ready on your machine. `/hydra <task>` turns it on and hands Claude the task.
+- **`/heads`** shows the Heads live: totals (counts, tokens, dollars, edits, denials, wall time), the timeline, and per Head its turn count, current step, edits, denied calls and final report. Press `s` to stop one.
+- **`/hydra-usage`** shows Claude's limits next to what the Heads have spent, and what this session's Heads used per engine.
 - **`/hydra help`** lists everything.
+
+### First run
+Install the plugin, then run `/hydra`. With the default `headEngine` of `auto`, Hydra checks which engines are installed and signed in:
+- **One is ready:** it runs on that one and says so (`Using Codex (the only engine ready here).`).
+- **Two or more:** Claude picks the engine for each Head from the task.
+- **None:** a short card lists each engine with what to run, the ones with the easiest start first, ending with `then run /hydra again`.
+
+Hydra asks once before anything is sent to an engine. The first time it turns on, it adds three lines on what happens next (Claude splits the work, `/heads` to watch, `/hydra off` to stop). Set `headEngine` to one engine to keep it fixed.
 
 ## Requirements
 - macOS or Linux (on Windows, use WSL), with `git` and `python3`
@@ -65,7 +88,7 @@ Change these in `/config` (the Hydra rows) or when installing:
 
 | Option | Default | What it does |
 | --- | --- | --- |
-| `headEngine` | `commandcode` | The CLI Heads run on: `commandcode`, `codebuddy`, `codex` or `agy` (`/hydra engine=<name>` for one session) |
+| `headEngine` | `auto` | The CLI Heads run on: `commandcode`, `codebuddy`, `codex` or `agy`, or `auto` to use the engines that are ready here (`/hydra engine=<name>` for one session) |
 | `headModel` | `deepseek/deepseek-v4.1-flash` | Model the Heads run on (`/hydra head=<model>` for one session); on CodeBuddy the provider prefix is dropped (`deepseek-v4.1-flash`) |
 | `headEffort` | `auto` | `auto` lets Claude pick per Head: `low` when it will check the result, one level up on each retry, `max` first only for subtle work it cannot check (measured in `bench/effort/`); a level fixes it (`/hydra effort=<level>`) |
 | `headsFiveHourUsd`, `headsWeeklyUsd` | `0` | Your Command Code plan's spend caps; with `0`, spend is shown without a limit |
