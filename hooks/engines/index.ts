@@ -10,8 +10,9 @@ import { AGY_MODEL, DEFAULT_ENGINE, modelFor } from '../lib/engines'
 import type { Engine } from '../lib/engines'
 import { formatReport, strings } from '../lib/format'
 import type { HeadLimits } from '../lib/format'
-import { DEFAULT_MINUTES, gate, refreshStatus, setRun, stopReason } from '../lib/runtime'
-import { union } from '../lib/safety'
+import { DEFAULT_MINUTES, gate, notStarted, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
+import { homeOf } from '../lib/platform'
+import { homeHeadRefusal, union } from '../lib/safety'
 import { updateRuns, updateTick } from '../lib/state'
 import { runAgyHead } from './agy'
 import { runBuddyHead } from './codebuddy'
@@ -67,6 +68,14 @@ async function runHeadInside(
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine } = head
+  const home = await homeOf($)
+  const [realCwd, realHome] = await realPaths($, home ? [cwd, home] : [cwd])
+  const refusal = homeHeadRefusal(realCwd ?? cwd, realHome ?? '')
+  if (refusal) {
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
+    await refreshStatus($, limits)
+    return notStarted(id, model, cwd, `${refusal} A Head never runs where Hydra's rules cannot keep it inside a project.`, engine)
+  }
   if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, outer, limits, id)
   if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort }, outer, limits, id)
   if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort }, outer, limits, id)

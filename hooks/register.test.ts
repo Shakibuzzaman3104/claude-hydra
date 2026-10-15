@@ -629,7 +629,7 @@ test('gives a CodeBuddy Head a shell only when asked, and never the dangerous co
 test('builds the CodeBuddy command: no yolo, default permission mode, only the granted tools, and a session to resume', async () => {
   const base = { prompt: 'do it', model: 'deepseek-v4.1-flash', maxTurns: 30, cwd: '/work/app', addDirs: ['/refs'], settings: '/h/s.json', shell: false, sessionId: 'hydra-x-1' }
   const first = buddyArgs({ ...base, effort: 'low' })
-  expect(first.slice(0, 5)).toEqual(['/usr/bin/env', 'codebuddy', '-p', 'do it', '--model'])
+  expect(first.slice(0, 4)).toEqual(['codebuddy', '-p', 'do it', '--model'])
   expect(first).toEqual(expect.arrayContaining(['deepseek-v4.1-flash', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'default', '--tools', 'Read,Write,Edit,Glob,Grep', '--settings', '/h/s.json', '--setting-sources', 'local', '--max-turns', '30', '--add-dir', '/refs', '--effort', 'low', '--session-id', 'hydra-x-1']))
   expect(first).not.toContain('--resume')
   for (const unsafe of ['--yolo', '-y', '--dangerously-skip-permissions', 'bypassPermissions', 'acceptEdits']) expect(first).not.toContain(unsafe)
@@ -709,7 +709,7 @@ test('turns a Codex stream into live events: a turn per finished tool call, refu
 
 test('builds the Codex filesystem profile: writes only in the project and granted folders, no .env, no credential folders', async () => {
   const profile = codexFilesystem('/p/app/', { addDirs: ['/p/brief'], writeDirs: ['/p/pkg'], shell: false }, '/home/me')
-  expect(profile.startsWith('{"/"="read","/p/app"="write","/p/pkg"="write",')).toBe(true)
+  expect(profile.startsWith('{"/"="read","/home/me"="none","/p/brief"="read","/p/app"="write","/p/pkg"="write",')).toBe(true)
   for (const dir of ['/p/app', '/p/pkg', '/p/brief']) {
     expect(profile).toContain(`"${dir}/**/.env"="none"`)
     expect(profile).toContain(`"${dir}/**/.env.*"="none"`)
@@ -723,7 +723,7 @@ test('builds the Codex filesystem profile: writes only in the project and grante
 test('builds the Codex command: stdin closed, the profile on the command line, no approvals, a thread to resume', async () => {
   const base = { prompt: '-do it', model: 'gpt-6-luna', effort: 'off', maxTurns: 10, cwd: '/p', addDirs: [], filesystem: '{"/"="read"}' }
   const first = codexArgs(base)
-  expect(first.slice(0, 7)).toEqual(['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', '/usr/bin/env', 'codex', 'exec'])
+  expect(first.slice(0, 2)).toEqual(['codex', 'exec'])
   expect(first).toContain('--json')
   expect(first).toContain('--ignore-user-config')
   expect(first).not.toContain('resume')
@@ -734,7 +734,7 @@ test('builds the Codex command: stdin closed, the profile on the command line, n
   expect(first.slice(-2)).toEqual(['--', '-do it'])
   expect(first).not.toContain('--dangerously-bypass-approvals-and-sandbox')
   const again = codexArgs({ ...base, effort: 'high', resume: 't-1' })
-  expect(again.slice(6, 9)).toEqual(['exec', 'resume', '--json'])
+  expect(again.slice(1, 4)).toEqual(['exec', 'resume', '--json'])
   expect(again.slice(-3)).toEqual(['--', 't-1', '-do it'])
   expect(again).toContain('model_reasoning_effort="high"')
   expect(codexArgs({ ...base, effort: undefined }).join(' ')).not.toContain('model_reasoning_effort')
@@ -825,7 +825,7 @@ test('writes the Antigravity permission rules: writes only in the project, reads
 test('builds the Antigravity command: stdin closed, own HOME, the one model, sandbox on, a conversation to resume', async () => {
   const base = { prompt: 'do it', model: 'whatever', effort: 'max', maxTurns: 10, cwd: '/p', addDirs: ['/p/brief'], home: '/h/agy-1' }
   const first = agyArgs(base)
-  expect(first.slice(0, 7)).toEqual(['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', '/usr/bin/env', 'HOME=/h/agy-1', 'agy'])
+  expect(first.slice(0, 2)).toEqual(['agy', '-p'])
   expect(first).toContain('--sandbox')
   expect(first).not.toContain('--dangerously-skip-permissions')
   expect(first.slice(first.indexOf('--model'), first.indexOf('--model') + 2)).toEqual(['--model', 'gemini-3.8-flash'])

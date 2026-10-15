@@ -9,8 +9,9 @@ import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { CODEX_SECRET_DIRS, trimSlash, union } from '../lib/safety'
+import { CODEX_SECRET_DIRS, homeReadDirs, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
 
 /** Codex item types as the tool names Command Code's stream uses, so one live view reads every engine. */
@@ -102,30 +103,40 @@ export const codexEffort = (effort: string) => (effort === 'off' ? 'low' : effor
 const tomlString = (value: string) => JSON.stringify(value)
 
 /**
- * The filesystem profile one Codex Head runs under, as the inline TOML table for `-c permissions.hydra.filesystem=…`:
- * the whole disk readable, the project and each writeDir writable (Codex keeps `.git` read-only inside them), `.env`
- * files unreadable under every folder the Head may touch, and the person's credential folders unreadable. Everything
- * else, `/tmp` and sibling folders included, is read-only; the shell has no network.
+ * The filesystem profile one Codex Head runs under, as the inline TOML table for `-c permissions.hydra.filesystem=…`.
+ * The system is readable (compilers, `/usr`, `/opt`), but the person's home folder is not: inside it a Head reads only
+ * the project, the folders it was given (`addDirs`, `writeDirs`) and the toolchain folders in `homeRead` (git's config,
+ * node, cargo, gradle…), which `homeReadDirs` filters to the ones that exist. The project and each writeDir are writable
+ * (Codex keeps `.git` read-only inside them), `.env` files are unreadable under every folder the Head may touch, and the
+ * credential folders stay unreadable even when a grant covers them. `/tmp` and sibling folders are not writable, and the
+ * shell has no network. More specific paths win, so the order of the entries does not matter.
+ *
+ * A project that is the home folder itself, or holds it, cannot have its home denied; `homeHeadRefusal` stops those first.
  */
-export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '') => {
+export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRead: readonly string[] = []) => {
   const writable = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
-  const roots = union(writable, head.addDirs.map(trimSlash))
+  const readable = head.addDirs.map(trimSlash).filter(dir => !writable.some(root => isWithin(dir, root)))
+  const roots = union(writable, readable)
+  const homeDir = home ? trimSlash(home) : ''
+  const isHomeClosed = homeDir !== '' && !writable.some(dir => isWithin(homeDir, dir))
   const entries: [string, string][] = [
     ['/', 'read'],
+    ...(isHomeClosed ? [[homeDir, 'none'] as [string, string], ...homeRead.map((dir): [string, string] => [`${homeDir}/${dir}`, 'read'])] : []),
+    ...readable.map((dir): [string, string] => [dir, 'read']),
     ...writable.map((dir): [string, string] => [dir, 'write']),
     ...roots.flatMap((dir): [string, string][] => [[`${dir}/**/.env`, 'none'], [`${dir}/**/.env.*`, 'none']]),
-    ...(home ? CODEX_SECRET_DIRS.map((dir): [string, string] => [`${home.replace(/\/$/, '')}/${dir}`, 'none']) : []),
+    ...(homeDir ? CODEX_SECRET_DIRS.map((dir): [string, string] => [`${homeDir}/${dir}`, 'none']) : []),
   ]
   return `{${entries.map(([path, access]) => `${tomlString(path)}=${tomlString(access)}`).join(',')},glob_scan_max_depth=6}`
 }
 
 /**
- * The Codex command line for one round. The shell wrapper closes stdin (otherwise `codex exec` waits for more prompt text),
+ * The Codex command line for one round. Hydra starts it with stdin closed (otherwise `codex exec` waits for more prompt text),
  * `--ignore-user-config` keeps the person's own Codex settings out of a Head, and `approval_policy="never"` means a refused
  * command simply fails. The first round starts a thread; later rounds `resume` it under the same profile.
  */
 export const codexArgs = (a: RoundArgs & { filesystem: string }) => {
-  const args = ['/bin/sh', '-c', 'exec "$@" </dev/null', 'sh', '/usr/bin/env', 'codex', 'exec', ...(a.resume ? ['resume'] : []),
+  const args = ['codex', 'exec', ...(a.resume ? ['resume'] : []),
     '--json', '-m', a.model, '--skip-git-repo-check', '--ignore-user-config',
     '-c', 'default_permissions="hydra"', '-c', `permissions.hydra.filesystem=${a.filesystem}`, '-c', 'approval_policy="never"']
   if (a.effort) args.push('-c', `model_reasoning_effort=${tomlString(codexEffort(a.effort))}`)
@@ -195,7 +206,10 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   }
   const [realCwd] = await realPaths($, [cwd])
   const writeDirs = await realPaths($, head.writeDirs)
-  const filesystem = codexFilesystem(realCwd!, { addDirs: await realPaths($, head.addDirs), writeDirs, shell: true }, (await $.env.get('HOME')) ?? '')
+  const home = await homeOf($)
+  const [realHome] = home ? await realPaths($, [home]) : ['']
+  const homeRead = realHome ? await homeReadDirs($, realHome) : []
+  const filesystem = codexFilesystem(realCwd!, { addDirs: await realPaths($, head.addDirs), writeDirs, shell: true }, realHome, homeRead)
   return runCodexRounds($, head, filesystem, outer, limits, id)
 }
 

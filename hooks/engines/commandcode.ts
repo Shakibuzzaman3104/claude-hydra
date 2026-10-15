@@ -9,8 +9,9 @@ import { applyEvent, formatReport, relativeTo } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isResumable, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { DANGEROUS_SHELL, guardCommand, isWithin, union } from '../lib/safety'
+import { CODEX_SECRET_DIRS, DANGEROUS_SHELL, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { homeOf, runScript } from '../lib/platform'
 import { readMode } from '../lib/state'
 
 const RULES_FILE = '.commandcode/settings.local.json'
@@ -21,7 +22,7 @@ const WATCHED = new Set(['turn_end', 'thinking_start', 'tool_queued', 'tool_runn
 /** The session a Head started, found from its transcript when the run ended before reporting it (a timeout, a kill). */
 async function findSession($: EngineInterface, since: number, task: string): Promise<string | undefined> {
   try {
-    const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`, '--find', String(since - 5_000), task.slice(0, 100)])
+    const ran = await runScript($, 'cc-usage.py', ['--find', String(since - 5_000), task.slice(0, 100)])
     return (JSON.parse(ran.stdout) as { sessionId: string | null }).sessionId ?? undefined
   } catch {
     return undefined
@@ -30,7 +31,7 @@ async function findSession($: EngineInterface, since: number, task: string): Pro
 
 async function sessionReport($: EngineInterface, sessionId: string): Promise<SessionReport> {
   try {
-    const ran = await $.process.run(['/usr/bin/env', 'python3', '-I', `${$.plugin.root}/bin/cc-usage.py`, '--report', sessionId])
+    const ran = await runScript($, 'cc-usage.py', ['--report', sessionId])
     return JSON.parse(ran.stdout) as SessionReport
   } catch {
     return { usd: null, files: [], denied: [], toolCalls: 0 }
@@ -69,14 +70,25 @@ export const writeDirDeny = (dir: string) => [
   `Edit(/${dir}/**/.env)`, `Edit(/${dir}/**/.env.*)`, `Read(/${dir}/**/.env)`, `Read(/${dir}/**/.env.*)`,
 ]
 
-export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string): HeadSettings => {
+/**
+ * The person's credential folders, denied to the read tool (and to shell commands that name them): under --yolo a
+ * Command Code Head can otherwise read any file on the disk. Its grep tool ignores Read rules, which is why it is
+ * denied whole whenever a `.env` file is in reach; a credential folder outside the project is beyond its search root.
+ */
+export const secretReadDeny = (home: string) => {
+  const base = trimSlash(home)
+  if (!base || base === '/') return []
+  return CODEX_SECRET_DIRS.flatMap(dir => [`Read(/${base}/${dir})`, `Read(/${base}/${dir}/**)`, `Shell(*/${dir}*)`, `Shell(*~/${dir}*)`])
+}
+
+export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string, home = ''): HeadSettings => {
   const shell = heads.some(head => head.shell)
   const writeDirs = writeDirsOf(heads)
   return {
     managedBy: OWNER,
     permissions: {
       deny: [
-        ...outsideDeny, ...PROJECT_DENY, ...writeDirs.flatMap(writeDirDeny),
+        ...outsideDeny, ...PROJECT_DENY, ...writeDirs.flatMap(writeDirDeny), ...secretReadDeny(home),
         ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile ? [SEARCH_DENY] : []),
       ],
       additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, [...head.addDirs, ...(head.writeDirs ?? [])]), []),
@@ -178,7 +190,7 @@ export async function writeRules($: EngineInterface, cwd: string): Promise<strin
   if (envFile) searchOff.set(cwd, envFile)
   else searchOff.delete(cwd)
   const outsideDeny = await outsideDenyRules($, [cwd, ...writeDirs])
-  const settings = { ...headSettings(heads, outsideDeny, Boolean(envFile), guardCommand($.plugin.root, cwd, writeDirs)), hydraHeads: heads }
+  const settings = { ...headSettings(heads, outsideDeny, Boolean(envFile), guardCommand($.plugin.root, cwd, writeDirs), await homeOf($)), hydraHeads: heads }
   await $.fs.write(path, JSON.stringify(settings, null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
@@ -222,7 +234,7 @@ async function runRound(
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => Promise<void>,
 ): Promise<Round> {
-  const args = ['/usr/bin/env', 'commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
+  const args = ['commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
     '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
   for (const dir of argv.addDirs) args.push('--add-dir', dir)
   if (argv.effort) args.push('--effort', argv.effort)
