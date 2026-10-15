@@ -73,10 +73,23 @@ export const headsSummary = (list: readonly HeadRun[]) =>
     .join(' · ')
 
 /** `91.5k in / 421 out` (what `tokensText` writes) as one token count, or 0 for any other text. */
-export const parseTokens = (text: string | undefined) => {
+/** `12k in / 800 out` as `[12000, 800]`; `[0, 0]` for anything else. */
+export const tokenPair = (text: string | undefined): [number, number] => {
   const parts = /^(\d+(?:\.\d+)?)(k?) in \/ (\d+(?:\.\d+)?)(k?) out$/.exec((text ?? '').trim())
-  if (!parts) return 0
-  return Math.round(Number(parts[1]) * (parts[2] ? 1000 : 1) + Number(parts[3]) * (parts[4] ? 1000 : 1))
+  if (!parts) return [0, 0]
+  return [Math.round(Number(parts[1]) * (parts[2] ? 1000 : 1)), Math.round(Number(parts[3]) * (parts[4] ? 1000 : 1))]
+}
+
+export const parseTokens = (text: string | undefined) => {
+  const [input, output] = tokenPair(text)
+  return input + output
+}
+
+/** Two token texts added up (a Head that switched accounts used both); undefined when neither says anything. */
+export const addTokens = (a: string | undefined, b: string | undefined) => {
+  const [inA, outA] = tokenPair(a)
+  const [inB, outB] = tokenPair(b)
+  return inA + outA + inB + outB > 0 ? tokensText(inA + inB, outA + outB) : undefined
 }
 
 /** 421 as `421`, 18200 as `18k`, 1250000 as `1.3M`: short enough for a header. */

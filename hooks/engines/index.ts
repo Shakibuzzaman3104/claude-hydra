@@ -10,13 +10,13 @@ import type { Account } from '../lib/accounts'
 import { isHeadEffort } from '../lib/effort'
 import { AGY_MODEL, DEFAULT_ENGINE, modelFor } from '../lib/engines'
 import type { Engine } from '../lib/engines'
-import { formatReport, strings } from '../lib/format'
+import { addTokens, formatReport, strings } from '../lib/format'
 import type { HeadLimits } from '../lib/format'
 import { DEFAULT_MINUTES, gate, notStarted, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
 import type { HeadResult } from '../lib/runtime'
 import { homeOf } from '../lib/platform'
 import { homeHeadRefusal, secretDirRefusal, union } from '../lib/safety'
-import { updateRuns, updateTick } from '../lib/state'
+import { readRuns, updateRuns, updateTick } from '../lib/state'
 import { runAgyHead } from './agy'
 import { runBuddyHead } from './codebuddy'
 import { runCodexHead } from './codex'
@@ -105,7 +105,10 @@ async function startHead($: EngineInterface, head: HeadSpec, account: Account | 
  */
 async function runOnAccounts($: EngineInterface, head: HeadSpec, accounts: readonly Account[], outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
   const { engine, cwd, model } = head
-  return rotateAccounts<HeadResult>({
+  // Each account's run reports its own tokens; a Head that switched used every one of them.
+  let spent: string | undefined
+  const tokensNow = async () => (await readRuns($)).find(run => run.id === id)?.tokens
+  const result = await rotateAccounts<HeadResult>({
     count: accounts.length,
     minutes: head.minutes,
     cwd,
@@ -114,6 +117,7 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, accounts: reado
     pick: tried => pickUsable($, engine, accounts, tried),
     now: () => $.clock.now(),
     begin: async (name, isSwitch) => {
+      if (isSwitch) spent = addTokens(spent, await tokensNow())
       await markUsed($, name, await $.clock.now())
       await setRun($, id, { account: name, ...(isSwitch ? { state: 'running' as const, endedAt: undefined, activity: `switched to ${name}` } : {}) })
     },
@@ -125,4 +129,6 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, accounts: reado
       return notStarted(id, model, cwd, reason, engine)
     },
   })
+  if (spent) await setRun($, id, { tokens: addTokens(spent, await tokensNow()) })
+  return result
 }

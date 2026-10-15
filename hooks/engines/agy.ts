@@ -155,6 +155,14 @@ export const agyArgs = (a: RoundArgs & { home: string }) => {
   return args
 }
 
+/**
+ * The CLI's own reason a round did not succeed (a usage limit among them), which account switching reads. A result that is not
+ * a success puts that reason in `response`, where a model's report also goes, so only a short response counts: a CLI error
+ * is a line or two, and a model's report naming "rate limits" must not switch accounts.
+ */
+export const failureReason = (state: Pick<AgyState, 'status' | 'finalText'>) =>
+  state.status && state.status !== 'SUCCESS' && state.finalText.length <= 400 ? state.finalText : ''
+
 async function runRoundAgy(
   $: EngineInterface,
   argv: RoundArgs & { home: string; state: AgyState },
@@ -184,8 +192,7 @@ async function runRoundAgy(
     subtype: isCapped ? 'error_max_turns' : state.status === 'SUCCESS' ? 'success' : state.status ? 'error' : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    // A result that is not a success carries the CLI's own reason (a usage limit among them) in its response.
-    errors: [errors, state.status && state.status !== 'SUCCESS' ? state.finalText : ''].filter(Boolean).join('\n').slice(-2000),
+    errors: [errors, failureReason(state)].filter(Boolean).join('\n').slice(-2000),
   }
 }
 

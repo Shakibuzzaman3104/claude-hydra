@@ -355,17 +355,29 @@ export async function signedInOf($: EngineInterface, account: Account, fresh = f
 }
 
 /** Picks the account a Head starts on: the strategy's choice among accounts that are free and signed in. */
+/**
+ * Picks this session made that the store may not hold yet. Heads fanned out together all read the store before any of them
+ * marks its account, so `spread` would send every one to the same least-used account; a claim is taken in the same step as
+ * the pick, which no other pick can interleave with.
+ */
+const claims: LastUsed = {}
+
 export async function pickUsable($: EngineInterface, engine: Engine, accounts: readonly Account[], skip: readonly string[] = []): Promise<Picked> {
   const now = await $.clock.now()
   const cooldowns = await readCooldowns($)
   const lastUsed = await readLastUsed($)
   const passed = [...skip]
   for (;;) {
-    const picked = pickAccount(engine, accounts, cooldowns, now, configuredStrategy, lastUsed, passed)
+    const picked = pickAccount(engine, accounts, cooldowns, now, configuredStrategy, { ...lastUsed, ...claims }, passed)
     if (!picked.account) return picked
+    const id = accountId(picked.account)
+    const held = claims[id]
+    claims[id] = Math.max(now, (held ?? 0) + 1)
     // The default account is Hydra's own preflight's business; an extra one that is signed out is passed over.
     if (!picked.account.dir || (await signedInOf($, picked.account)) !== false) return picked
-    passed.push(accountId(picked.account))
+    if (held === undefined) delete claims[id]
+    else claims[id] = held
+    passed.push(id)
   }
 }
 

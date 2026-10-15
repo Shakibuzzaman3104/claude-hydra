@@ -10,6 +10,7 @@ import {
   spendText, takeWelcome, timelineBar, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf, HYDRA_HELP,
 } from './register'
 import type { Engine } from './register'
+import { addTokens } from './lib/format'
 import type { HeadRun } from '../types'
 
 const base = { task: 't', model: 'm', turns: 0 }
@@ -327,3 +328,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(line(ENGINE_LABEL.commandcode)).toContain('1 Head · $0.0336')
   })
 }
+
+test('adds up the tokens of a Head that switched accounts', async () => {
+  expect(addTokens('12k in / 800 out', '3.5k in / 200 out')).toBe('16k in / 1.0k out')
+  expect(addTokens(undefined, '900 in / 40 out')).toBe('900 in / 40 out')
+  expect(addTokens(undefined, undefined)).toBeUndefined()
+})
