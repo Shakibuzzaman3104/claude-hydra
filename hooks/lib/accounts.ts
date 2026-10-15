@@ -105,14 +105,17 @@ export const supportsAccounts = (engine: Engine) => ACCOUNT_SUPPORT[engine] !== 
 export const accountEnv = (account: Account | undefined) =>
   account?.dir ? ACCOUNT_SUPPORT[account.engine]?.env?.(account.dir) : undefined
 
-/** What the person is told after `/hydra accounts add`: the login command (the `!` prefix runs it in the session) and what to do in it. */
+/**
+ * What the person is told after `/hydra accounts add`: the login command and what to do in it. It goes in a terminal of its
+ * own: the sign-ins are interactive (a browser hand-off, Antigravity's full-screen UI), which the session's `!` shell cannot host.
+ */
 export const loginInstructions = (engine: Engine, name: string, dir: string, platform: Platform) => {
   const support = ACCOUNT_SUPPORT[engine]
   if (!support) return ''
   const command = support.login(dir, platform)
   return [
-    `Added ${engine}/${name}. Sign it in yourself (Hydra never handles credentials) by running this ${platform === 'windows' ? 'in PowerShell' : 'in a terminal, or here with the ! prefix'}:`,
-    `  ${platform === 'windows' ? '' : '! '}${command}`,
+    `Added ${engine}/${name}. Sign it in yourself (Hydra never handles credentials) by running this in a separate ${platform === 'windows' ? 'PowerShell window' : 'terminal'}:`,
+    `  ${command}`,
     support.hint,
     'Heads switch to it when the others hit a usage limit. /hydra accounts shows when it is signed in.',
   ].join('\n')
@@ -138,8 +141,30 @@ const QUOTA_WORDING = [
 export const isQuotaFailure = (text: string | undefined) => !!text && QUOTA_WORDING.some(pattern => pattern.test(text))
 
 const UNIT_MS: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 }
-const unitOf = (word: string) => UNIT_MS[word.toLowerCase()[0] ?? 's'] ?? 1_000
-const DURATION = /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/gi
+const unitOf = (word: string) => (/^(ms|millis)/i.test(word) ? 1 : UNIT_MS[word.toLowerCase()[0] ?? 's'] ?? 1_000)
+const DURATION = /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|milliseconds?|ms|minutes?|mins?|m|seconds?|secs?|s)\b/gi
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+
+/**
+ * A wall-clock time a CLI names, in local time: "Oct 15 2026 3:05 PM", "October 15 3:05 PM" (this year), or "3:05 PM" /
+ * "15:05" alone (today, else tomorrow). Parsed by hand: `Date.parse` reads these differently from one runtime to the next.
+ */
+const clockTimeOf = (text: string, now: number) => {
+  const found = /^(?:([A-Za-z]{3})[a-z]*\.? (\d{1,2})(?: (\d{4}))? (?:at )?)?(\d{1,2}):(\d{2})(?::\d{2})? ?([AaPp][Mm])?(?: [A-Z]{2,5})?$/.exec(text.trim())
+  if (!found) return undefined
+  const [, monthName, dayText, yearText, hourText, minuteText, meridiem] = found
+  let hours = Number(hourText)
+  if (meridiem) hours = (hours % 12) + (/p/i.test(meridiem) ? 12 : 0)
+  const at = new Date(now)
+  if (monthName) {
+    const month = MONTHS.indexOf(monthName.toLowerCase())
+    if (month < 0) return undefined
+    at.setFullYear(yearText ? Number(yearText) : at.getFullYear(), month, Number(dayText))
+  }
+  at.setHours(hours, Number(minuteText), 0, 0)
+  return monthName || at.getTime() > now ? at.getTime() : at.getTime() + 86_400_000
+}
 
 /**
  * When the limit lifts, as a time in ms: the wait the CLI names ("try again in 2 hours 30 minutes", "retry-after: 90"), else a
@@ -156,6 +181,11 @@ export const cooldownFrom = (text: string, now: number) => {
       if (bare) total = Number(bare[1]) * 1_000
     }
     if (total > 0) return clamp(now + total)
+  }
+  const at = /try again at\s+([^\n;]+?)(?:\.\s|\.?$|\n)/im.exec(text)
+  if (at) {
+    const when = clockTimeOf(at[1]!.replace(/(\d)(st|nd|rd|th)\b/g, '$1').replace(/,/g, ' ').replace(/\s+/g, ' ').trim(), now)
+    if (when !== undefined && when > now) return clamp(when)
   }
   const iso = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/.exec(text)
   if (iso) {

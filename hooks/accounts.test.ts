@@ -64,6 +64,17 @@ test('reads the wait from a "try again in" message', async () => {
   expect(cooldownFrom('Try again in 1.5 hours.', NOW)).toBe(NOW + 90 * MIN)
   expect(cooldownFrom('rate limited, try again in 1d 2h', NOW)).toBe(NOW + 26 * 3_600_000)
   expect(cooldownFrom('retry-after: 120', NOW)).toBe(NOW + 120_000)
+  expect(cooldownFrom('rate limited, retry in 1500ms', NOW)).toBe(NOW + 1_500)
+})
+
+test('reads the wall-clock time a CLI says to try again at', async () => {
+  const at = new Date(NOW + 3 * 3_600_000)
+  const stamp = at.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }).replace(',', 'th,')
+  const expected = new Date(at).setSeconds(0, 0)
+  expect(cooldownFrom(`You've hit your usage limit. Try again at ${stamp}.`, NOW)).toBe(expected)
+  const clock = new Date(NOW + 2 * 3_600_000)
+  const hhmm = `${clock.getHours()}:${String(clock.getMinutes()).padStart(2, '0')}`
+  expect(cooldownFrom(`limit reached, try again at ${hhmm}`, NOW)).toBe(new Date(clock).setSeconds(0, 0))
 })
 
 test('reads a reset time when the wait is not given', async () => {
@@ -138,7 +149,8 @@ test('writes the login command for each engine on macOS, Linux and Windows', asy
   expect(ACCOUNT_SUPPORT.agy!.login('/h/agy/x', 'darwin')).toBe('HOME="/h/agy/x" agy')
   expect(withEnv('windows', { A: '1', B: '2' }, 'run')).toBe('$env:A="1"; $env:B="2"; run')
   const mac = loginInstructions('codex', 'work', '/h/codex/work', 'darwin')
-  expect(mac).toContain('! CODEX_HOME="/h/codex/work" codex login')
+  expect(mac).toContain('  CODEX_HOME="/h/codex/work" codex login')
+  expect(mac).toContain('separate terminal')
   expect(mac).toContain('--device-auth')
   const win = loginInstructions('codex', 'work', 'C:/h/work', 'windows')
   expect(win).toContain('PowerShell')

@@ -42,7 +42,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm i -g @anthropic-ai/claude-code
+      - run: npm i -g @anthropic-ai/claude-code@2.1.300
       # Both commands work offline with no login or config (verified with an empty environment and a fresh HOME).
       - name: Validate the plugin
         run: claude plugin validate .

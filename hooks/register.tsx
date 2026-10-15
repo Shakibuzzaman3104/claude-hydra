@@ -13,7 +13,7 @@ import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHead
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
 import type { Engine } from './lib/engines'
-import { REPORT_HEAD, headName, isLive, listRuns, reportNotice, stopRuns, strings } from './lib/format'
+import { REPORT_HEAD, headName, isLive, listRuns, reportContext, reportNotice, stopRuns, strings } from './lib/format'
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
 import { HYDRA_HELP, HYDRA_POLICY, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
 import { backgroundJobs, controllers, createReplyBox, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
@@ -258,7 +258,7 @@ export const register: Register = (on, options) => {
     const origin = e.origin as { kind: string; name?: string }
     if (origin.kind !== 'plugin' || origin.name !== 'hydra' || e.command || !REPORT_HEAD.test(e.text)) return next(e)
 
-    return next({ ...e, text: reportNotice(e.text), context: [...(e.context ?? []), e.text] })
+    return next({ ...e, text: reportNotice(e.text), context: [...(e.context ?? []), reportContext(e.text)] })
   })
 
   on('prompt.compose', async ($, e, next) => {

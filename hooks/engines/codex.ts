@@ -210,6 +210,18 @@ async function missingMountPoints($: EngineInterface, roots: readonly string[]):
   return missing
 }
 
+/**
+ * The git folders a Head in `cwd` needs to read that lie above it: the repository's top level when `cwd` is a subfolder
+ * of a monorepo, and the shared `.git` folder of a worktree. Never the home folder itself or a folder above it.
+ */
+async function gitReadDirs($: EngineInterface, cwd: string, home: string): Promise<string[]> {
+  const ran = await $.process.run(['git', '-C', cwd, 'rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (!ran || ran.exitCode !== 0) return []
+  const dirs = await realPaths($, ran.stdout.split('\n').map(line => line.trim()).filter(Boolean))
+  // Inside the project they are readable already; one that holds the home folder would open all of it.
+  return dirs.filter(dir => !isWithin(dir, cwd) && !(home && isWithin(home, dir)))
+}
+
 /** A Head on Codex: a filesystem profile on the command line (no file to clean up), then rounds until it reports HEAD DONE. */
 export async function runCodexHead($: EngineInterface, head: CodexHead, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { cwd, model } = head
@@ -230,7 +242,8 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
     return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex')
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
-  const filesystem = codexFilesystem(realCwd!, { addDirs: await realPaths($, head.addDirs), writeDirs, shell: true }, realHome, homeRead)
+  const repoDirs = await gitReadDirs($, realCwd!, realHome)
+  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true }, realHome, homeRead)
   return runCodexRounds($, head, filesystem, outer, limits, id)
 }
 
