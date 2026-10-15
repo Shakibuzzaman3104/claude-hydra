@@ -3,3 +3,5 @@ node_modules/
 .claude-plugin/types/
 __pycache__/
 .env*
+.pytest_cache/
+.ruff_cache/

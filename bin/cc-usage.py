@@ -8,18 +8,21 @@ for one session with --session <id>, or reports one session's cost, edited files
 """
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-ROOT = os.path.expanduser("~/.commandcode/projects")
+ROOT = os.path.join(os.path.expanduser("~"), ".commandcode", "projects")
 FIVE_HOURS = timedelta(hours=5)
 WEEK = timedelta(days=7)
 
 
 def parse_time(raw):
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # Python < 3.11 accepts only 3 or 6 fractional digits, so pad or trim them.
+        raw = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), raw.replace("Z", "+00:00"), count=1)
+        return datetime.fromisoformat(raw)
     except (AttributeError, ValueError):
         return None
 
