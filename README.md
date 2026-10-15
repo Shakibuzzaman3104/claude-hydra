@@ -93,6 +93,17 @@ Change these in `/config` (the Hydra rows) or when installing:
 | `headEffort` | `auto` | `auto` lets Claude pick per Head: `low` when it will check the result, one level up on each retry, `max` first only for subtle work it cannot check (measured in `bench/effort/`); a level fixes it (`/hydra effort=<level>`) |
 | `headsFiveHourUsd`, `headsWeeklyUsd` | `0` | Your Command Code plan's spend caps; with `0`, spend is shown without a limit |
 | `headsPlan` | empty | Your plan's name, shown in `/hydra-usage` |
+| `accountStrategy` | `fill` | With several accounts on an engine: `fill` uses the default first and moves on at a usage limit, `spread` rotates, least recently used first |
+
+## Several accounts
+Hit a usage limit on one subscription? Give an engine more than one account and Hydra moves on by itself. Every engine has a `default` account (the CLI's normal sign-in); Codex, CodeBuddy and Antigravity can have more.
+- `/hydra accounts` lists each engine's accounts with ✓ signed in / ✗ not signed in, and `cooling until HH:MM` for one at its limit. Command Code keeps one account.
+- `/hydra accounts add codex work` makes a folder for the account and prints the exact login command to run (for Codex, `CODEX_HOME="…" codex login`; prefix it with `!` to run it in the session). Sign in there with the CLI itself.
+- `/hydra accounts remove codex work` forgets the account (its folder stays; the reply names the path to delete). `/hydra accounts reset` clears every cooldown.
+- When a Head stops at a usage limit, Hydra marks that account as cooling (for the wait the CLI names, else an hour) and re-runs the Head on the next account with a note listing the files already changed. The report starts with `accounts: codex/default (usage limit, cooling until 14:05) → codex/work`. If every account of an engine is cooling, the Head does not start; in auto mode Claude routes that task to another engine.
+- The `accountStrategy` option picks the order: `fill` (default) uses the default account until it is at its limit; `spread` rotates, least recently used first.
+
+Hydra never reads or stores a credential: each account's sign-in lives in the CLI's own config folder (`~/.claude/hydra/accounts/<engine>/<name>/`), and the folder is the only thing Hydra points the CLI at.
 
 ## Status line (optional)
 While Hydra is on, it writes `🐉 <head model> · <effort> | Heads 5h $… | 7d $…` to `~/.claude/hydra/status/<session id>.txt`. To show it under your own status line, `/hydra statusline` prints the lines to add. [`examples/statusline.sh`](examples/statusline.sh) is a full script. Add `"refreshInterval": 2` to the `statusLine` block of `~/.claude/settings.json`, or the line only updates at your next message. Without it, the band above the prompt and `/heads` show the same thing.

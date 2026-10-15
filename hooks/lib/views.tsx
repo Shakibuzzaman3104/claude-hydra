@@ -4,6 +4,7 @@
  */
 import type { EngineInterface, RenderInput } from 'claude-code'
 
+import { accountOverview, accountStrategy, hasExtraAccounts, rowText } from './accounts'
 import { effortModeOf } from './effort'
 import { ENGINE_LABEL, engineLabel, isAuto, isEngine } from './engines'
 import type { Engine } from './engines'
@@ -121,7 +122,7 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
       {chosen && (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>
-            {chosen.id} · {shortModel(chosen.model)}{chosen.effort ? ` · effort ${chosen.effort}` : ''} · {chosen.state} {elapsedOf(chosen, now)}
+            {chosen.id} · {shortModel(chosen.model)}{chosen.effort ? ` · effort ${chosen.effort}` : ''}{chosen.account ? ` · ${chosen.account}` : ''} · {chosen.state} {elapsedOf(chosen, now)}
           </Text>
           <Text dimColor wrap="wrap">{chosen.task}</Text>
           {(chosen.state === 'running' || chosen.state === 'queued') && (
@@ -177,6 +178,7 @@ export async function usagePaneView(
   const hydra = await readMode($)
   const recent = await readRuns($)
   const mix = engineMixOf(recent, defaultEngine)
+  const accounts = await accountOverview($, undefined, false)
 
   const row = (label: string, percent: number, detail: string) => (
     <Box flexDirection="column" marginBottom={1}>
@@ -225,6 +227,23 @@ export async function usagePaneView(
             <Box key={`mix-${item.engine}`} justifyContent="space-between">
               <Text>{isEngine(item.engine) ? ENGINE_LABEL[item.engine] : item.engine}</Text>
               <Text dimColor>{[`${item.count} Head${item.count === 1 ? '' : 's'}`, item.tokens > 0 ? `${compactNumber(item.tokens)} tok` : '', item.hasUsd ? `$${item.usd.toFixed(4)}` : ''].filter(Boolean).join(' · ')}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
+
+      {hasExtraAccounts(accounts) && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold>Accounts <Text dimColor>· {accountStrategy()}</Text></Text>
+          {accounts.filter(item => item.rows.length > 1).map(item => (
+            <Box key={`accounts-${item.engine}`} flexDirection="column">
+              <Text>{ENGINE_LABEL[item.engine]}</Text>
+              {item.rows.map(account => (
+                <Box key={`account-${item.engine}-${account.name}`} justifyContent="space-between">
+                  <Text>  {account.name}</Text>
+                  <Text dimColor>{rowText(account)}</Text>
+                </Box>
+              ))}
             </Box>
           ))}
         </Box>

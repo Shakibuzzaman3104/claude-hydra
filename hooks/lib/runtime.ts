@@ -265,7 +265,14 @@ export const gate = createGate(MAX_PARALLEL)
  * Background Heads run in a worker loop that `session.start` owns, on that hook's `$`: a `tool.call` hook's `$`
  * lapses once the call is long over, and a Head spawned under it dies with it. The tool call only queues the job.
  */
-export type HeadResult = { text: string; isDone: boolean }
+export type HeadResult = {
+  text: string
+  isDone: boolean
+  /** What the CLI itself reported as the reason a Head stopped (its error output), not the model's report: the only text `isQuotaFailure` reads. */
+  failure?: string
+  /** The files the Head edited, as the engine saw them. */
+  files?: string[]
+}
 /** `reply` hands a foreground call its result; it answers false once that call is gone, and the report goes out as a message. */
 export type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; reply?: (result: HeadResult) => boolean }
 
@@ -338,7 +345,7 @@ export const backgroundJobs = createJobQueue()
 export const pendingPrompts = createQueue<string>()
 
 export type Round = { finalText: string; sessionId?: string; subtype?: string; code: number | null; signal?: string; errors: string; startedSession?: string }
-export type RoundArgs = { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[] }
+export type RoundArgs = { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[]; /** Set over the host's environment for this CLI run: the account the Head runs on. */ env?: Record<string, string> }
 
 /**
  * Spawns a Head's CLI and feeds each stdout line to `onLine` (which returns true to stop the run early). The stream

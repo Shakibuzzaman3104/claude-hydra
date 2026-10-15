@@ -167,7 +167,7 @@ async function runRoundCodex(
     for (const event of foldCodexRow(row, state)) await onEvent(event)
     if (state.turns - turnsBefore > argv.maxTurns) isCapped = true
     return isCapped
-  })
+  }, argv.env)
   return {
     finalText: state.finalText,
     sessionId: state.threadId,
@@ -178,7 +178,7 @@ async function runRoundCodex(
   }
 }
 
-type CodexHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; effort?: string }
+type CodexHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; effort?: string; env?: Record<string, string> }
 
 /** Empty folders Codex's sandbox leaves in a writable root as mount points for the paths it protects. */
 const CODEX_MOUNT_POINTS = ['.agents', '.aws', '.codex']
@@ -240,7 +240,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundCodex($, { ...round, model, effort, cwd, addDirs: head.addDirs, filesystem, state }, signal, onEvent)
+    const ran = await runRoundCodex($, { ...round, model, effort, cwd, addDirs: head.addDirs, filesystem, state, env: head.env }, signal, onEvent)
     return { ...ran, effort }
   }
 
@@ -278,5 +278,5 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'codex', tokens,
   })
-  return { text, isDone }
+  return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

@@ -5,12 +5,15 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { HeadRun } from '../../types'
+import { accountEnv, accountsOf, markUsed, pickUsable, recordCooldown, rotateAccounts } from '../lib/accounts'
+import type { Account } from '../lib/accounts'
 import { isHeadEffort } from '../lib/effort'
 import { AGY_MODEL, DEFAULT_ENGINE, modelFor } from '../lib/engines'
 import type { Engine } from '../lib/engines'
 import { formatReport, strings } from '../lib/format'
 import type { HeadLimits } from '../lib/format'
 import { DEFAULT_MINUTES, gate, notStarted, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
+import type { HeadResult } from '../lib/runtime'
 import { homeOf } from '../lib/platform'
 import { homeHeadRefusal, union } from '../lib/safety'
 import { updateRuns, updateTick } from '../lib/state'
@@ -57,8 +60,9 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
 }
 
 /**
- * Where each engine's Head is started. To add an engine: write `engines/<name>.ts` (its stream fold, command line, lockdown settings
- * and a `run<Name>Head` function, as `codex.ts` does), name it in `lib/engines.ts`, and add one line here.
+ * Where a Head is started on an engine's account (see `startHead` and `runOnAccounts`). To add an engine: write `engines/<name>.ts` (its stream fold,
+ * command line, lockdown settings and a `run<Name>Head` function, as `codex.ts` does), name it in `lib/engines.ts`, and add one line to `startHead`.
+ * An engine that can hold several accounts also gets an entry in `ACCOUNT_SUPPORT` (lib/accounts.ts).
  */
 async function runHeadInside(
   $: EngineInterface,
@@ -76,8 +80,48 @@ async function runHeadInside(
     await refreshStatus($, limits)
     return notStarted(id, model, cwd, `${refusal} A Head never runs where Hydra's rules cannot keep it inside a project.`, engine)
   }
-  if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, outer, limits, id)
-  if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort }, outer, limits, id)
-  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort }, outer, limits, id)
+  const accounts = await accountsOf($, engine)
+  // One account (the usual case, and every engine without account support): run as before, nothing recorded.
+  if (accounts.length <= 1) return startHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine }, undefined, outer, limits, id)
+  return runOnAccounts($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine }, accounts, outer, limits, id)
+}
+
+type HeadSpec = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine }
+
+/** Starts one Head run on `account` (undefined: the CLI's own config): its engine's run function, with the account's env or token folder. */
+async function startHead($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine } = head
+  const env = accountEnv(account)
+  if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, tokenDir: account?.dir }, outer, limits, id)
+  if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort, env }, outer, limits, id)
+  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env }, outer, limits, id)
   return runCommandCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, outer, limits, id)
+}
+
+/**
+ * A Head on an engine with several accounts: `rotateAccounts` (lib/accounts.ts) runs it on the strategy's pick and, when it
+ * stops at a usage limit, on the next free account. Here the steps are wired to the store, the run record and the engine.
+ */
+async function runOnAccounts($: EngineInterface, head: HeadSpec, accounts: readonly Account[], outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+  const { engine, cwd, model } = head
+  return rotateAccounts<HeadResult>({
+    count: accounts.length,
+    minutes: head.minutes,
+    cwd,
+    engine,
+    isAborted: () => outer.aborted,
+    pick: tried => pickUsable($, engine, accounts, tried),
+    now: () => $.clock.now(),
+    begin: async (name, isSwitch) => {
+      await markUsed($, name, await $.clock.now())
+      await setRun($, id, { account: name, ...(isSwitch ? { state: 'running' as const, endedAt: undefined, activity: `switched to ${name}` } : {}) })
+    },
+    run: (account, note, minutes) => startHead($, { ...head, task: head.task + note, minutes }, account, outer, limits, id),
+    cooled: (name, until) => recordCooldown($, name, until),
+    refuse: async reason => {
+      await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: reason })
+      await refreshStatus($, limits)
+      return notStarted(id, model, cwd, reason, engine)
+    },
+  })
 }

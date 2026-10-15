@@ -59,6 +59,16 @@
       "description": "Your Command Code plan name, shown in /hydra-usage (optional)",
       "default": ""
     },
+    "accountStrategy": {
+      "type": "string",
+      "title": "Hydra account strategy",
+      "description": "With several accounts on an engine (/hydra accounts add): fill uses the default account first and moves to the next when one hits its usage limit; spread rotates through them, least recently used first",
+      "default": "fill",
+      "options": [
+        "fill",
+        "spread"
+      ]
+    },
     "headReadDirs": {
       "type": "string",
       "title": "Extra folders Heads may read in your home",

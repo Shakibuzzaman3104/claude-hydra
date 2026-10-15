@@ -112,6 +112,7 @@ ${pool.map(engine => `  - ${ENGINE_LABEL[engine]}: ${LOCKDOWN_BRIEF[engine]}`).j
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the engine, the files the Head edited and every call that was denied.
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
+- A report starting with "all accounts of <engine> are at their usage limit" means that engine cannot take the task now: route it to another engine in the pool.
 - End with what each Head did (and on which engine), what you verified, and the Heads' total cost.`
 
 export const HYDRA_POLICY = (headModel: string, effort: EffortMode, engine: Engine | typeof AUTO = DEFAULT_ENGINE, pool: readonly Engine[] = ENGINES) =>
@@ -129,7 +130,7 @@ ${envRule(engine)}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 - End with what each Head did, what you verified, and the Heads' total cost.`
 
-const ACTIONS = ['off', 'status', 'help', 'statusline', 'engines'] as const
+const ACTIONS = ['off', 'status', 'help', 'statusline', 'engines', 'accounts'] as const
 
 /** A lone word or an `x=`/`--x` option nobody knows is a typo, never a task. */
 export const parseHydraArgs = (args: string) => {
@@ -157,7 +158,8 @@ export const parseHydraArgs = (args: string) => {
     else rest.push(word)
   }
   const first = rest[0] ?? ''
-  const unknown = rest.length === 1 || /^[\w-]+=/.test(first) || first.startsWith('--') ? first : undefined
+  // `accounts add codex work`: the rest are that command's words, not a task or a typo.
+  const unknown = action === 'accounts' ? undefined : rest.length === 1 || /^[\w-]+=/.test(first) || first.startsWith('--') ? first : undefined
   return { action, leadModel, headModel, effort, ...(engine !== undefined ? { engine } : {}), ...(engines !== undefined ? { engines } : {}), task: unknown ? '' : rest.join(' '), unknown }
 }
 
@@ -171,6 +173,7 @@ export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (${ENGINES.map(name =
   /hydra engine=<name>   ${ENGINES.join(', ')}: the CLI Heads run on; auto lets Claude pick per Head
   /hydra engines=a,b     the engines auto may use (implies engine=auto), e.g. engines=codex,agy,codebuddy
   /hydra engines         which engines are installed and signed in, and what each is for
+  /hydra accounts        several accounts per engine, switched on a usage limit: list, add <engine> [name], remove <engine> <name>, reset
   /hydra statusline      show Hydra in your status line
   /heads                 watch the Heads work, live: totals, a timeline and each Head's steps
   /${USAGE_COMMAND}           Claude and Head usage, and what this session's Heads used per engine`

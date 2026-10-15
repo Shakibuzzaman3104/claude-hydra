@@ -8,6 +8,7 @@ import { sweepAgyHomes } from './engines/agy'
 import { sweepBuddySettings } from './engines/codebuddy'
 import { writeRules } from './engines/commandcode'
 import { runHead } from './engines/index'
+import { isStrategy, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
 import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
@@ -21,6 +22,7 @@ import { setExtraHomeRead } from './lib/safety'
 import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/state'
 import { bandView, headsPaneView, usagePaneView } from './lib/views'
 
+export * from './lib/accounts'
 export * from './lib/effort'
 export * from './lib/engines'
 export * from './lib/format'
@@ -56,6 +58,7 @@ export const register: Register = (on, options) => {
   // `auto` is a setting, not an engine: until the person picks one, /hydra uses whichever engines are ready here.
   const isAutoDefault = options.headEngine === AUTO
   setConfiguredEngine(defaultEngine)
+  setAccountStrategy(isStrategy(options.accountStrategy) ? options.accountStrategy : 'fill')
   setExtraHomeRead([String(options.headReadDirs ?? '')])
   const limits = { fiveHourUsd, weeklyUsd }
 
@@ -93,7 +96,7 @@ export const register: Register = (on, options) => {
     await $.command.register({
       name: 'hydra',
       description: 'Turn on Hydra: Claude leads, Heads (Command Code, CodeBuddy, Codex or Antigravity agents) implement',
-      argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | off | status | help',
+      argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | off | status | help | accounts',
     })
     await $.tool.register({
       name: 'head',
@@ -172,6 +175,7 @@ export const register: Register = (on, options) => {
 
     if (action === 'help') return { text: HYDRA_HELP }
     if (action === 'statusline') return { text: STATUSLINE_HELP }
+    if (action === 'accounts') return { text: await runAccountsCommand($, parseAccountsArgs(task)) }
     if (action === 'engines') {
       const lines = ['🐉 Engines (what each is for; /hydra engine=auto lets Claude pick per Head):']
       for (const name of ENGINES) {

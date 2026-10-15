@@ -151,6 +151,10 @@ export const buddyArgs = (a: RoundArgs & { settings: string; shell: boolean; ses
 /** A session id for a Head's first CodeBuddy round; later rounds resume it. */
 const buddySessionId = (id: string, now: number) => `hydra-${id}-${now.toString(36)}`
 
+/** A result row that reports a failure (not a clean finish or the turn cap): its `result` is then the CLI's error text, not the model's report. */
+const isBuddyError = (row: BuddyRow | null) =>
+  row !== null && (row.is_error === true || (typeof row.subtype === 'string' && row.subtype.startsWith('error') && row.subtype !== 'error_max_turns'))
+
 async function runRoundBuddy(
   $: EngineInterface,
   argv: RoundArgs & { settings: string; shell: boolean; sessionId: string; state: BuddyState },
@@ -179,7 +183,7 @@ async function runRoundBuddy(
     // CodeBuddy's own --max-turns is loose (a Head ran 13 turns under a cap of 2), so Hydra counts model messages itself.
     if (argv.state.messages.size - turnsBefore > argv.maxTurns) isCapped = true
     return isCapped
-  })
+  }, argv.env)
   const final = result as BuddyRow | null
   return {
     finalText: String(final?.result ?? ''),
@@ -187,12 +191,12 @@ async function runRoundBuddy(
     subtype: isCapped ? 'error_max_turns' : typeof final?.subtype === 'string' ? final.subtype : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    errors,
+    errors: [errors, isBuddyError(final) ? String(final?.result ?? '') : ''].filter(Boolean).join('\n').slice(-2000),
     startedSession: started,
   }
 }
 
-type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string }
+type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string> }
 
 const BUDDY_SETTINGS_DIR = '.claude/hydra/heads'
 
@@ -271,7 +275,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundBuddy($, { ...round, model, effort, cwd, addDirs, settings, shell, sessionId: buddySessionId(id, await $.clock.now()), state }, signal, onEvent)
+    const ran = await runRoundBuddy($, { ...round, model, effort, cwd, addDirs, settings, shell, sessionId: buddySessionId(id, await $.clock.now()), state, env: head.env }, signal, onEvent)
     return { ...ran, effort }
   }
 
@@ -307,5 +311,5 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'codebuddy', tokens,
   })
-  return { text, isDone }
+  return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

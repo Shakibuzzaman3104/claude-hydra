@@ -5,6 +5,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import { effortModeOf, headEffort } from '../lib/effort'
+import { agyTokenOf } from '../lib/accounts'
 import { AGY_MODEL, AGY_TOKEN } from '../lib/engines'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
@@ -183,7 +184,8 @@ async function runRoundAgy(
     subtype: isCapped ? 'error_max_turns' : state.status === 'SUCCESS' ? 'success' : state.status ? 'error' : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    errors,
+    // A result that is not a success carries the CLI's own reason (a usage limit among them) in its response.
+    errors: [errors, state.status && state.status !== 'SUCCESS' ? state.finalText : ''].filter(Boolean).join('\n').slice(-2000),
   }
 }
 
@@ -205,13 +207,13 @@ async function findEnvFiles($: EngineInterface, roots: readonly string[]): Promi
  * Makes this Head's `HOME`: its own `settings.json` (the permission rules) and a copy of the sign-in token, under Hydra's folder
  * in `~/.claude`, owner-only. Removed when the Head ends. Returns the folder.
  */
-async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: HeadNeeds): Promise<string> {
+async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, tokenDir?: string): Promise<string> {
   const real = await homeOf($)
   const dir = `${real}/${AGY_HOME_DIR}/agy-${await $.session.id()}-${id}`
   const config = `${dir}/.gemini/antigravity-cli`
   await $.process.run(['/bin/mkdir', '-p', config])
   await $.process.run(['/bin/chmod', '700', dir, `${dir}/.gemini`, config])
-  await $.process.run(['/bin/cp', '-p', `${real}/${AGY_TOKEN}`, `${config}/antigravity-oauth-token`])
+  await $.process.run(['/bin/cp', '-p', tokenDir ? agyTokenOf(tokenDir) : `${real}/${AGY_TOKEN}`, `${config}/antigravity-oauth-token`])
   await writeAgySettings($, dir, cwd, needs)
   return dir
 }
@@ -246,7 +248,7 @@ export async function sweepAgyHomes($: EngineInterface) {
   }
 }
 
-type AgyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string }
+type AgyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; /** An extra account's folder: the sign-in token is copied from there instead of the person's own home. */ tokenDir?: string }
 
 /** A Head on Antigravity: its own HOME with permission rules, then rounds until it reports HEAD DONE. */
 export async function runAgyHead($: EngineInterface, head: AgyHead, outer: AbortSignal, limits: HeadLimits, id: string) {
@@ -255,7 +257,7 @@ export async function runAgyHead($: EngineInterface, head: AgyHead, outer: Abort
   const refusal =
     /^[A-Za-z]:|^\\\\|\\/.test(cwd)
       ? `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.`
-      : await writeAgyHome($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell }).then(
+      : await writeAgyHome($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell }, head.tokenDir).then(
           dir => {
             home = dir
             return undefined
@@ -339,5 +341,5 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'agy', tokens,
   })
-  return { text, isDone }
+  return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

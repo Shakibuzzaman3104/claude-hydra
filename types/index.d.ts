@@ -35,6 +35,8 @@ export type HeadRun = {
   denials?: number
   cwd?: string
   engine?: string
+  /** The engine account the Head runs on, as `<engine>/<name>`; set only for engines with extra accounts. */
+  account?: string
   files?: string[]
   summary?: string
 }
