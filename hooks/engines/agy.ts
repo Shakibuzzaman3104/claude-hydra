@@ -11,7 +11,7 @@ import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { CODEX_SECRET_DIRS, DANGEROUS_SHELL, isWithin, trimSlash, union } from '../lib/safety'
+import { DANGEROUS_SHELL, SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
@@ -102,7 +102,7 @@ export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
 export const agyEffort = (effort: string) => (effort === 'off' ? 'low' : effort === 'xhigh' || effort === 'max' ? 'high' : effort)
 
 /** Credential folders under the person's home that an Antigravity Head must not read (its own, with the sign-in token, included). */
-export const AGY_SECRET_DIRS = [...CODEX_SECRET_DIRS, '.gemini']
+export const AGY_SECRET_DIRS = SECRET_PATHS
 
 /**
  * Shell lines an Antigravity Head with a shell never runs: Command Code's list as regexes that match the command at the start
@@ -283,7 +283,8 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const controller = new AbortController()
-  outer.addEventListener('abort', () => controller.abort(), { once: true })
+  if (outer.aborted) controller.abort()
+  else outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
   const timerStop = new AbortController()
   void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(

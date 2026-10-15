@@ -10,7 +10,7 @@ import type { Engine } from './engines'
 import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, WARN_AT, formatReport, leadLabel, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
 import { AUTO_CONSENT_QUESTION, CONSENT_QUESTION, CONSENT_YES } from './policy'
-import { isWithin, union } from './safety'
+import { isWithin, secretDirRefusal, union } from './safety'
 import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
 import { readHeads, readMode, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
 
@@ -223,6 +223,7 @@ export const isResumable = (code: number | null) => code === 0 || code === 8 || 
  */
 export async function resolveWriteDirs($: EngineInterface, cwd: string, dirs: readonly string[]): Promise<{ dirs: string[] } | { refusal: string }> {
   const home = await homeOf($)
+  const realHome = home ? ((await $.fs.stat(home, { resolve: true }).catch(() => undefined))?.realPath ?? home) : ''
   const realCwd = (await $.fs.stat(cwd, { resolve: true }).catch(() => undefined))?.realPath ?? cwd
   const resolved: string[] = []
   for (const dir of dirs) {
@@ -230,7 +231,9 @@ export async function resolveWriteDirs($: EngineInterface, cwd: string, dirs: re
     const stat = await $.fs.stat(dir, { resolve: true }).catch(() => undefined)
     const real = stat?.realPath
     if (!stat || stat.kind !== 'dir' || !real) return { refusal: `writeDirs: ${dir} is not an existing folder.` }
-    if (real === '/' || real === home || isWithin(realCwd, real)) return { refusal: `writeDirs: ${dir} is too broad: it holds the project or your home folder. Name the folder the task changes.` }
+    if (real === '/' || (realHome && isWithin(realHome, real)) || isWithin(realCwd, real)) return { refusal: `writeDirs: ${dir} is too broad: it holds the project or your home folder. Name the folder the task changes.` }
+    const secret = secretDirRefusal([real], realHome, 'writeDirs')
+    if (secret) return { refusal: secret }
     if (isWithin(real, realCwd)) return { refusal: `writeDirs: ${dir} is inside the project, which a Head can write to already.` }
     resolved.push(real)
   }

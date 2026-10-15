@@ -15,7 +15,7 @@ import type { HeadLimits } from '../lib/format'
 import { DEFAULT_MINUTES, gate, notStarted, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
 import type { HeadResult } from '../lib/runtime'
 import { homeOf } from '../lib/platform'
-import { homeHeadRefusal, union } from '../lib/safety'
+import { homeHeadRefusal, secretDirRefusal, union } from '../lib/safety'
 import { updateRuns, updateTick } from '../lib/state'
 import { runAgyHead } from './agy'
 import { runBuddyHead } from './codebuddy'
@@ -74,7 +74,8 @@ async function runHeadInside(
   const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine } = head
   const home = await homeOf($)
   const [realCwd, realHome] = await realPaths($, home ? [cwd, home] : [cwd])
-  const refusal = homeHeadRefusal(realCwd ?? cwd, realHome ?? '')
+  const granted = await realPaths($, union(addDirs, writeDirs))
+  const refusal = homeHeadRefusal(realCwd ?? cwd, realHome ?? '') ?? secretDirRefusal(granted, realHome ?? '', 'addDirs/writeDirs')
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)

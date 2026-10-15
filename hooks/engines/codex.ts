@@ -9,7 +9,7 @@ import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { CODEX_SECRET_DIRS, homeReadDirs, isWithin, trimSlash, union } from '../lib/safety'
+import { SECRET_PATHS, homeReadDirs, homeRelative, isSecretPath, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
@@ -44,6 +44,8 @@ export type CodexState = {
   finalText: string
   threadId?: string
   failure?: string
+  /** The last stream-level `error` row: Codex also sends these for retries it recovers from, so it counts only when no turn completed. */
+  lastError?: string
   isCompleted: boolean
 }
 
@@ -63,8 +65,10 @@ export const foldCodexRow = (row: CodexRow, state: CodexState): StreamEvent[] =>
     state.isCompleted = true
     state.inputTokens += row.usage?.input_tokens ?? 0
     state.outputTokens += row.usage?.output_tokens ?? 0
-  } else if (row.type === 'turn.failed' || row.type === 'error') {
+  } else if (row.type === 'turn.failed') {
     state.failure = row.error?.message ?? row.message ?? 'Codex reported an error'
+  } else if (row.type === 'error') {
+    state.lastError = row.error?.message ?? row.message ?? 'Codex reported an error'
   } else if ((row.type === 'item.started' || row.type === 'item.completed') && row.item) {
     const item = row.item
     const isDone = row.type === 'item.completed'
@@ -114,10 +118,14 @@ const tomlString = (value: string) => JSON.stringify(value)
  * A project that is the home folder itself, or holds it, cannot have its home denied; `homeHeadRefusal` stops those first.
  */
 export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRead: readonly string[] = []) => {
-  const writable = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
-  const readable = head.addDirs.map(trimSlash).filter(dir => !writable.some(root => isWithin(dir, root)))
-  const roots = union(writable, readable)
   const homeDir = home ? trimSlash(home) : ''
+  const isSecret = (dir: string) => {
+    const rel = homeDir ? homeRelative(dir, homeDir) : undefined
+    return rel !== undefined && isSecretPath(rel)
+  }
+  const writable = [cwd, ...(head.writeDirs ?? [])].map(trimSlash).filter(dir => dir === trimSlash(cwd) || !isSecret(dir))
+  const readable = head.addDirs.map(trimSlash).filter(dir => !isSecret(dir) && !writable.some(root => isWithin(dir, root)))
+  const roots = union(writable, readable)
   const isHomeClosed = homeDir !== '' && !writable.some(dir => isWithin(homeDir, dir))
   const entries: [string, string][] = [
     ['/', 'read'],
@@ -125,9 +133,16 @@ export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRea
     ...readable.map((dir): [string, string] => [dir, 'read']),
     ...writable.map((dir): [string, string] => [dir, 'write']),
     ...roots.flatMap((dir): [string, string][] => [[`${dir}/**/.env`, 'none'], [`${dir}/**/.env.*`, 'none']]),
-    ...(homeDir ? CODEX_SECRET_DIRS.map((dir): [string, string] => [`${homeDir}/${dir}`, 'none']) : []),
+    ...(homeDir ? SECRET_PATHS.map((dir): [string, string] => [`${homeDir}/${dir}`, 'none']) : []),
   ]
-  return `{${entries.map(([path, access]) => `${tomlString(path)}=${tomlString(access)}`).join(',')},glob_scan_max_depth=6}`
+  // Codex refuses a profile that names a path twice; where two entries meet, the stricter access stands.
+  const rank: Record<string, number> = { read: 0, write: 1, none: 2 }
+  const profile = new Map<string, string>()
+  for (const [path, access] of entries) {
+    const held = profile.get(path)
+    if (held === undefined || rank[access]! > rank[held]!) profile.set(path, access)
+  }
+  return `{${[...profile].map(([path, access]) => `${tomlString(path)}=${tomlString(access)}`).join(',')},glob_scan_max_depth=6}`
 }
 
 /**
@@ -171,10 +186,10 @@ async function runRoundCodex(
   return {
     finalText: state.finalText,
     sessionId: state.threadId,
-    subtype: state.failure ? 'error' : isCapped ? 'error_max_turns' : state.isCompleted ? 'success' : undefined,
+    subtype: state.failure ? 'error' : isCapped ? 'error_max_turns' : state.isCompleted ? 'success' : state.lastError ? 'error' : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    errors: [state.failure, errors].filter(Boolean).join('\n').slice(-2000),
+    errors: [state.failure ?? (state.isCompleted ? undefined : state.lastError), errors].filter(Boolean).join('\n').slice(-2000),
   }
 }
 
@@ -208,6 +223,12 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   const writeDirs = await realPaths($, head.writeDirs)
   const home = await homeOf($)
   const [realHome] = home ? await realPaths($, [home]) : ['']
+  if (!realHome) {
+    const refusal = 'Hydra cannot find your home folder (HOME is empty), so it cannot close it to a Codex Head.'
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
+    await refreshStatus($, limits)
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex')
+  }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
   const filesystem = codexFilesystem(realCwd!, { addDirs: await realPaths($, head.addDirs), writeDirs, shell: true }, realHome, homeRead)
   return runCodexRounds($, head, filesystem, outer, limits, id)
@@ -218,7 +239,8 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const controller = new AbortController()
-  outer.addEventListener('abort', () => controller.abort(), { once: true })
+  if (outer.aborted) controller.abort()
+  else outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
   const timerStop = new AbortController()
   void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(

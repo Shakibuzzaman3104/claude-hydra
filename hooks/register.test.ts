@@ -7,7 +7,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
-  ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexEffort, CODEX_SECRET_DIRS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
+  ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexEffort, SECRET_PATHS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
   foldAgyRow, newAgyState, agySettings, agyArgs, agyEffort, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
   AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
 } from './register'
@@ -715,7 +715,7 @@ test('builds the Codex filesystem profile: writes only in the project and grante
     expect(profile).toContain(`"${dir}/**/.env.*"="none"`)
   }
   expect(profile).not.toContain('"/p/brief"="write"')
-  for (const dir of CODEX_SECRET_DIRS) expect(profile).toContain(`"/home/me/${dir}"="none"`)
+  for (const dir of SECRET_PATHS) expect(profile).toContain(`"/home/me/${dir}"="none"`)
   expect(profile).toContain('glob_scan_max_depth=6}')
   expect(codexFilesystem('/p/app', { addDirs: [], shell: false })).not.toContain('/home')
 })

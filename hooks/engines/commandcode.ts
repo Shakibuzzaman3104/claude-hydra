@@ -9,7 +9,7 @@ import { applyEvent, formatReport, relativeTo } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isResumable, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { CODEX_SECRET_DIRS, DANGEROUS_SHELL, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
+import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { homeOf, runScript } from '../lib/platform'
 import { readMode } from '../lib/state'
@@ -74,11 +74,15 @@ export const writeDirDeny = (dir: string) => [
  * The person's credential folders, denied to the read tool (and to shell commands that name them): under --yolo a
  * Command Code Head can otherwise read any file on the disk. Its grep tool ignores Read rules, which is why it is
  * denied whole whenever a `.env` file is in reach; a credential folder outside the project is beyond its search root.
+ * The shell rules name the folder under home (`/Users/me/.aws`, `~/.aws`, `$HOME/.aws`), so a project's own `.docker`
+ * folder stays usable.
  */
 export const secretReadDeny = (home: string) => {
   const base = trimSlash(home)
   if (!base || base === '/') return []
-  return CODEX_SECRET_DIRS.flatMap(dir => [`Read(/${base}/${dir})`, `Read(/${base}/${dir}/**)`, `Shell(*/${dir}*)`, `Shell(*~/${dir}*)`])
+  return SECRET_PATHS.flatMap(dir => [
+    `Read(/${base}/${dir})`, `Read(/${base}/${dir}/**)`, `Shell(*${base}/${dir}*)`, `Shell(*~/${dir}*)`, `Shell(*$HOME/${dir}*)`, `Shell(*\${HOME}/${dir}*)`,
+  ])
 }
 
 export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string, home = ''): HeadSettings => {
@@ -318,7 +322,8 @@ async function runLockedHead(
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const controller = new AbortController()
-  outer.addEventListener('abort', () => controller.abort(), { once: true })
+  if (outer.aborted) controller.abort()
+  else outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
   const timerStop = new AbortController()
   void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(

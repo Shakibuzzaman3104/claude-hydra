@@ -9,7 +9,7 @@ import { EDIT_TOOLS, applyEvent, formatReport, relativeTo, tokensText } from '..
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { DANGEROUS_SHELL, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
+import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
@@ -107,9 +107,16 @@ export const buddyTools = (shell: boolean) => ['Read', 'Write', 'Edit', 'Glob', 
  * The permission settings one CodeBuddy Head runs with, passed with `--settings` (so no file lands in the project):
  * edits are allowed only under the project and the folders it may write to, `.git` and `.env` files are denied
  * everywhere, a folder it may only read is denied for edits, and the write guard checks each write's real path
- * (a symlink in the project cannot lead out of it, which the path rules alone do not stop).
+ * (a symlink in the project cannot lead out of it, which the path rules alone do not stop). The person's credential
+ * folders (`SECRET_PATHS` under `home`) are denied to the read tools and to shell lines that name them.
  */
-export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string) => {
+export const buddySecretDeny = (home: string) => {
+  const base = trimSlash(home)
+  if (!base || base === '/') return []
+  return SECRET_PATHS.flatMap(dir => [`Read(${base}/${dir})`, `Read(${base}/${dir}/**)`, `Bash(*${base}/${dir}*)`, `Bash(*~/${dir}*)`, `Bash(*$HOME/${dir}*)`])
+}
+
+export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string, home = '') => {
   const own = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
   const extra = union(head.addDirs.map(trimSlash), (head.writeDirs ?? []).map(trimSlash))
   const readOnly = extra.filter(dir => !own.some(root => isWithin(dir, root)))
@@ -123,6 +130,7 @@ export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string) => {
           `Read(${root}/**/.env)`, `Read(${root}/**/.env.*)`,
         ]),
         ...readOnly.flatMap(dir => [`Edit(${dir}/**)`, `Write(${dir}/**)`, `Read(${dir}/**/.env)`, `Read(${dir}/**/.env.*)`]),
+        ...buddySecretDeny(home),
         ...(head.shell ? BUDDY_SHELL_DENY : []),
       ],
     },
@@ -206,7 +214,7 @@ async function writeBuddySettings($: EngineInterface, cwd: string, id: string, n
   const dir = `${home}/${BUDDY_SETTINGS_DIR}`
   await $.process.run(['/bin/mkdir', '-p', dir])
   const path = `${dir}/${await $.session.id()}-${id}.json`
-  const settings = buddySettings(cwd, needs, guardCommand($.plugin.root, cwd, needs.writeDirs ?? []))
+  const settings = buddySettings(cwd, needs, guardCommand($.plugin.root, cwd, needs.writeDirs ?? []), home)
   await $.fs.write(path, JSON.stringify(settings, null, 2) + '\n')
   return path
 }
@@ -253,7 +261,8 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const controller = new AbortController()
-  outer.addEventListener('abort', () => controller.abort(), { once: true })
+  if (outer.aborted) controller.abort()
+  else outer.addEventListener('abort', () => controller.abort(), { once: true })
   let timedOut = false
   const timerStop = new AbortController()
   void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(
