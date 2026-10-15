@@ -8,6 +8,7 @@ import { sweepAgyHomes } from './engines/agy'
 import { sweepBuddySettings } from './engines/codebuddy'
 import { writeRules } from './engines/commandcode'
 import { runHead } from './engines/index'
+import { sweepOpenCodeFiles } from './engines/opencode'
 import { isStrategy, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
 import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
 import type { EffortMode } from './lib/effort'
@@ -23,6 +24,7 @@ import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/st
 import { bandView, headsPaneView, usagePaneView } from './lib/views'
 
 export * from './lib/accounts'
+export * from './lib/checks'
 export * from './lib/effort'
 export * from './lib/engines'
 export * from './lib/format'
@@ -35,6 +37,7 @@ export * from './engines/codebuddy'
 export * from './engines/codex'
 export * from './engines/commandcode'
 export * from './engines/index'
+export * from './engines/opencode'
 
 /** Also declared in lib/policy.ts, which words the policy and help with them: keep the two the same. The validator reads hook matchers only from this file. */
 const USAGE_COMMAND = 'hydra-usage'
@@ -95,23 +98,23 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'heads', description: 'Hydra: watch the Heads work, live (opens without interrupting Claude)', immediate: true })
     await $.command.register({
       name: 'hydra',
-      description: 'Turn on Hydra: Claude leads, Heads (Command Code, CodeBuddy, Codex or Antigravity agents) implement',
+      description: 'Turn on Hydra: Claude leads, Heads (Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode agents) implement',
       argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | off | status | help | accounts',
     })
     await $.tool.register({
       name: 'head',
-      description: 'Hydra: run one Head (a cheaper coding agent on Command Code, CodeBuddy, Codex or Antigravity, per the person\'s engine setting) headlessly on a self-contained implementation task. Returns its report, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
+      description: 'Hydra: run one Head (a cheaper coding agent on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode, per the person\'s engine setting) headlessly on a self-contained implementation task. Returns its report, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
       inputSchema: {
         type: 'object',
         properties: {
           task: { type: 'string', description: 'Self-contained spec: goal, exact files, constraints, acceptance check' },
           cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
           engine: { type: 'string', enum: [...ENGINES], description: 'Auto mode only (the person ran /hydra engine=auto): the engine this Head runs on, required there. Pick by the task: see the routing guide in the Hydra policy. In a fixed-engine session it must be omitted or match.' },
-          model: { type: 'string', description: 'Head model id (CodeBuddy and Codex ids have no provider prefix); defaults to the Hydra head model. On Codex: gpt-6.1-sol for hard or multi-file work, gpt-6-luna for mechanical or small tasks. On Antigravity it is always gemini-3.8-flash.' },
+          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-sol for hard or multi-file work, gpt-6-luna for mechanical or small tasks. On Antigravity it is always gemini-3.8-flash. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
-          shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs.' },
+          shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs. OpenCode Heads never get one.' },
           name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
           effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head (default low). Use low when you will check the result, one level up on each retry after a failed check, max first only for subtle work you cannot check. Ignored while the person has fixed a level with /hydra effort=<level>.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
@@ -130,7 +133,7 @@ export const register: Register = (on, options) => {
           id: { type: 'string', description: 'For stop: the Head name (e.g. prefs-utils), or all; default all' },
           effort: { type: 'string', enum: [...EFFORT_MODES], description: 'For on/effort: auto or a fixed level' },
           headModel: { type: 'string', description: 'For on/effort: the model the Heads run on' },
-          engine: { type: 'string', enum: [...ENGINES, AUTO], description: 'For on/effort: the CLI Heads run on: commandcode, codebuddy, codex or agy, or auto to let you pick one per Head' },
+          engine: { type: 'string', enum: [...ENGINES, AUTO], description: 'For on/effort: the CLI Heads run on: commandcode, codebuddy, codex, agy, workbuddy or opencode (beta), or auto to let you pick one per Head' },
           engines: { type: 'array', items: { type: 'string', enum: [...ENGINES] }, description: 'For on/effort with engine auto: the engines you may use (default: all that are ready)' },
         },
       },
@@ -144,6 +147,7 @@ export const register: Register = (on, options) => {
     void sweepStatusFiles($)
     void sweepBuddySettings($)
     void sweepAgyHomes($)
+    void sweepOpenCodeFiles($)
     const usage = await $.session.usage()
     await storeLead($, usage.rateLimits, limits)
     void refreshHeads($, limits)

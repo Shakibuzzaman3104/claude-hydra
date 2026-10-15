@@ -8,7 +8,7 @@ import type { HeadRun } from '../../types'
 import { accountEnv, accountsOf, markUsed, pickUsable, recordCooldown, rotateAccounts } from '../lib/accounts'
 import type { Account } from '../lib/accounts'
 import { isHeadEffort } from '../lib/effort'
-import { AGY_MODEL, DEFAULT_ENGINE, modelFor } from '../lib/engines'
+import { AGY_MODEL, DEFAULT_ENGINE, modelFor, workbuddyEnv } from '../lib/engines'
 import type { Engine } from '../lib/engines'
 import { addTokens, formatReport, strings } from '../lib/format'
 import type { HeadLimits } from '../lib/format'
@@ -21,6 +21,7 @@ import { runAgyHead } from './agy'
 import { runBuddyHead } from './codebuddy'
 import { runCodexHead } from './codex'
 import { runCommandCodeHead } from './commandcode'
+import { runOpenCodeHead } from './opencode'
 
 const RUN_HISTORY = 20
 
@@ -96,6 +97,12 @@ async function startHead($: EngineInterface, head: HeadSpec, account: Account | 
   if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, tokenDir: account?.dir }, outer, limits, id)
   if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort, env }, outer, limits, id)
   if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env }, outer, limits, id)
+  if (engine === 'workbuddy') {
+    const buddyEnv = { ...workbuddyEnv(await homeOf($)), ...(env ?? {}) }
+    return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env: buddyEnv, engine: 'workbuddy' }, outer, limits, id)
+  }
+  // OpenCode never gets a shell (it does not check a command's paths) and takes no effort level.
+  if (engine === 'opencode') return runOpenCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, env }, outer, limits, id)
   return runCommandCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, outer, limits, id)
 }
 

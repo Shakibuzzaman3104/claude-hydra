@@ -204,7 +204,7 @@ async function runRoundBuddy(
   }
 }
 
-type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string> }
+type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string>; /** WorkBuddy runs this same code with its own env. */ engine?: 'codebuddy' | 'workbuddy' }
 
 const BUDDY_SETTINGS_DIR = '.claude/hydra/heads'
 
@@ -247,7 +247,7 @@ export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: A
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`)
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, head.engine ?? 'codebuddy')
   }
   try {
     return await runBuddyRounds($, head, settings, outer, limits, id)
@@ -318,7 +318,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
-    writeDirs: head.writeDirs, engine: 'codebuddy', tokens,
+    writeDirs: head.writeDirs, engine: head.engine ?? 'codebuddy', tokens,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

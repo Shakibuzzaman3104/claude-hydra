@@ -1,7 +1,7 @@
 {
   "name": "hydra",
   "version": "1.0.0",
-  "description": "Claude leads, cheaper agents (Heads, on Command Code, CodeBuddy, Codex or Antigravity) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
+  "description": "Claude leads, cheaper agents (Heads, on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
   },
@@ -10,19 +10,21 @@
     "headModel": {
       "type": "string",
       "title": "Hydra head model",
-      "description": "Model the Heads run on (CodeBuddy and Codex ids have no provider prefix: deepseek-v4.1-flash, gpt-6.1-sol; switching to Codex picks gpt-6.1-sol on its own)",
+      "description": "Model the Heads run on (CodeBuddy, WorkBuddy and Codex ids have no provider prefix: deepseek-v4.1-flash, gpt-6.1-sol; OpenCode takes provider/model; switching to Codex or OpenCode picks gpt-6.1-sol or opencode/deepseek-v4.1-flash-free on its own)",
       "default": "deepseek/deepseek-v4.1-flash"
     },
     "headEngine": {
       "type": "string",
       "title": "Hydra head engine",
-      "description": "The CLI Heads run on: commandcode, codebuddy, codex or agy (Antigravity), or auto (the default): /hydra uses the engines that are installed and signed in here, and Claude picks one per Head when there are several; changeable with /hydra engine=<name>",
+      "description": "The CLI Heads run on: commandcode, codebuddy, codex, agy (Antigravity), workbuddy (the CodeBuddy CLI on your WorkBuddy plan) or opencode (beta, free models, weaker lockdown), or auto (the default): /hydra uses the engines that are installed and signed in here, and Claude picks one per Head when there are several; changeable with /hydra engine=<name>",
       "default": "auto",
       "options": [
         "commandcode",
         "codebuddy",
         "codex",
         "agy",
+        "workbuddy",
+        "opencode",
         "auto"
       ]
     },

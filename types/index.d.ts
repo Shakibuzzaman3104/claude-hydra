@@ -13,7 +13,7 @@ export type HeadsUsage = {
   error?: string
 }
 
-export type HydraMode = { isOn: boolean; headModel: string; effort?: string; /** The CLI Heads run on: 'commandcode' (default), 'codebuddy', 'codex' or 'agy'; 'auto' lets the Lead pick one per Head from `engines`. */ engine?: string; /** The engines an auto session may use. */ engines?: string[] }
+export type HydraMode = { isOn: boolean; headModel: string; effort?: string; /** The CLI Heads run on: 'commandcode' (default), 'codebuddy', 'codex', 'agy', 'workbuddy' or 'opencode'; 'auto' lets the Lead pick one per Head from `engines`. */ engine?: string; /** The engines an auto session may use. */ engines?: string[] }
 
 export type HeadStep = { isOk: boolean; text: string }
 

@@ -3,7 +3,7 @@
   "owner": {
     "name": "Shakib"
   },
-  "description": "Hydra: Claude leads and plans, cheaper coding-agent CLIs (Codex, CodeBuddy, Command Code, Antigravity) implement inside a per-Head lockdown.",
+  "description": "Hydra: Claude leads and plans, cheaper coding-agent CLIs (Codex, CodeBuddy, Command Code, Antigravity, WorkBuddy, OpenCode) implement inside a per-Head lockdown.",
   "plugins": [
     {
       "name": "hydra",

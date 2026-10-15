@@ -7,8 +7,9 @@ import type { EngineInterface } from 'claude-code'
 import type { HeadRun, HeadsUsage, LeadWindow } from '../../types'
 import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
 import type { Engine } from './engines'
-import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, WARN_AT, formatReport, leadLabel, resetsIn, statusLine, stopRuns } from './format'
+import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
+import { WORKBUDDY_LOGIN, engineChecks } from './checks'
 import { AUTO_CONSENT_QUESTION, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, secretDirRefusal, union } from './safety'
 import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
@@ -69,6 +70,8 @@ export const INSTALL_HINT: Record<Engine, string> = {
   codebuddy: 'The CodeBuddy CLI is not installed. Run `npm i -g @tencent-ai/codebuddy-code`, then `codebuddy` once in a terminal to sign in.',
   codex: 'The Codex CLI is not installed. Run `npm i -g @openai/codex`, then `codex login` in a terminal to sign in.',
   agy: 'The Antigravity CLI is not installed. Run `curl -fsSL https://antigravity.google/cli/install.sh | bash` (read the script first if you like), then `agy` once in a terminal to sign in.',
+  workbuddy: `The CodeBuddy CLI is not installed. WorkBuddy Heads run it: run \`npm i -g @tencent-ai/codebuddy-code\`, then \`${WORKBUDDY_LOGIN}\` and /login to sign in.`,
+  opencode: 'The OpenCode CLI is not installed. Run `curl -fsSL https://opencode.ai/install | bash` (or `npm i -g opencode-ai`), then `opencode auth login`, or use its free models without signing in.',
 }
 
 /**
@@ -104,6 +107,11 @@ export async function preflight($: EngineInterface, engine: Engine = DEFAULT_ENG
   }
   const isSignedIn = engine !== 'commandcode' || (home ? await $.fs.exists(`${home}/.commandcode/auth.json`).catch(() => false) : false)
   const warnings = isSignedIn || problems.length > 0 ? [] : ['Command Code looks signed out: run `commandcode` once in a terminal to sign in, or Heads will fail.']
+  if (problems.length === 0) {
+    const extra = await engineChecks($, engine, home)
+    problems.push(...extra.problems)
+    warnings.push(...extra.warnings)
+  }
   if (problems.length === 0) preflightPassed.add(engine)
   return { problems, warnings }
 }
@@ -161,7 +169,8 @@ export async function refreshHeads($: EngineInterface, limits: HeadLimits) {
   const hasCommandCode = isAuto(hydra) ? poolOf(hydra).includes('commandcode') : engine === 'commandcode'
   if (!hasCommandCode) {
     const measuredAt = await $.clock.now()
-    const error = isAuto(hydra) ? AUTO_NO_SPEND : engine === 'agy' ? AGY_NO_SPEND : engine === 'codex' ? CODEX_NO_SPEND : CODEBUDDY_NO_SPEND
+    const error = isAuto(hydra) ? AUTO_NO_SPEND : engine === 'agy' ? AGY_NO_SPEND : engine === 'codex' ? CODEX_NO_SPEND
+      : engine === 'workbuddy' ? WORKBUDDY_NO_SPEND : engine === 'opencode' ? OPENCODE_NO_SPEND : CODEBUDDY_NO_SPEND
     await updateHeads($, () => ({ fiveHour: { usd: 0, resetsAt: null }, weekly: { usd: 0, resetsAt: null }, measuredAt, error }))
     await refreshStatus($, limits)
     return
@@ -351,8 +360,21 @@ export type Round = { finalText: string; sessionId?: string; subtype?: string; c
 export type RoundArgs = { prompt: string; model: string; effort?: string; maxTurns: number; resume?: string; cwd: string; addDirs: readonly string[]; /** Set over the host's environment for this CLI run: the account the Head runs on. */ env?: Record<string, string> }
 
 /**
+ * A watchdog for a CLI that can hang without a word: the child is stopped when no stdout has arrived `firstMs` after the
+ * start, or `idleMs` after the last stdout. Either may be left out.
+ */
+export type IdleLimits = { firstMs?: number; idleMs?: number }
+
+/** How long a watched child may stay silent from now, or undefined for no limit. */
+export const silenceLeft = (limits: IdleLimits, startedAt: number, lastOutputAt: number | undefined, now: number) => {
+  const limit = lastOutputAt === undefined ? limits.firstMs : limits.idleMs
+  return limit === undefined ? undefined : Math.max(0, (lastOutputAt ?? startedAt) + limit - now)
+}
+
+/**
  * Spawns a Head's CLI and feeds each stdout line to `onLine` (which returns true to stop the run early). The stream
- * read is raced against `signal`, so a silent child (a model thinking, a hung CLI) cannot hold a stopped Head open.
+ * read is raced against `signal`, so a silent child (a model thinking, a hung CLI) cannot hold a stopped Head open,
+ * and against the `idle` watchdog when one is given: a child silent for too long is stopped with signal `idle`.
  */
 export async function pump(
   $: EngineInterface,
@@ -361,20 +383,35 @@ export async function pump(
   signal: AbortSignal,
   onLine: (line: string) => Promise<boolean>,
   env?: Record<string, string>,
+  idle?: IdleLimits,
 ): Promise<{ errors: string; exit: { code: number | null; signal?: string }; isStopped: boolean }> {
   const [bin, ...rest] = args
   const child = $.process.spawn({ argv: [...(await commandOf($, bin!)), ...rest], cwd, input: '', ...(env ? { env } : {}) })
   let pending = ''
   let errors = ''
   let isStopped = false
+  let isIdle = false
+  const startedAt = idle ? await $.clock.now() : 0
+  let lastOutputAt: number | undefined
   const aborted = new Promise<'aborted'>(resolve => {
     if (signal.aborted) resolve('aborted')
     else signal.addEventListener('abort', () => resolve('aborted'), { once: true })
   })
   for (;;) {
-    const step = await Promise.race([child.next(), aborted])
+    const left = idle ? silenceLeft(idle, startedAt, lastOutputAt, await $.clock.now()) : undefined
+    const timer = new AbortController()
+    const silent = left === undefined
+      ? new Promise<never>(() => undefined)
+      : $.clock.sleep(left, { signal: timer.signal }).then(() => 'idle' as const, () => new Promise<never>(() => undefined))
+    const step = await Promise.race([child.next(), aborted, silent])
+    timer.abort()
     if (step === 'aborted') {
       void child.return({ code: null, signal: 'aborted' }).catch(() => undefined)
+      break
+    }
+    if (step === 'idle') {
+      isIdle = true
+      void child.return({ code: null, signal: 'idle' }).catch(() => undefined)
       break
     }
     if (step.done) break
@@ -383,6 +420,7 @@ export async function pump(
       errors = (errors + text).slice(-2000)
       continue
     }
+    if (idle) lastOutputAt = await $.clock.now()
     const lines = (pending + text).split(/\r?\n/)
     pending = lines.pop() ?? ''
     for (const line of lines) {
@@ -394,8 +432,10 @@ export async function pump(
       break
     }
   }
-  if (!isStopped && !signal.aborted && (await onLine(pending))) isStopped = true
-  const exit = signal.aborted ? { code: null, signal: 'aborted' } : isStopped ? { code: null, signal: 'stopped' } : await child.result.catch(() => ({ code: null, signal: 'lost' }))
+  if (!isStopped && !isIdle && !signal.aborted && (await onLine(pending))) isStopped = true
+  const exit = signal.aborted ? { code: null, signal: 'aborted' }
+    : isIdle ? { code: null, signal: 'idle' }
+    : isStopped ? { code: null, signal: 'stopped' } : await child.result.catch(() => ({ code: null, signal: 'lost' }))
   return { errors, exit: { code: exit.code ?? null, signal: 'signal' in exit ? String(exit.signal ?? '') : undefined }, isStopped }
 }
 

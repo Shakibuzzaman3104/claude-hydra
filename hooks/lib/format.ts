@@ -215,7 +215,10 @@ export const CODEBUDDY_NO_SPEND = 'CodeBuddy counts credits, not dollars, so Hyd
 export const CODEX_NO_SPEND = 'Codex runs on your ChatGPT plan, not dollars, so Hydra shows tokens per Head instead of spend.'
 export const AGY_NO_SPEND = 'Antigravity runs on your Google account quota, not dollars, so Hydra shows tokens per Head instead of spend.'
 export const AUTO_NO_SPEND = 'Heads run on engines that count credits, plan usage or quota, not dollars, so Hydra shows tokens per Head instead of spend.'
-export const isNoSpend = (error: string | undefined) => error === CODEBUDDY_NO_SPEND || error === CODEX_NO_SPEND || error === AGY_NO_SPEND || error === AUTO_NO_SPEND
+export const WORKBUDDY_NO_SPEND = 'WorkBuddy counts credits on your WorkBuddy plan, not dollars, so Hydra shows tokens per Head instead of spend.'
+export const OPENCODE_NO_SPEND = 'OpenCode runs the models you set up in it (the free ones cost nothing), so Hydra shows tokens per Head instead of spend.'
+export const isNoSpend = (error: string | undefined) =>
+  [CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, AGY_NO_SPEND, AUTO_NO_SPEND, WORKBUDDY_NO_SPEND, OPENCODE_NO_SPEND].includes(error ?? '')
 
 /** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
 export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
@@ -354,16 +357,20 @@ export const relativeTo = (cwd: string, path: string) => {
 export const outsideFiles = (cwd: string, files: readonly string[], writeDirs: readonly string[] = []) =>
   files.filter(file => file.startsWith('/') && ![cwd, ...writeDirs].some(root => isWithin(file, root)))
 
+/** How the person resumes a Head's session by hand: `opencode run -s <id>` for OpenCode, `<cli> --resume <id>` for the rest. */
+export const resumeCommand = (engine: Engine) => (engine === 'opencode' ? 'opencode run -s' : `${ENGINE_BIN[engine]} --resume`)
+
 export const formatReport = (head: {
   id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
-  writeDirs?: readonly string[]; engine?: Engine; tokens?: string
+  writeDirs?: readonly string[]; engine?: Engine; tokens?: string; /** Things the Lead must check by hand, each shown as a ⚠ line. */ warnings?: readonly string[]
 }) => {
   const lines = [
     `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}`,
-    `session ${head.sessionId ?? 'none'} (${ENGINE_BIN[head.engine ?? DEFAULT_ENGINE]} --resume ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
+    `session ${head.sessionId ?? 'none'} (${resumeCommand(head.engine ?? DEFAULT_ENGINE)} ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
+  for (const warning of head.warnings ?? []) lines.push(`⚠ ${warning}`)
   if (head.writeDirs && head.writeDirs.length > 0) lines.push(`may also write: ${head.writeDirs.join(', ')}`)
   const outside = outsideFiles(head.cwd, head.files, head.writeDirs)
   if (outside.length > 0) lines.push(`⚠ WROTE OUTSIDE THE PROJECT (${outside.length}): ${outside.join(', ')}`)

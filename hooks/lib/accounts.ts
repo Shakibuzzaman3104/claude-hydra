@@ -4,7 +4,7 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-import { AGY_TOKEN, ENGINES, ENGINE_LABEL, isEngine } from './engines'
+import { AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
 import type { Engine } from './engines'
 import { relativeTo } from './format'
 import { commandOf, homeOf, platformOf } from './platform'
@@ -97,6 +97,18 @@ export const ACCOUNT_SUPPORT: Partial<Record<Engine, AccountSupport>> = {
     login: (dir, platform) => withEnv(platform, { HOME: dir }, 'agy'),
     hint: 'In Antigravity, choose Google OAuth and finish signing in, then exit.',
   },
+  // The product file is the WorkBuddy app's, shared by every account; the engine adds it (with the rest of workbuddyEnv) on every run.
+  workbuddy: {
+    env: dir => ({ CODEBUDDY_CONFIG_DIR: dir }),
+    login: (dir, platform) => withEnv(platform, { CODEBUDDY_CONFIG_DIR: dir, ACC_PRODUCT_CONFIG_PATH: `$HOME/${WORKBUDDY_PRODUCT}` }, 'codebuddy'),
+    hint: 'In CodeBuddy, type /login, finish signing in to WorkBuddy, then exit.',
+  },
+  // Only the data folder (sign-ins) moves; a Head's config home is its own either way. The free opencode/* models need the person's own data folder.
+  opencode: {
+    env: dir => ({ XDG_DATA_HOME: `${dir}/data` }),
+    login: (dir, platform) => withEnv(platform, { XDG_DATA_HOME: `${dir}/data` }, 'opencode auth login'),
+    hint: 'Pick a provider and finish signing in. OpenCode\'s free models do not work on an extra account; sign in to a provider.',
+  },
 }
 
 export const supportsAccounts = (engine: Engine) => ACCOUNT_SUPPORT[engine] !== undefined
@@ -132,6 +144,7 @@ export const timeOf = (ms: number) => {
 const QUOTA_WORDING = [
   /rate[\s_-]?limit/i, /usage[\s_-]?limit/i, /\bquota\b/i, /too many requests/i, /\b429\b/, /insufficient_quota/i,
   /exceeded your current/i, /limit reached/i, /out of credits/i, /credits? (?:are |is |have been )?exhausted/i, /try again in/i, /resource_exhausted/i,
+  /provider\.(?:rate-limit|quota)/i, /insufficient[\s_-]?credits/i, /credits?[\s_-]exhausted/i,
 ]
 
 /**
@@ -333,6 +346,8 @@ async function checkSignIn($: EngineInterface, account: Account): Promise<boolea
   if (account.engine === 'codex') return codexSignedIn($, account.dir)
   if (account.engine === 'codebuddy') return buddySignedIn($, account.dir)
   if (account.engine === 'agy') return agySignedIn($, await homeOf($), account.dir)
+  if (account.engine === 'workbuddy') return buddySignedIn($, account.dir)
+  if (account.engine === 'opencode') return account.dir ? $.fs.exists(`${account.dir}/data/opencode/opencode.db`).catch(() => false) : undefined
   return undefined
 }
 

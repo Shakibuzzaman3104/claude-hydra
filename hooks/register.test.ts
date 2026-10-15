@@ -525,8 +525,8 @@ test('flags writes outside the project only when no granted folder holds them', 
     .toContain('may also write: /s')
 })
 
-test('knows the four engines, and falls back to the default for anything else', async () => {
-  expect(ENGINES).toEqual(['commandcode', 'codebuddy', 'codex', 'agy'])
+test('knows the six engines, and falls back to the default for anything else', async () => {
+  expect(ENGINES).toEqual(['commandcode', 'codebuddy', 'codex', 'agy', 'workbuddy', 'opencode'])
   expect(isEngine('agy')).toBe(true)
   expect(isEngine('codex')).toBe(true)
   expect(isEngine('codebuddy')).toBe(true)
@@ -876,7 +876,7 @@ test('keeps the pool of an auto session in engine order and labels it', async ()
   expect(isAuto(auto)).toBe(true)
   expect(isAuto({ isOn: true, headModel: 'm', engine: 'codex' })).toBe(false)
   expect(poolOf(auto)).toEqual(['codex', 'agy'])
-  expect(poolOf({ isOn: true, headModel: 'm', engine: 'auto' })).toEqual(['commandcode', 'codebuddy', 'codex', 'agy'])
+  expect(poolOf({ isOn: true, headModel: 'm', engine: 'auto' })).toEqual(['commandcode', 'codebuddy', 'codex', 'agy', 'workbuddy', 'opencode'])
   expect(engineLabel(auto)).toBe('Auto (Codex + Antigravity)')
   expect(engineLabel({ isOn: true, headModel: 'm', engine: 'codex' })).toBe('Codex')
   expect(engineOf(auto, 'codebuddy')).toBe('codebuddy')

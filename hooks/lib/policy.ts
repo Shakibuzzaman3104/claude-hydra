@@ -42,8 +42,11 @@ ${
       : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
   }`
 
+const opencodeModelRule = (headModel: string) =>
+  `- OpenCode Heads run \`${headModel}\` by default (OpenCode's free DeepSeek model, no account needed). Pass \`model\` as any \`provider/model\` the person set up in OpenCode (\`opencode models\` lists them; providers signed in with \`opencode auth login\` or an API key in the environment work, providers defined only in the person's own OpenCode config file do not). OpenCode Heads take no effort level: \`effort\` is ignored.`
+
 const effortRule = (effort: EffortMode, headModel: string, engine: Engine = DEFAULT_ENGINE) =>
-  engine === 'agy' ? agyEffortRule(effort) : engine === 'codex' ? codexEffortRule(effort, headModel) : effort === 'auto'
+  engine === 'opencode' ? opencodeModelRule(headModel) : engine === 'agy' ? agyEffortRule(effort) : engine === 'codex' ? codexEffortRule(effort, headModel) : effort === 'auto'
     ? `- You pick each Head's reasoning \`effort\`. Measured over 126 Hydra runs (DeepSeek V4.1 Flash, 15 tasks from a rename to a spreadsheet engine): \`low\` passed 95% for 0.7x the cost of \`high\` (95%) and 0.3x \`max\` (98%); \`low\` with a retry one level up on failure passed 100% for less than \`high\` alone. Higher effort mostly buys longer runs, not fewer failures, so:
   - \`low\` (the default) for every Head whose result you will check by running something (tests, a build, the app) or, for mechanical edits, by reading the diff. That includes long, multi-file and algorithmic work, as long as the task text is a full spec.
   - When the check fails, send the Head back one level up with the failure in the task: \`low\`, then \`high\`, then \`max\`. If \`max\` fails too, rewrite the brief or do it yourself.
@@ -57,7 +60,9 @@ const lockdownRules = (engine: Engine) =>
     ? `- Heads run through \`agy -p\` in Antigravity's terminal sandbox with permission rules Hydra writes for each Head: they can write only inside \`cwd\` (and \`writeDirs\`), never \`.git\`, read outside it only the folders you list in \`addDirs\` (and no credential folders), and have no shell unless you pass \`shell: true\` (then a sandboxed shell with no network: destructive git, rm -r/-f, sudo, installs and downloads stay denied or fail). A refused call ends the Head's turn, and Hydra resumes it. Builds and tests are yours.`
     : engine === 'codex'
     ? `- Heads run through \`codex exec\` inside Codex's OS sandbox with a filesystem profile Hydra writes for each Head: they can write only inside \`cwd\` (and \`writeDirs\`), never \`.git\` or \`.env\` files, and read the system, the project, \`addDirs\` folders and toolchain folders (git config, nvm, cargo, gradle…) but nothing else in the home folder: other repos, documents and credential folders are unreadable. Put any other folder a Head must read in \`addDirs\`. They always have a shell, but it has no network: installs, \`git push\`, downloads and builds that fetch dependencies fail, and \`git commit\` fails because \`.git\` is read-only. Run those yourself. \`shell\` changes nothing for them.`
-    : engine === 'codebuddy'
+    : engine === 'opencode'
+    ? `- OpenCode Heads are BETA, and their lockdown is weaker than the other engines': they run through \`opencode run\` locked down only by OpenCode's own permission rules, which Hydra writes for each Head (no OS sandbox, and no write guard: OpenCode has no hook to run one). They can read the project (never \`.env\` files or credential folders), edit inside \`cwd\` (and \`writeDirs\`), never \`.git\` or \`.env\`, read \`addDirs\` folders, and list files with glob. They NEVER have a shell (\`shell: true\` is ignored: OpenCode does not check a shell command's paths, so a shell would escape the project), and have no search tool, web, subagents or code tool. Give them well-specified edits that name the exact files. Builds and tests are yours. Read every OpenCode Head's diff before you trust it.`
+    : engine === 'codebuddy' || engine === 'workbuddy'
     ? `- Heads run through CodeBuddy's headless mode with permission rules Hydra writes for each Head, plus a write guard that checks real paths: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools and installs stay denied even then). Builds and tests are yours.`
     : `- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.`
 
@@ -66,7 +71,9 @@ const envRule = (engine: Engine) =>
     ? `- \`.env\` files that exist under \`cwd\`, a \`writeDirs\` or an \`addDirs\` folder when the Head starts are unreadable to it, shell included. One created later is not covered, and other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable: do not point a Head at a project where that matters.`
     : engine === 'codex'
     ? `- \`.env\` files anywhere under \`cwd\`, a \`writeDirs\` or an \`addDirs\` folder are unreadable to a Head, shell included (the sandbox refuses the read, so \`grep -r\` skips them too). Other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable: do not point a Head at a project where that matters.`
-    : engine === 'codebuddy'
+    : engine === 'opencode'
+    ? `- \`.env\` files (at any depth, also through a symlink) are denied to an OpenCode Head's read and edit tools, and it has no search tool or shell to reach them another way. Other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable: do not point a Head at a project where that matters.`
+    : engine === 'codebuddy' || engine === 'workbuddy'
     ? `- \`.env\` files are denied to a Head's read, edit and search tools. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
     : `- If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
 
@@ -75,6 +82,8 @@ const LOCKDOWN_BRIEF: Record<Engine, string> = {
   codex: 'OS sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads the project, `addDirs` and toolchains but nothing else in home, no `.env`; always a shell, never network (no installs, push or commit).',
   agy: 'permission rules + sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads only `addDirs` outside, no credential folders; shell only with `shell: true`, never network; a refused call ends a round (Hydra resumes it).',
   codebuddy: 'permission rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), reads `addDirs`; shell only with `shell: true` (dangerous commands stay denied).',
+  workbuddy: 'permission rules + write guard (the CodeBuddy CLI, through WorkBuddy): edits only in `cwd`/`writeDirs` (never `.git` or `.env`), reads `addDirs`; shell only with `shell: true` (dangerous commands stay denied).',
+  opencode: 'BETA, weaker: only the permission rules of OpenCode itself (no OS sandbox, no write guard): edits only in `cwd`/`writeDirs` (never `.git` or `.env`), reads the project and `addDirs`; never a shell (`shell` is ignored), no search tool: name exact files.',
   commandcode: '--yolo with deny rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), no credential folders; shell only with `shell: true`; no search tool while a `.env` is in reach (name exact files).',
 }
 
@@ -83,6 +92,8 @@ export const ROUTES: Record<Engine, string> = {
   codex: `gpt-6.1-sol (pass \`model: "gpt-6-luna"\` for easy work): the strongest coder here. Send it hard, subtle or multi-file work, and anything where the Head should run the tests itself (its shell is sandboxed with no network, so nothing that downloads). Spends the person's ChatGPT plan.`,
   agy: `gemini-3.8-flash only: fast, large context. Send it reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
   codebuddy: `DeepSeek V4.1 Flash: the cheap default. Send it well-specified edits, renames, new tests and small features. Measured: 95% of 126 runs passed at \`low\` effort. Optional shell.`,
+  workbuddy: `DeepSeek V4.1 Flash, the same DeepSeek model through your WorkBuddy subscription (credits). Send it what you would send CodeBuddy: well-specified edits, renames, new tests and small features. Optional shell.`,
+  opencode: `BETA. Free or cheap models (default \`opencode/deepseek-v4.1-flash-free\`, no account needed). No shell and no search tool: name the exact files in the task. Good for well-specified small edits; send anything that needs a shell, tests or a search elsewhere.`,
   commandcode: `DeepSeek V4.1 Flash, same model as CodeBuddy, with dollar spend tracking. Use it when CodeBuddy is unavailable or its spend limits matter. Optional shell; no search tool when a \`.env\` file is in reach.`,
 }
 
@@ -100,13 +111,13 @@ const autoPolicy = (effort: EffortMode, pool: readonly Engine[]) => `# Hydra mod
 You are the Lead. Implementation goes to Heads, called through the ${HEAD_TOOL} tool, and you choose the engine for each Head with its \`engine\` field (one of: ${pool.join(', ')}). A call without one is refused.
 - Split first, then route each task to the engine that suits it. Tasks on disjoint files can go to different engines in parallel (\`background: true\`).
 ${pool.map(engine => `  - \`${engine}\` (${ENGINE_LABEL[engine]}): ${ROUTES[engine]}`).join('\n')}
-- Routing rules: when unsure, take the cheapest engine in the pool that can do it (${pool.includes('codebuddy') ? 'codebuddy' : pool.includes('commandcode') ? 'commandcode' : pool[0]}); put the hard 20% on the strongest (${pool.includes('codex') ? 'codex' : pool[0]}). A Head that fails its check goes back on the same engine one effort level up, then on a stronger engine. Do not switch engines for a vague brief: rewrite it. Say in your plan which engine each task goes to, and why in a few words.
+- Routing rules: when unsure, take the cheapest engine in the pool that can do it (${pool.includes('codebuddy') ? 'codebuddy' : pool.includes('workbuddy') ? 'workbuddy' : pool.includes('commandcode') ? 'commandcode' : pool[0]}); put the hard 20% on the strongest (${pool.includes('codex') ? 'codex' : pool[0]}). A Head that fails its check goes back on the same engine one effort level up, then on a stronger engine. Do not switch engines for a vague brief: rewrite it. Say in your plan which engine each task goes to, and why in a few words.
 ${autoEffortRule(effort)}
 - Plan first: each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 - How each engine locks a Head down (builds and tests are yours):
 ${pool.map(engine => `  - ${ENGINE_LABEL[engine]}: ${LOCKDOWN_BRIEF[engine]}`).join('\n')}
 - A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
-- About secrets: \`.env\` files are kept from Heads, but other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable, and on ${pool.filter(engine => engine === 'codebuddy' || engine === 'commandcode').map(engine => ENGINE_LABEL[engine]).join(' and ') || 'some engines'} a Head with \`shell: true\` can still read a \`.env\` through a command that does not name it. Avoid shell, and keep Heads out of projects where that matters.
+- About secrets: \`.env\` files are kept from Heads, but other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable, and on ${pool.filter(engine => engine === 'codebuddy' || engine === 'workbuddy' || engine === 'commandcode').map(engine => ENGINE_LABEL[engine]).join(' and ') || 'some engines'} a Head with \`shell: true\` can still read a \`.env\` through a command that does not name it. Avoid shell, and keep Heads out of projects where that matters.
 - Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Dependent tasks run in sequence; independent ones in parallel.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
@@ -197,6 +208,10 @@ export const CONSENT_QUESTION = (headModel: string, engine: Engine = DEFAULT_ENG
     ? `Hydra hands each Head's task, and every file the Head reads, to ${AGY_MODEL} through the Antigravity CLI (Google), and Heads edit this project unattended (\`agy -p\` in Antigravity's terminal sandbox, locked down by Hydra's permission rules: writes only inside the project, no .git or existing .env, no network). Turn Hydra on?`
     : engine === 'codex'
     ? `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through Codex (OpenAI, on your ChatGPT plan), and Heads edit this project unattended (\`codex exec\` in Codex's OS sandbox, locked down by Hydra's filesystem profile: writes only inside the project, no .git or .env, no network). Turn Hydra on?`
+    : engine === 'opencode'
+    ? `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through OpenCode (beta), and Heads edit this project unattended (\`opencode run\`: nothing outside the project, no .git or .env, never a shell). OpenCode Heads are locked down by OpenCode's own permission rules only (no OS sandbox), so the lockdown is weaker than the other engines'. Turn Hydra on?`
+    : engine === 'workbuddy'
+    ? `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through WorkBuddy (the CodeBuddy CLI on your WorkBuddy plan, using its credits), and Heads edit this project unattended (CodeBuddy's headless mode, locked down by Hydra's permission rules and write guard: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
     : engine === 'codebuddy'
     ? `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through CodeBuddy, and Heads edit this project unattended (CodeBuddy's headless mode, locked down by Hydra's permission rules and write guard: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
     : `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through Command Code, and Heads edit this project unattended (Command Code's --yolo, locked down by Hydra: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
@@ -205,7 +220,12 @@ export const CONSENT_YES = 'Turn Hydra on'
 
 export const NO_CONSENT = 'The person has not agreed to send code to this engine. They turn it on with /hydra engine=<name> (or engines=…), which asks them.'
 
-export const PROVIDER: Record<Engine, string> = { commandcode: 'DeepSeek', codebuddy: 'DeepSeek', codex: 'OpenAI', agy: 'Google (Gemini)' }
+export const PROVIDER: Record<Engine, string> = {
+  commandcode: 'DeepSeek', codebuddy: 'DeepSeek', codex: 'OpenAI', agy: 'Google (Gemini)', workbuddy: 'DeepSeek (via WorkBuddy)', opencode: 'the model you pick in OpenCode',
+}
+
+/** Said in the auto-mode consent question when OpenCode is in the pool. */
+export const OPENCODE_WEAKER = 'OpenCode Heads are locked down by OpenCode\'s own permission rules only (no OS sandbox), so the lockdown is weaker than the other engines\'.'
 
 export const AUTO_CONSENT_QUESTION = (engines: readonly Engine[]) =>
-  `Hydra will let Claude route Heads across ${engines.map(engine => `${ENGINE_LABEL[engine]} (${PROVIDER[engine]})`).join(', ')}. Each Head's task, and every file it reads, goes to the model of the engine it picks, and Heads edit this project unattended inside that engine's lockdown (writes only in the project, no .git, .env files kept out where the engine can, no network where the engine can block it). Turn Hydra on?`
+  `Hydra will let Claude route Heads across ${engines.map(engine => `${ENGINE_LABEL[engine]} (${PROVIDER[engine]})`).join(', ')}. Each Head's task, and every file it reads, goes to the model of the engine it picks, and Heads edit this project unattended inside that engine's lockdown (writes only in the project, no .git, .env files kept out where the engine can, no network where the engine can block it).${engines.includes('opencode') ? ` ${OPENCODE_WEAKER}` : ''} Turn Hydra on?`

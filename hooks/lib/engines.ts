@@ -4,8 +4,11 @@
  */
 import type { HydraMode } from '../../types'
 
-/** The CLI a Head runs on. Command Code is the original engine; CodeBuddy runs the same Heads through `codebuddy -p`, Codex through `codex exec`. */
-export const ENGINES = ['commandcode', 'codebuddy', 'codex', 'agy'] as const
+/**
+ * The CLI a Head runs on. Command Code is the original engine; CodeBuddy runs the same Heads through `codebuddy -p`, Codex through
+ * `codex exec`. WorkBuddy is the CodeBuddy CLI pointed at the WorkBuddy app's product config; OpenCode (beta) runs `opencode run`.
+ */
+export const ENGINES = ['commandcode', 'codebuddy', 'codex', 'agy', 'workbuddy', 'opencode'] as const
 export type Engine = (typeof ENGINES)[number]
 export const DEFAULT_ENGINE: Engine = 'commandcode'
 /** The only model Antigravity Heads run on: the person's choice, whatever a Head's `model` says. */
@@ -13,15 +16,45 @@ export const AGY_MODEL = 'gemini-3.8-flash'
 /** Where Antigravity keeps the sign-in token, relative to the home folder. */
 export const AGY_TOKEN = '.gemini/antigravity-cli/antigravity-oauth-token'
 export const isEngine = (value: unknown): value is Engine => typeof value === 'string' && (ENGINES as readonly string[]).includes(value)
-export const ENGINE_LABEL: Record<Engine, string> = { commandcode: 'Command Code', codebuddy: 'CodeBuddy', codex: 'Codex', agy: 'Antigravity' }
-export const ENGINE_BIN: Record<Engine, string> = { commandcode: 'commandcode', codebuddy: 'codebuddy', codex: 'codex', agy: 'agy' }
+export const ENGINE_LABEL: Record<Engine, string> = { commandcode: 'Command Code', codebuddy: 'CodeBuddy', codex: 'Codex', agy: 'Antigravity', workbuddy: 'WorkBuddy', opencode: 'OpenCode' }
+/** The executable each engine starts: WorkBuddy Heads run the CodeBuddy CLI. */
+export const ENGINE_BIN: Record<Engine, string> = { commandcode: 'commandcode', codebuddy: 'codebuddy', codex: 'codex', agy: 'agy', workbuddy: 'codebuddy', opencode: 'opencode' }
+/** OpenCode's free DeepSeek model: it needs no account, so a new user can try Hydra at no cost. */
+export const OPENCODE_MODEL = 'opencode/deepseek-v4.1-flash-free'
+/** WorkBuddy Heads' own CodeBuddy config folder (sign-in, settings, transcripts), relative to the home folder: apart from the WorkBuddy app's and plain CodeBuddy's. */
+export const WORKBUDDY_CONFIG = '.claude/hydra/workbuddy-cli'
+/** The product definition the WorkBuddy app writes when the person signs in to it (endpoint, sign-in flow, models), relative to the home folder. */
+export const WORKBUDDY_PRODUCT = '.workbuddy-ai/cache/acc-product-config-v3.json'
+/**
+ * The environment that turns the CodeBuddy CLI into WorkBuddy: its own config folder (`configDir`, an account's, else
+ * `WORKBUDDY_CONFIG`), the app's product file through `ACC_PRODUCT_CONFIG_PATH` (read by CodeBuddy but not documented by
+ * Tencent), and CodeBuddy's memory, session summaries, prompt suggestions, cron, IDE and browser MCP switched off.
+ */
+export const workbuddyEnv = (home: string, configDir?: string): Record<string, string> => ({
+  CODEBUDDY_CONFIG_DIR: configDir ?? `${home}/${WORKBUDDY_CONFIG}`,
+  ACC_PRODUCT_CONFIG_PATH: `${home}/${WORKBUDDY_PRODUCT}`,
+  CODEBUDDY_DISABLE_AUTO_MEMORY: '1',
+  CODEBUDDY_CODE_DISABLE_SESSION_SUMMARY: '1',
+  CODEBUDDY_PROMPT_SUGGESTION_DISABLED: '1',
+  CODEBUDDY_DISABLE_CRON: '1',
+  CODEBUDDY_DISABLE_IDE: '1',
+  CODEBUDDY_DISABLE_BROWSER_MCP: '1',
+})
 /** The Head model a session gets when it switches to an engine whose models differ from the one it had. */
-export const ENGINE_MODEL: Partial<Record<Engine, string>> = { codex: 'gpt-6.1-sol', agy: 'gemini-3.8-flash' }
+export const ENGINE_MODEL: Partial<Record<Engine, string>> = { codex: 'gpt-6.1-sol', agy: 'gemini-3.8-flash', workbuddy: 'deepseek-v4.1-flash', opencode: OPENCODE_MODEL }
 /** Codex Heads run OpenAI's models and Antigravity Heads Google's; every other engine runs the person's configured Head model (DeepSeek by default). */
 const MODEL_FAMILY: Partial<Record<Engine, RegExp>> = { codex: /^(openai\/)?(gpt|o\d|codex)/i, agy: /^(google\/)?gemini/i }
+/**
+ * OpenCode takes any `provider/model` the person set up in it, except Command Code's `deepseek/…` ids (OpenCode has no
+ * `deepseek` provider unless the person added one, and the configured Head model uses that prefix). `opencode/…` ids are
+ * OpenCode's own models, which no other engine runs.
+ */
+const OPENCODE_ID = /^(?!deepseek\/)[a-z0-9][\w.-]*\/\S+$/i
+const OPENCODE_ONLY = /^opencode\//i
 export const isModelFor = (engine: Engine, model: string) => {
+  if (engine === 'opencode') return OPENCODE_ID.test(model)
   const family = MODEL_FAMILY[engine]
-  return family ? family.test(model) : !Object.values(MODEL_FAMILY).some(other => other.test(model))
+  return family ? family.test(model) : !OPENCODE_ONLY.test(model) && !Object.values(MODEL_FAMILY).some(other => other.test(model))
 }
 /** The Head model after the person picks `engine`: their explicit `requested` one, else the current one if the engine can run it, else the engine's own default. */
 export const headModelFor = (engine: Engine, requested: string | undefined, current: string, configured: string) =>
@@ -64,5 +97,5 @@ export const resolveHeadEngine = (hydra: HydraMode | null, requested: unknown, f
   return { engine: requested }
 }
 
-/** CodeBuddy, Codex and Antigravity model ids carry no provider prefix: `deepseek/deepseek-v4.1-flash` is `deepseek-v4.1-flash` there. */
-export const modelFor = (engine: Engine, model: string) => (engine === 'commandcode' ? model : model.split('/').pop() || model)
+/** CodeBuddy, WorkBuddy, Codex and Antigravity model ids carry no provider prefix: `deepseek/deepseek-v4.1-flash` is `deepseek-v4.1-flash` there. Command Code and OpenCode keep it. */
+export const modelFor = (engine: Engine, model: string) => (engine === 'commandcode' || engine === 'opencode' ? model : model.split('/').pop() || model)
