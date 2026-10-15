@@ -6,6 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
 import type { Engine } from './engines'
+import { opencodeCheckInit, opencodeProviders } from './checks'
 import { relativeTo } from './format'
 import { commandOf, homeOf, platformOf } from './platform'
 import type { Platform } from './platform'
@@ -79,6 +80,18 @@ async function buddySignedIn($: EngineInterface, dir?: string): Promise<boolean 
 async function agySignedIn($: EngineInterface, home: string, dir?: string): Promise<boolean> {
   const path = dir ? agyTokenOf(dir) : `${home}/${AGY_TOKEN}`
   return $.fs.exists(path).catch(() => false)
+}
+
+/**
+ * Whether an extra OpenCode account has a provider signed in: `opencode auth list` on its data folder names a stored
+ * credential (never its value). `opencode.db` alone proves nothing: any OpenCode command creates it. API keys in the
+ * environment do not count, since they are not the account's. The default account is not checked.
+ */
+async function opencodeSignedIn($: EngineInterface, dir?: string): Promise<boolean | undefined> {
+  if (!dir) return undefined
+  const argv = [...(await commandOf($, 'opencode')), 'auth', 'list', '--standalone', '--format', 'json']
+  const ran = await $.process.run(argv, opencodeCheckInit(await homeOf($), $.plugin.root, { XDG_DATA_HOME: `${dir}/data` })).catch(() => undefined)
+  return ran?.exitCode === 0 && opencodeProviders(ran.stdout).stored
 }
 
 /** The engines that can hold more than one account. Command Code is left out: it has no per-run config location. */
@@ -347,7 +360,7 @@ async function checkSignIn($: EngineInterface, account: Account): Promise<boolea
   if (account.engine === 'codebuddy') return buddySignedIn($, account.dir)
   if (account.engine === 'agy') return agySignedIn($, await homeOf($), account.dir)
   if (account.engine === 'workbuddy') return buddySignedIn($, account.dir)
-  if (account.engine === 'opencode') return account.dir ? $.fs.exists(`${account.dir}/data/opencode/opencode.db`).catch(() => false) : undefined
+  if (account.engine === 'opencode') return opencodeSignedIn($, account.dir)
   return undefined
 }
 

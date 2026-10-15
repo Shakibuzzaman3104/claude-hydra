@@ -4,13 +4,14 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
+import { applyEvent, formatReport, outsideFiles, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
 import type { IdleLimits, Round } from '../lib/runtime'
 import { SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
-import { homeOf } from '../lib/platform'
+import { homeOf, runScript } from '../lib/platform'
+import { OPENCODE_NO_PROJECT_CONFIG } from '../lib/checks'
 
 /** OpenCode tool names as the names Command Code's stream uses, so one live view reads every engine. */
 const OPENCODE_TOOLS: Record<string, string> = {
@@ -38,68 +39,278 @@ export const OPENCODE_DENY = [
   'list_mcp_resources', 'read_mcp_resource',
 ] as const
 
-/** No `.env` file is read or edited, at any depth (`*` matches `/` in OpenCode's patterns). */
-const OPENCODE_SECRETS = { '*.env': 'deny', '*.env.*': 'deny' } as const
-
-/** `.git` itself and anything in it, at the top and at any depth or absolute path. */
-const OPENCODE_GIT = { '.git': 'deny', '.git/*': 'deny', '*/.git': 'deny', '*/.git/*': 'deny' } as const
-
 type Rule = 'allow' | 'deny'
 
-/** A symlink in the project whose real target is outside it: its path relative to the project, and the target. */
-export type OutLink = { path: string; target: string }
+/** Every upper- and lower-case spelling of `name` (`.git`, `.Git` … `.GIT`): a macOS disk ignores case, OpenCode's rules do not. */
+export const caseVariants = (name: string): string[] =>
+  [...name].reduce<string[]>((spellings, char) => {
+    const forms = /[a-z]/i.test(char) ? [char.toLowerCase(), char.toUpperCase()] : [char]
+    return spellings.flatMap(spelling => forms.map(form => spelling + form))
+  }, [''])
+
+/**
+ * Patterns that match `path` in any letter case, kept few: the first `exact` letters in both cases, every later letter as
+ * `?` (any one character in OpenCode's patterns, `/` included). A deny written this way may also catch a few other paths
+ * of the same length and shape, which is the safe side. Letters outside ASCII are always `?`.
+ */
+export const anyCase = (path: string, exact = 2): string[] => {
+  let letters = 0
+  return [...path].reduce<string[]>((spellings, char) => {
+    const isLetter = char.toLowerCase() !== char.toUpperCase()
+    const forms = !isLetter ? [char] : /[a-z]/i.test(char) && letters++ < exact ? [char.toLowerCase(), char.toUpperCase()] : ['?']
+    return spellings.flatMap(spelling => forms.map(form => spelling + form))
+  }, [''])
+}
+
+/** A rule's pattern as OpenCode v2 compiles it (its wildcard match): `*` is any text and `?` any one character, `/` included. */
+const patternRegex = (pattern: string) => {
+  let source = pattern.replace(/\\/g, '/').replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.')
+  if (source.endsWith(' .*')) source = `${source.slice(0, -3)}( .*)?`
+  return new RegExp(`^${source}$`, 's')
+}
+
+/** Whether OpenCode v2 matches `path` with `pattern`. */
+export const opencodeMatches = (pattern: string, path: string) => patternRegex(pattern).test(path.replace(/\\/g, '/'))
+
+/** The effect OpenCode gives `path` under `rules`: the last matching rule wins. */
+export const ruleFor = (rules: Readonly<Record<string, Rule>>, path: string) =>
+  Object.entries(rules).reduce<Rule | undefined>((effect, [pattern, rule]) => (opencodeMatches(pattern, path) ? rule : effect), undefined)
+
+/**
+ * Ordered rules as the object OpenCode reads. A later duplicate moves to the end, so the last rule still wins. A pattern
+ * that reads as an array index (`2024`) would be put first by every JSON object, ahead of the `*` it must follow, so it
+ * gets a trailing `*` (a wider deny).
+ */
+export const rulesOf = (entries: readonly (readonly [string, Rule])[]) => {
+  const rules: Record<string, Rule> = {}
+  for (const [pattern, rule] of entries) {
+    const key = /^(0|[1-9][0-9]*)$/.test(pattern) ? `${pattern}*` : pattern
+    delete rules[key]
+    rules[key] = rule
+  }
+  return rules
+}
+
+/** A folder or file, and everything below it. */
+const below = (path: string) => [path, `${path}/*`]
+
+/** `.git` itself and anything in it, in every letter case, at the top and at any depth or absolute path. */
+export const OPENCODE_GIT = caseVariants('.git').flatMap(name => [...below(name), ...below(`*/${name}`)])
+
+/**
+ * `.env` and `.env.*` files in every letter case, at any depth: `*` matches `/` and the empty text, so `*.Env` covers
+ * `.Env`, `sub/.Env` and `/abs/.Env`, and `*.Env.*` covers `.Env.local` at any depth.
+ */
+export const OPENCODE_ENV = caseVariants('.env').flatMap(name => [`*${name}`, `*${name}.*`])
+
+/**
+ * Project files that would run code or change rules after the Head is gone: OpenCode's own project config, and the
+ * project settings of Claude Code (the Lead's hooks) and CodeBuddy. A Head never edits them, at any depth. They are
+ * denied in lower case only.
+ */
+export const OPENCODE_PROTECTED = [
+  ...['.opencode', '.claude', '.codebuddy'].flatMap(name => [...below(name), ...below(`*/${name}`)]), 'opencode.json*', '*/opencode.json*',
+]
+
+const ENV_REGEXES = OPENCODE_ENV.map(patternRegex)
+const PROTECTED_REGEXES = [...OPENCODE_ENV, ...OPENCODE_GIT, ...OPENCODE_PROTECTED].map(patternRegex)
+
+/** Whether a real path is a `.env` file or lies where the `.env` rules match, in any letter case. */
+const isEnvPath = (path: string) => ENV_REGEXES.some(regex => regex.test(path))
+
+/** Whether a real path lies in `.git` or a protected folder, or is a `.env` or protected file, in any letter case. */
+const isProtectedPath = (path: string) => {
+  const lower = path.toLowerCase()
+  return PROTECTED_REGEXES.some(regex => regex.test(lower))
+}
+
+/** A symlink under the project or a granted folder, and its real target, both absolute. */
+export type FoundLink = { path: string; target: string }
+
+/** The symlinks an OpenCode Head is kept from, by absolute path: for reads, and for edits. */
+export type LinkDenies = { read: string[]; edit: string[] }
+
+/** More symlinks to deny than this and an OpenCode Head is refused: the rules for them would make its config too large. */
+export const OPENCODE_LINK_CAP = 100
+
+/** The folders an OpenCode Head may write (`cwd` first) and those it may only read, without trailing slashes. */
+const grantsOf = (cwd: string, head: HeadNeeds) => {
+  const writable = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
+  const readOnly = head.addDirs.map(trimSlash).filter(dir => !writable.some(root => isWithin(dir, root)))
+  return { writable, readOnly }
+}
+
+/**
+ * The symlinks an OpenCode Head must be kept from. OpenCode checks a path as written, so a link is an alias for its
+ * target that no rule on the target's own path catches. A link is denied for reads when its target is outside every
+ * folder the Head may read or is a `.env` file, and for edits when its target is outside every folder it may write,
+ * inside a read-only one, or in `.git` or a protected folder. A link that leads to a folder above itself (`a -> .`), or to
+ * a folder holding a denied link or a read-only folder, is denied too: through it, `a/link-out/x` would get around the
+ * deny on `link-out`. Stops early once more than `limit` links are denied for edits.
+ */
+export const linkDenies = (links: readonly FoundLink[], cwd: string, head: HeadNeeds, limit = OPENCODE_LINK_CAP): LinkDenies => {
+  const { writable, readOnly } = grantsOf(trimSlash(cwd), head)
+  const readable = [...writable, ...readOnly]
+  const read = new Set<string>()
+  const edit = new Set<string>()
+  const holds = (target: string, denied: Iterable<string>) => [...denied].some(path => path !== target && isWithin(path, target))
+  for (let isChanged = true; isChanged && edit.size <= limit;) {
+    isChanged = false
+    for (const { path, target } of links) {
+      const isAlias = isWithin(path, target)
+      if (!read.has(path) && (isAlias || isEnvPath(target) || !readable.some(root => isWithin(target, root)) || holds(target, read))) {
+        read.add(path)
+        isChanged = true
+      }
+      const isUnwritable = !writable.some(root => isWithin(target, root)) || readOnly.some(root => isWithin(target, root)) || isProtectedPath(target)
+      if (!edit.has(path) && (isAlias || isUnwritable || read.has(path) || holds(target, [...edit, ...readOnly]))) {
+        edit.add(path)
+        isChanged = true
+      }
+    }
+  }
+  return { read: [...read].sort(), edit: [...edit].sort() }
+}
+
+/**
+ * The patterns OpenCode compares with an absolute `path`, in any letter case. A path under `cwd` is matched relative to
+ * it, so it is written that way. A path under a granted folder outside keeps that folder's exact spelling
+ * (`external_directory` refuses any other) and the rest in any case. Anything else stays exact.
+ */
+const spellingsOf = (path: string, cwd: string, roots: readonly string[]) => {
+  if (path !== cwd && isWithin(path, cwd)) return anyCase(path.slice(cwd.length + 1))
+  const root = roots.filter(dir => dir !== path && isWithin(path, dir)).sort((a, b) => b.length - a.length)[0]
+  return root ? anyCase(path.slice(root.length + 1)).map(rest => `${root}/${rest}`) : [path]
+}
 
 /**
  * The OpenCode config one Head runs with (`OPENCODE_CONFIG`), in the legacy `permission` form that v2 still honours.
  * Everything is denied by default and every key Hydra cares about is explicit; nothing is `ask`, because headless
- * `opencode run` rejects an ask and aborts the whole run. A Head may read anything in the project except `.env`
- * files, edit inside the project and its `writeDirs` (never `.git` or `.env`), list files with `glob` and keep a todo
- * list. `external_directory` keeps it inside: only `writeDirs` and `addDirs` folders are reachable outside `cwd`, and a
- * folder it may only read is denied for edits. OpenCode checks the path as written, so a symlink inside the project
- * that leads out of it (`links`, with their real targets) would reach its target: one is denied for edits unless it
- * leads into a `writeDirs` folder, and for reads too unless it leads into a folder the Head may read. `shell` is never
- * given, whatever the Head asked for: OpenCode does not check a command's paths. The credential folders and files in
- * the home folder (`SECRET_PATHS`) are denied for reads, globs and edits by absolute path too, in case a grant covers them.
+ * `opencode run` rejects an ask and aborts the whole run. A Head may read anything in the project except `.env` files,
+ * edit inside the project and its `writeDirs` (never `.git`, `.env` or the protected config folders), list files with
+ * `glob` and keep a todo list; `.git` and `.env` are denied in every letter case. `external_directory` keeps it inside:
+ * only `writeDirs` and `addDirs` folders are reachable outside `cwd`, and a folder it may only read is denied for edits,
+ * in its cwd-relative spelling when it lies in the project. `cwd` must be the project's VCS root (`projectRootRefusal`),
+ * because OpenCode matches every path under that root relative to `cwd`, without `external_directory`. The `denied`
+ * symlinks (`linkDenies`) are denied by their own paths, in any letter case. `shell` is never given, whatever the Head
+ * asked for: OpenCode does not check a command's paths. The credential folders and files in the home folder
+ * (`SECRET_PATHS`) are denied for reads, globs and edits by absolute path too.
  */
-export const opencodeConfig = (cwd: string, head: HeadNeeds, links: readonly OutLink[] = [], home = '') => {
-  const writable = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
-  const readOnly = head.addDirs.map(trimSlash).filter(dir => !writable.some(root => isWithin(dir, root)))
-  const outside = union(writable.slice(1), readOnly).filter(dir => !isWithin(dir, writable[0]!))
-  const denyFolder = (dir: string): [string, Rule][] => [[dir, 'deny'], [`${dir}/*`, 'deny']]
-  const deny = Object.fromEntries(OPENCODE_DENY.map(key => [key, 'deny' as Rule]))
-  const secrets = Object.fromEntries(home ? SECRET_PATHS.flatMap(path => denyFolder(`${trimSlash(home)}/${path}`)) : [])
-  const unwritableLinks = links.filter(link => !writable.some(root => isWithin(link.target, root))).map(link => link.path)
-  const unreadableLinks = links.filter(link => ![...writable, ...readOnly].some(root => isWithin(link.target, root))).map(link => link.path)
+export const opencodeConfig = (cwd: string, head: HeadNeeds, denied: LinkDenies = { read: [], edit: [] }, home = '') => {
+  const root = trimSlash(cwd)
+  const { writable, readOnly } = grantsOf(root, head)
+  const outside = union(writable.slice(1), readOnly).filter(dir => !isWithin(dir, root))
+  const each = (patterns: readonly string[], rule: Rule) => patterns.map(pattern => [pattern, rule] as const)
+  const deny = (paths: readonly string[]) => each(paths.flatMap(path => spellingsOf(path, root, [...writable, ...readOnly])).flatMap(below), 'deny')
+  const secrets = home ? SECRET_PATHS.flatMap(path => below(`${trimSlash(home)}/${path}`)) : []
   return {
     autoupdate: false,
     share: 'disabled',
     tools: Object.fromEntries(OPENCODE_DENY.map(key => [key, false])),
     permission: {
       '*': 'deny' as Rule,
-      read: { '*': 'allow' as Rule, ...Object.fromEntries(unreadableLinks.flatMap(denyFolder)), ...OPENCODE_SECRETS, ...secrets },
-      edit: { '*': 'allow' as Rule, ...Object.fromEntries([...readOnly, ...unwritableLinks].flatMap(denyFolder)), ...OPENCODE_GIT, ...OPENCODE_SECRETS, ...secrets },
-      glob: { '*': 'allow' as Rule, ...secrets },
+      read: rulesOf([['*', 'allow'], ...deny(denied.read), ...each(OPENCODE_ENV, 'deny'), ...each(secrets, 'deny')]),
+      edit: rulesOf([
+        ['*', 'allow'], ...deny(readOnly), ...each(writable.slice(1).flatMap(below), 'allow'), ...deny(denied.edit),
+        ...each(OPENCODE_GIT, 'deny'), ...each(OPENCODE_ENV, 'deny'), ...each(OPENCODE_PROTECTED, 'deny'), ...each(secrets, 'deny'),
+      ]),
+      glob: rulesOf([['*', 'allow'], ...each(secrets, 'deny')]),
       todowrite: 'allow' as Rule,
-      external_directory: { '*': 'deny' as Rule, ...Object.fromEntries(outside.map(dir => [`${dir}/*`, 'allow' as Rule])) },
-      ...deny,
+      external_directory: rulesOf([['*', 'deny'], ...each(outside.map(dir => `${dir}/*`), 'allow')]),
+      ...Object.fromEntries(OPENCODE_DENY.map(key => [key, 'deny' as Rule])),
     },
   }
 }
+
+/** Above this many characters the inline config could pass what one environment variable may hold on Linux (128 KiB). */
+export const OPENCODE_CONFIG_LIMIT = 120_000
+
+/**
+ * Why an OpenCode Head may not run with these grants (real paths), or undefined. OpenCode's rules are case-sensitive and a
+ * macOS disk is not, so a grant that holds a credential folder (an `addDirs` of the home folder holds `~/.ssh`) would let
+ * the Head read it as `~/.SSH`: such a grant is refused.
+ */
+export const opencodeGrantRefusal = (grants: readonly string[], home: string) => {
+  const base = trimSlash(home)
+  if (!base) return undefined
+  for (const grant of grants) {
+    const secret = SECRET_PATHS.find(path => isWithin(`${base}/${path}`, trimSlash(grant)))
+    if (secret) return `addDirs/writeDirs: ${grant} holds ${base}/${secret}, and OpenCode cannot deny a credential folder in every letter case. Grant a narrower folder.`
+  }
+  return undefined
+}
+
+/**
+ * Why an OpenCode Head may not run in `cwd`, or undefined. OpenCode takes the nearest VCS root above `cwd` as the
+ * project and matches every path under it relative to `cwd` (`../x`), never as an outside folder, so in a monorepo
+ * subfolder the Head could read and write the whole repository. `root` is that VCS root's real path, undefined when
+ * there is none (OpenCode then uses `cwd` itself).
+ */
+export const projectRootRefusal = (cwd: string, root: string | undefined) =>
+  root !== undefined && trimSlash(root) !== trimSlash(cwd)
+    ? `${cwd} is a subfolder of the repository ${root}, and OpenCode would let the Head reach all of that repository through \`../\` paths. Run OpenCode Heads with \`cwd\` at the repository root, or use another engine.`
+    : undefined
+
+/** The folders to scan for symlinks: the project and every granted folder, without one that lies in another. */
+export const scanRoots = (cwd: string, grants: readonly string[]) => {
+  const all = union([cwd], grants).map(trimSlash)
+  return all.filter(dir => !all.some(other => other !== dir && isWithin(dir, other)))
+}
+
+/**
+ * The links `bin/symlinks.py` found, or why the Head is refused: the scan failed, timed out, was cut short or printed
+ * something else. A Head never runs with links Hydra could not see.
+ */
+export const linkScanResult = (ran: { exitCode: number; stdout: string; stderr: string; isStdoutTruncated?: boolean } | undefined): { links: FoundLink[] } | { refusal: string } => {
+  const why = 'Hydra could not list the symlinks in the project and the granted folders'
+  if (!ran) return { refusal: `${why} (the scan failed or took over a minute), so it cannot deny the ones that lead out.` }
+  if (ran.exitCode !== 0) return { refusal: `${why}: ${ran.stderr.trim().split('\n')[0]?.slice(0, 200) || `exit ${ran.exitCode}`}.` }
+  if (ran.isStdoutTruncated) return { refusal: `${why}: there are too many to read.` }
+  try {
+    const rows = JSON.parse(ran.stdout) as unknown
+    if (Array.isArray(rows) && rows.every(row => Array.isArray(row) && row.length === 2 && row.every(part => typeof part === 'string'))) {
+      return { links: (rows as [string, string][]).map(([path, target]) => ({ path, target })) }
+    }
+  } catch {
+    // Falls through to the refusal below.
+  }
+  return { refusal: `${why}: the scan printed something unexpected.` }
+}
+
+/** The refusal when more links must be denied than an OpenCode config can hold. */
+export const tooManyLinks = (count: number) =>
+  `The project and the granted folders hold more than ${OPENCODE_LINK_CAP} symlinks an OpenCode Head must be kept from (${count} found so far), too many to deny one by one. Use another engine here.`
+
+/**
+ * ⚠ lines for files the Head changed whose real path (`real`, in the order of `files`) is inside a `.git` folder, in any
+ * letter case, or outside the project and the `writeDirs`: Hydra's rules should have refused both.
+ */
+export const changeWarnings = (cwd: string, writeDirs: readonly string[], files: readonly string[], real: readonly string[]) =>
+  files.flatMap((file, index) => {
+    const path = real[index] ?? file
+    const name = relativeTo(cwd, file)
+    if (path.split('/').some(part => part.toLowerCase() === '.git')) return [`the Head changed ${name}, which is inside a .git folder (${path}): check it, and git's hooks and config, before you run git.`]
+    if (path !== file && outsideFiles(cwd, [path], writeDirs).length > 0) return [`the Head changed ${name}, whose real path ${path} is outside the project: check it.`]
+    return []
+  })
 
 /**
  * The environment one OpenCode Head runs with: its config file (and the same JSON inline, which outranks any config
  * the person's environment names), no project config, no auto-update, and its own empty config home, so the person's
  * `~/.config/opencode` (which can hold provider API keys) is neither loaded nor allowed to the Head as OpenCode's own
  * config folder. The data folder (sign-ins, the free models' access) stays the person's, unless an account sets it.
+ * `PWD` is the Head's `cwd`: `opencode run` changes to `$PWD` (inherited from Claude Code) before its own working
+ * folder, so without it the Head would work, and be matched, in the Lead's folder instead.
  */
-export const opencodeEnv = (configFile: string, configHome: string, config: string, account?: Record<string, string>) => ({
+export const opencodeEnv = (cwd: string, configFile: string, configHome: string, config: string, account?: Record<string, string>) => ({
   OPENCODE_CONFIG: configFile,
   OPENCODE_CONFIG_CONTENT: config,
   OPENCODE_CONFIG_DIR: configHome,
-  OPENCODE_DISABLE_PROJECT_CONFIG: '1',
+  ...OPENCODE_NO_PROJECT_CONFIG,
   OPENCODE_DISABLE_AUTOUPDATE: '1',
   XDG_CONFIG_HOME: configHome,
   ...(account ?? {}),
+  PWD: cwd,
 })
 
 /**
@@ -245,29 +456,78 @@ type OpenCodeHead = { task: string; cwd: string; model: string; maxTurns: number
 const HEADS_DIR = '.claude/hydra/heads'
 const PREFIX = 'opencode-'
 
-/** The symlinks under `cwd` (8 levels down, `.git` skipped, at most 500) whose real target is outside it, with their paths relative to `cwd`. */
-async function outsideLinks($: EngineInterface, cwd: string): Promise<OutLink[]> {
-  const ran = await $.process.run(['/usr/bin/find', cwd, '-maxdepth', '8', '-name', '.git', '-prune', '-o', '-type', 'l', '-print'], { timeoutMs: 15_000 }).catch(() => undefined)
-  const links = (ran?.stdout ?? '').split('\n').map(line => line.trim()).filter(Boolean).slice(0, 500)
-  if (links.length === 0) return []
-  const real = await realPaths($, links)
-  return links.map((link, index) => ({ path: relativeTo(cwd, link), target: real[index] ?? link })).filter(link => !isWithin(link.target, cwd))
+/** The folder above `dir`, `/` at the top. */
+const parentOf = (dir: string) => dir.replace(/\/[^/]*$/, '') || '/'
+
+/**
+ * The real path of the folder OpenCode takes as the project root for `cwd` (its `Project.resolve`): walking up, the first
+ * folder holding `.git` (then the top level git names for it) or `.hg`. Undefined `root` when there is none, or when git
+ * does not know the `.git` it found (OpenCode then uses `cwd`). A check that cannot run is a `failure`.
+ */
+async function vcsRootOf($: EngineInterface, cwd: string): Promise<{ root?: string } | { failure: string }> {
+  for (let dir = trimSlash(cwd); ; dir = parentOf(dir)) {
+    const base = dir === '/' ? '' : dir
+    const [hasGit, hasHg] = await Promise.all([`${base}/.git`, `${base}/.hg`].map(path => $.fs.exists(path).catch(() => undefined)))
+    if (hasGit === undefined || hasHg === undefined) return { failure: `Hydra could not look for a repository above ${cwd}, so it cannot tell where OpenCode puts the project root.` }
+    if (hasGit) {
+      const ran = await $.process.run(['git', '-C', dir, 'rev-parse', '--show-toplevel'], { timeoutMs: 10_000 }).catch(() => undefined)
+      if (!ran) return { failure: `git did not answer in ${dir}, so Hydra cannot tell where OpenCode puts the project root.` }
+      const top = ran.stdout.trim()
+      if (ran.exitCode !== 0 || !top) return {}
+      return { root: (await realPaths($, [top]))[0] ?? top }
+    }
+    if (hasHg) return { root: dir }
+    if (dir === '/') return {}
+  }
+}
+
+/** Every symlink under `roots` with its real target (`bin/symlinks.py`), or why the Head is refused. */
+async function scanLinks($: EngineInterface, roots: readonly string[]) {
+  const ran = await runScript($, 'symlinks.py', roots, 60_000).catch(() => undefined)
+  return linkScanResult(ran)
+}
+
+type OpenCodeSetup = { cwd: string; addDirs: string[]; writeDirs: string[]; configFile: string; configHome: string; config: string }
+
+/**
+ * Everything an OpenCode Head needs before it starts, on real paths, or why it may not start: `cwd` at the project's VCS
+ * root, no grant that holds a credential folder, every symlink in the project and the granted folders listed, at most
+ * `OPENCODE_LINK_CAP` of them denied, and a config small enough for the environment. Then its files are written.
+ */
+async function prepareOpenCode($: EngineInterface, head: OpenCodeHead, id: string): Promise<OpenCodeSetup | { refusal: string }> {
+  const home = await homeOf($)
+  const [cwd = head.cwd, realHome = ''] = await realPaths($, home ? [head.cwd, home] : [head.cwd])
+  const addDirs = await realPaths($, head.addDirs)
+  const writeDirs = await realPaths($, head.writeDirs)
+  const needs = { addDirs, writeDirs, shell: false }
+  const vcs = await vcsRootOf($, cwd)
+  if ('failure' in vcs) return { refusal: vcs.failure }
+  const refusal = projectRootRefusal(cwd, vcs.root) ?? opencodeGrantRefusal(union(addDirs, writeDirs), realHome)
+  if (refusal) return { refusal }
+  const scanned = await scanLinks($, scanRoots(cwd, union(writeDirs, addDirs)))
+  if ('refusal' in scanned) return scanned
+  const denied = linkDenies(scanned.links, cwd, needs)
+  if (denied.edit.length > OPENCODE_LINK_CAP) return { refusal: tooManyLinks(denied.edit.length) }
+  const config = JSON.stringify(opencodeConfig(cwd, needs, denied, realHome))
+  if (config.length > OPENCODE_CONFIG_LIMIT) return { refusal: tooManyLinks(denied.edit.length) }
+  return { cwd, addDirs, writeDirs, config, ...(await writeOpenCodeFiles($, home, id, config)) }
 }
 
 /** Writes the Head's config file and its empty config home next to Hydra's status files (owner-only), never in the project. */
-async function writeOpenCodeFiles($: EngineInterface, cwd: string, id: string, needs: HeadNeeds) {
-  const home = await homeOf($)
+async function writeOpenCodeFiles($: EngineInterface, home: string, id: string, config: string) {
   const base = `${home}/${HEADS_DIR}/${PREFIX}${await $.session.id()}-${id}`
   const configHome = base
   const configFile = `${base}.json`
-  await $.process.run(['/bin/mkdir', '-p', configHome])
-  await $.process.run(['/bin/chmod', '700', configHome])
-  const links = await outsideLinks($, cwd)
-  const [realHome] = home ? await realPaths($, [home]) : ['']
-  const config = JSON.stringify(opencodeConfig(cwd, needs, links, realHome), null, 2)
-  await $.fs.write(configFile, config + '\n')
-  await $.process.run(['/bin/chmod', '600', configFile])
-  return { configFile, configHome, config }
+  try {
+    await $.process.run(['/bin/mkdir', '-p', configHome])
+    await $.process.run(['/bin/chmod', '700', configHome])
+    await $.fs.write(configFile, config + '\n')
+    await $.process.run(['/bin/chmod', '600', configFile])
+  } catch (error) {
+    await removeOpenCodeFiles($, configHome)
+    throw error
+  }
+  return { configFile, configHome }
 }
 
 async function removeOpenCodeFiles($: EngineInterface, base: string) {
@@ -293,28 +553,31 @@ export async function sweepOpenCodeFiles($: EngineInterface) {
 /** A Head on OpenCode (beta): its own config and config home, then rounds until it reports HEAD DONE. */
 export async function runOpenCodeHead($: EngineInterface, head: OpenCodeHead, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { cwd, model } = head
-  let files: { configFile: string; configHome: string; config: string } | undefined
-  const refusal = /^[A-Za-z]:|^\\\\|\\/.test(cwd)
-    ? `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.`
-    : await writeOpenCodeFiles($, (await realPaths($, [cwd]))[0] ?? cwd, id, { addDirs: await realPaths($, head.addDirs), writeDirs: await realPaths($, head.writeDirs), shell: false }).then(
-        written => {
-          files = written
-          return undefined
-        },
-        error => `Hydra could not write the Head's OpenCode config (${String(error).slice(0, 160)}). Check that ~/.claude is writable, then run the Head again.`,
-      )
-  if (refusal || !files) {
-    if (files) await removeOpenCodeFiles($, files.configHome)
-    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
+  const setup: OpenCodeSetup | { refusal: string } = /^[A-Za-z]:|^\\\\|\\/.test(cwd)
+    ? { refusal: `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.` }
+    : await prepareOpenCode($, head, id).catch(error => ({
+        refusal: `Hydra could not write the Head's OpenCode config (${String(error).slice(0, 160)}). Check that ~/.claude is writable, then run the Head again.`,
+      }))
+  if ('refusal' in setup) {
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: setup.refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'opencode')
+    return notStarted(id, model, cwd, `${setup.refusal} A Head never starts without Hydra's rules.`, 'opencode')
   }
   try {
-    return await runOpenCodeRounds($, head, opencodeEnv(files.configFile, files.configHome, files.config, head.env), outer, limits, id)
+    const real = { ...head, cwd: setup.cwd, addDirs: setup.addDirs, writeDirs: setup.writeDirs }
+    return await runOpenCodeRounds($, real, opencodeEnv(setup.cwd, setup.configFile, setup.configHome, setup.config, head.env), outer, limits, id)
   } finally {
-    await removeOpenCodeFiles($, files.configHome)
+    await removeOpenCodeFiles($, setup.configHome)
   }
 }
+
+/**
+ * The round to run after a silent one was stopped. Once OpenCode has named a session, the retry resumes it with the
+ * continue prompt (a fresh run would start a second session while Hydra kept resuming the dead one); before that, the
+ * same round runs again.
+ */
+export const idleRetryRound = (round: { prompt: string; maxTurns: number; resume?: string }, sessionId: string | undefined, denied: string[], turnsUsed: number) =>
+  sessionId ? { prompt: continuePrompt(denied), maxTurns: Math.max(1, round.maxTurns - turnsUsed), resume: sessionId } : round
 
 async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Record<string, string>, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { task, cwd, model, maxTurns, minutes } = head
@@ -339,14 +602,16 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
     await setRun($, id, run => applyEvent(run, event, labels, cwd))
   }
   let hangs = 0
+  const deniedCalls = () => state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`.slice(0, 160))
   // A silent run is stopped by the watchdog and tried once more; a second silence is reported as a hang.
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
-    const once = () => runRoundOpenCode($, { ...round, model, cwd, env, state }, signal, onEvent)
-    let ran = await once()
+    const turnsBefore = state.turns
+    let ran = await runRoundOpenCode($, { ...round, model, cwd, env, state }, signal, onEvent)
     if (ran.signal === 'idle' && !signal.aborted) {
       hangs++
       await setRun($, id, { activity: 'no output from OpenCode, retrying' })
-      ran = await once()
+      const retry = idleRetryRound(round, state.sessionId, deniedCalls(), state.turns - turnsBefore)
+      ran = await runRoundOpenCode($, { ...retry, model, cwd, env, state }, signal, onEvent)
     }
     if (ran.signal === 'idle') {
       hangs++
@@ -363,9 +628,8 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
   const sessionId = round.sessionId
   let rounds = 1
   while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && state.turns < maxTurns) {
-    const denied = state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`.slice(0, 160))
     await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
-    round = await roundAt({ prompt: continuePrompt(denied), maxTurns: maxTurns - state.turns, resume: sessionId })
+    round = await roundAt({ prompt: continuePrompt(deniedCalls()), maxTurns: maxTurns - state.turns, resume: sessionId })
     rounds++
   }
 
@@ -383,7 +647,7 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
   })
   void refreshHeads($, limits)
 
-  const warnings = [...new Set(state.flagged)]
+  const warnings = [...new Set(state.flagged), ...changeWarnings(cwd, head.writeDirs, files, await realPaths($, files))]
   if (hangs > 0 && !hung) warnings.push(`OpenCode went silent ${hangs} time(s) and was restarted by Hydra's watchdog; check the files it edited.`)
   const text = formatReport({
     id, model, cwd, sessionId, finished, rounds, turns: state.turns, usd: null, files, denied: state.denied,

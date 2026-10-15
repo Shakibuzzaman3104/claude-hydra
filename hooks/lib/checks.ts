@@ -29,9 +29,38 @@ export const opencodeOldWarning = (version: string) =>
 export const OPENCODE_NO_LOGIN = 'OpenCode has no provider signed in: Heads can use only its free `opencode/…` models. Run `opencode auth login` for others.'
 
 /**
+ * Both names OpenCode reads to skip a project's own config (`opencode.json`, `.opencode/`): v2 reads
+ * `OPENCODE_CONFIG_PROJECT_DISABLE` first and falls back to the older `OPENCODE_DISABLE_PROJECT_CONFIG`.
+ */
+export const OPENCODE_NO_PROJECT_CONFIG = { OPENCODE_CONFIG_PROJECT_DISABLE: '1', OPENCODE_DISABLE_PROJECT_CONFIG: '1' } as const
+
+/**
+ * The providers `opencode auth list --format json` printed, as `[{ id, connections: [{ type }] }]`: `stored` counts
+ * only sign-ins kept in OpenCode's data folder (`credential`), `any` also API keys in the environment. Both false when
+ * the output is not that list.
+ */
+export const opencodeProviders = (stdout: string) => {
+  try {
+    const rows = JSON.parse(stdout) as unknown
+    const connections = Array.isArray(rows) ? rows.flatMap(row => (Array.isArray((row as { connections?: unknown })?.connections) ? (row as { connections: { type?: unknown }[] }).connections : [])) : []
+    return { any: connections.length > 0, stored: connections.some(connection => connection?.type === 'credential') }
+  } catch {
+    return { any: false, stored: false }
+  }
+}
+
+/**
+ * How Hydra runs OpenCode for a check (never for a Head): from the home folder (or the plugin's own folder), outside any
+ * project, with project config off, so no project's `opencode.json` or `.opencode/` plugins load into it. OpenCode
+ * changes to `$PWD` first, so `PWD` names that folder too. `--standalone` keeps it from starting the background service.
+ */
+export const opencodeCheckInit = (home: string, pluginRoot: string, env: Record<string, string> = {}) => ({
+  cwd: home || pluginRoot, env: { ...env, ...OPENCODE_NO_PROJECT_CONFIG, PWD: home || pluginRoot }, timeoutMs: 30_000,
+})
+
+/**
  * The checks only WorkBuddy and OpenCode need, after their CLI was found: WorkBuddy's product file and sign-in (by
- * existence only; Hydra never reads a credential), and OpenCode's version and providers. `auth list` runs with
- * `--standalone` so the check never starts OpenCode's background service.
+ * existence only; Hydra never reads a credential), and OpenCode's version and providers (`opencodeCheckInit`).
  */
 export async function engineChecks($: EngineInterface, engine: Engine, home: string): Promise<{ problems: string[]; warnings: string[] }> {
   const problems: string[] = []
@@ -44,11 +73,13 @@ export async function engineChecks($: EngineInterface, engine: Engine, home: str
   }
   if (engine === 'opencode') {
     const argv = await commandOf($, 'opencode')
-    const version = await $.process.run([...argv, '--version'], { timeoutMs: 15_000 }).catch(() => undefined)
+    const init = opencodeCheckInit(home, $.plugin.root)
+    const version = await $.process.run([...argv, '--version'], { ...init, timeoutMs: 15_000 }).catch(() => undefined)
     const major = majorOf(version?.stdout ?? '')
     if (major !== undefined && major < OPENCODE_MAJOR) warnings.push(opencodeOldWarning(version?.stdout ?? ''))
-    const auth = await $.process.run([...argv, 'auth', 'list', '--standalone'], { timeoutMs: 30_000 }).catch(() => undefined)
-    if (auth?.exitCode !== 0 || !auth.stdout.trim()) warnings.push(OPENCODE_NO_LOGIN)
+    // Plain `auth list` prints "No authenticated integrations" when there is none, so the JSON form is read instead.
+    const auth = await $.process.run([...argv, 'auth', 'list', '--standalone', '--format', 'json'], init).catch(() => undefined)
+    if (auth?.exitCode !== 0 || !opencodeProviders(auth.stdout).any) warnings.push(OPENCODE_NO_LOGIN)
   }
   return { problems, warnings }
 }

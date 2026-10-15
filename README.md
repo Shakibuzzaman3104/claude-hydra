@@ -98,6 +98,7 @@ A Head runs its CLI unattended. On Command Code that is `--yolo` (its headless m
 - there is no OS sandbox and no write guard (OpenCode has no hook to run one): the rules are all there is;
 - an OpenCode Head **never** has a shell, even when Claude asks for one, because OpenCode does not check a shell command's paths. It has no search tool either (OpenCode's grep reads `.env` files), and no web, subagents or code tool, so Claude names the exact files in the task;
 - a symlink in the project that leads outside it is denied by its own path, as found when the Head starts: one created later (no OpenCode Head can make one) is not covered;
+- an OpenCode Head runs only with `cwd` at a repository's root: Hydra refuses it in a monorepo subfolder (OpenCode would let it reach the whole repository), and when the project's symlinks cannot be listed or too many need denying;
 - its own config folder (`~/.config/opencode`, which can hold API keys) is replaced by an empty one per Head, so providers defined only there are not available to Heads; sign providers in with `opencode auth login` instead.
 
 **Your code leaves your machine.** Each Head's task, and every file it reads, goes to the Head model through Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode. Leave Hydra off in projects whose code must not leave your machine. A Head with shell access can still read a `.env` file through a command that doesn't name it (`grep -r KEY .`), so Claude avoids giving Heads a shell in projects with real secrets.
