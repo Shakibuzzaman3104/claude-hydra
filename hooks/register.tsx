@@ -16,6 +16,7 @@ import { REPORT_HEAD, headName, isLive, listRuns, reportNotice, stopRuns, string
 import { HYDRA_HELP, HYDRA_POLICY, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
 import { backgroundJobs, controllers, createReplyBox, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
+import { setExtraHomeRead } from './lib/safety'
 import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/state'
 import { bandView, headsPaneView, usagePaneView } from './lib/views'
 
@@ -51,6 +52,7 @@ export const register: Register = (on, options) => {
   const defaultEffort: EffortMode = isEffortMode(options.headEffort) ? options.headEffort : 'auto'
   const defaultEngine: Engine = isEngine(options.headEngine) ? options.headEngine : DEFAULT_ENGINE
   setConfiguredEngine(defaultEngine)
+  setExtraHomeRead([String(options.headReadDirs ?? '')])
   const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {

@@ -58,6 +58,12 @@
       "title": "Command Code plan",
       "description": "Your Command Code plan name, shown in /hydra-usage (optional)",
       "default": ""
+    },
+    "headReadDirs": {
+      "type": "string",
+      "title": "Extra folders Heads may read in your home",
+      "description": "Codex Heads cannot read your home folder outside the project, except git's config and common toolchains (nvm, cargo, gradle, pyenv, Android SDK…). List more here, comma separated, relative to home (e.g. .sdkman, tools/bin). Credential folders are never opened.",
+      "default": ""
     }
   }
 }
