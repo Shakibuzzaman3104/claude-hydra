@@ -19,7 +19,7 @@ const headLevelsNote = (headModel: string) =>
   /deepseek-v4\.1/i.test(headModel) ? ` ${shortModel(headModel)} takes low, high and max: medium runs as high, xhigh as max.` : ''
 
 const codexEffortRule = (effort: EffortMode, headModel: string) =>
-  `- Codex Heads run OpenAI models on the person's ChatGPT plan: \`${headModel}\` by default. Pass \`model\` per Head: \`gpt-6.1-sol\` for multi-file, algorithmic or subtle work, \`gpt-6-luna\` (faster, cheaper) for mechanical edits, renames, boilerplate and small, fully specified tasks.
+  `- Codex Heads run OpenAI models on the person's ChatGPT plan: \`${headModel}\` by default. Pass \`model\` per Head: \`gpt-6.1-sol\` for multi-file, algorithmic or subtle work, \`gpt-6-luna\` (faster, cheaper) for mechanical edits, renames, boilerplate and small, fully specified tasks. Some ChatGPT plans offer only \`gpt-6-luna\`: Hydra then runs the Head on it and its report says so in a ⚠ line.
 ${
     effort === 'auto'
       ? `- You pick each Head's reasoning \`effort\` (low, medium, high, xhigh or max):

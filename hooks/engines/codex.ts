@@ -222,6 +222,17 @@ async function gitReadDirs($: EngineInterface, cwd: string, home: string): Promi
   return dirs.filter(dir => !isWithin(dir, cwd) && !(home && isWithin(home, dir)))
 }
 
+/** How Codex refuses a model the person's ChatGPT plan does not include. */
+export const CODEX_PLAN_REFUSAL = /not supported when using Codex with a ChatGPT account/i
+
+/** The Codex model every ChatGPT plan runs; a Head falls back to it when its model is refused. */
+export const CODEX_PLAN_MODEL = 'gpt-6-luna'
+
+/** Models this session's ChatGPT plan refused: later Heads start on `CODEX_PLAN_MODEL` without trying them again. */
+const refusedOnPlan = new Set<string>()
+
+const planWarning = (model: string) => `${model} is not available on this ChatGPT plan, so the Head ran on ${CODEX_PLAN_MODEL}. Check its work as you would a lighter model's, or set head=${CODEX_PLAN_MODEL}.`
+
 /** A Head on Codex: a filesystem profile on the command line (no file to clean up), then rounds until it reports HEAD DONE. */
 export async function runCodexHead($: EngineInterface, head: CodexHead, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { cwd, model } = head
@@ -248,7 +259,9 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
 }
 
 async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, outer: AbortSignal, limits: HeadLimits, id: string) {
-  const { task, cwd, model, maxTurns, minutes } = head
+  const { task, cwd, maxTurns, minutes } = head
+  let model = refusedOnPlan.has(head.model) ? CODEX_PLAN_MODEL : head.model
+  const warnings: string[] = model === head.model ? [] : [planWarning(head.model)]
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const controller = new AbortController()
@@ -280,6 +293,15 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   }
 
   let round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
+  if (model !== CODEX_PLAN_MODEL && CODEX_PLAN_REFUSAL.test(round.errors ?? '')) {
+    // The person's ChatGPT plan does not offer this model: run the Head on the one every plan has, and remember it for the session.
+    refusedOnPlan.add(model)
+    warnings.push(planWarning(model))
+    model = CODEX_PLAN_MODEL
+    Object.assign(state, { threadId: undefined, failure: undefined, lastError: undefined })
+    await setRun($, id, { model })
+    round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
+  }
   for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
     await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
     round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
@@ -311,7 +333,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns: state.turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
-    writeDirs: head.writeDirs, engine: 'codex', tokens,
+    writeDirs: head.writeDirs, engine: 'codex', tokens, warnings,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

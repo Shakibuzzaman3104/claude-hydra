@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { failureReason } from './engines/agy'
 import { buddySecretDeny, buddySettings } from './engines/codebuddy'
-import { codexFilesystem, foldCodexRow, newCodexState } from './engines/codex'
+import { CODEX_PLAN_MODEL, CODEX_PLAN_REFUSAL, codexFilesystem, foldCodexRow, newCodexState } from './engines/codex'
 import { headSettings, secretReadDeny } from './engines/commandcode'
 import { REPORT_HEAD, reportContext, reportNotice } from './lib/format'
 import { SECRET_PATHS, guardCommand, holdsSecret, homeHeadRefusal, isSecretPath, parseHomeReadDirs, secretDirRefusal } from './lib/safety'
@@ -137,4 +137,10 @@ test('only a short Antigravity response counts as the CLI\'s failure reason', as
   // A long model report that talks about rate limits is the model's text, not the CLI's reason: no account switch.
   expect(failureReason({ status: 'ERROR', finalText: `I added rate limit handling. ${'x'.repeat(500)}` })).toBe('')
   expect(failureReason({ status: 'SUCCESS', finalText: 'quota exceeded' })).toBe('')
+})
+
+test('recognises Codex refusing a model the ChatGPT plan does not offer', async () => {
+  expect(CODEX_PLAN_REFUSAL.test(`{"type":"error","status":400,"error":{"message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}`)).toBe(true)
+  expect(CODEX_PLAN_REFUSAL.test('usage limit reached')).toBe(false)
+  expect(CODEX_PLAN_MODEL).toBe('gpt-6-luna')
 })
