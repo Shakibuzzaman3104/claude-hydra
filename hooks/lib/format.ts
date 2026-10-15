@@ -242,3 +242,23 @@ export const formatReport = (head: {
   if (!head.finished && head.errors?.trim()) lines.push('--- stderr ---', head.errors.trim())
   return lines.join('\n')
 }
+
+/** How a background Head's report starts when the worker hands it to Claude; `reportNotice` and the `prompt.submit` hook key on it. */
+export const REPORT_HEAD = /^Hydra Head (\S+) (finished|failed)/
+
+/**
+ * The one line the person sees for a background Head's report: its name, whether it finished, and what it edited or was
+ * refused. The full report reaches Claude as context beside it, so the transcript is not filled with report previews.
+ */
+export const reportNotice = (text: string) => {
+  const name = REPORT_HEAD.exec(text)?.[1] ?? 'Head'
+  const headLine = text.split('\n').find(line => line.startsWith('head ')) ?? ''
+  const isFinished = / · finished · /.test(headLine)
+  const edited = /^edited \((\d+)\)/m.exec(text)?.[1]
+  const denied = /^denied \((\d+)\)/m.exec(text)?.[1]
+  const parts = [
+    isFinished ? '✓ finished' : '✗ did not finish', edited ? `${edited} file${edited === '1' ? '' : 's'} edited` : 'no edits',
+    denied ? `${denied} denied` : '', /WROTE OUTSIDE THE PROJECT/.test(text) ? '⚠ wrote outside the project' : '',
+  ]
+  return `🐉 Head ${name} · ${parts.filter(Boolean).join(' · ')} · report sent to Claude (/heads for detail)`
+}
