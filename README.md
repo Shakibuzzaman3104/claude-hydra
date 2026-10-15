@@ -58,7 +58,7 @@ Hydra asks once before anything is sent to an engine. The first time it turns on
     codex login        # once, to sign in (codex login --device-auth on a remote machine)
     ```
 
-  Codex Heads default to `gpt-6.1-sol`; the Lead passes `model: "gpt-6-luna"` for mechanical or small tasks. Codex has no per-tool rules, so a Head runs in Codex's OS sandbox with a filesystem profile Hydra writes: writes only in the project (and `writeDirs`), no `.git` writes, no `.env` reads, no credential folders, no network.
+  Codex Heads default to `gpt-6.1-sol`; the Lead passes `model: "gpt-6-luna"` for mechanical or small tasks. If your ChatGPT plan does not offer `gpt-6.1-sol`, Heads fall back to `gpt-6-luna` and their reports say so. Codex has no per-tool rules, so a Head runs in Codex's OS sandbox with a filesystem profile Hydra writes: writes only in the project (and `writeDirs`), no `.git` writes, no `.env` reads, nothing in your home folder except the project, `addDirs` and toolchain folders, no credential folders, no network.
 
   - or the Antigravity CLI (Google): `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then `agy` once to sign in (Google OAuth). Antigravity Heads always run `gemini-3.8-flash`. `agy` has one global settings file, so each Head gets its own `HOME` with permission rules; its sandbox keeps a shell inside the project with no network.
 
@@ -88,8 +88,9 @@ Answer `y` to add the marketplace and pick the user scope. Then run `/hydra`. Th
 ## What a Head can and can't do
 A Head runs its CLI unattended. On Command Code that is `--yolo` (its headless mode can't edit otherwise), locked down by deny rules that Hydra writes before the Head starts and removes after it ends. On CodeBuddy it is `default` permission mode with a per-Head settings file (`--settings`, kept outside the project) that allows edits only under the project, plus the same write guard (WorkBuddy runs the same CodeBuddy setup). Codex and Antigravity add their own sandbox. Either way:
 - it can edit files inside the project, but not `.git`, `.commandcode` or `.env` files. Every write outside it is denied, including into new folders and through symlinks;
-- when a task has to change a folder outside the project (a symlinked package's real location, a sibling repo), Claude passes that folder in `writeDirs`. It must exist, and can't be `/`, your home folder or a folder above the project. Its `.git`, `.commandcode` and `.env` files stay protected, and Heads running in the same project at the same time share the grant;
-- it can read folders outside the project only when Claude passes them in `addDirs`;
+- when a task has to change a folder outside the project (a symlinked package's real location, a sibling repo), Claude passes that folder in `writeDirs`. It must exist, and can't be `/`, a folder that holds the project or your home folder, or a credential folder. Its `.git`, `.commandcode` and `.env` files stay protected, and Heads running in the same project at the same time share the grant;
+- it can read folders outside the project only when Claude passes them in `addDirs`. System folders and, on Codex, the toolchain folders in your home (git config, nvm, cargo, gradle…) stay readable so builds and tests run; add more with the `headReadDirs` option;
+- it never reads your credentials: SSH and GPG keys, git credential stores, cloud and registry logins, keychains and the agent CLIs' own sign-ins are denied on every engine, even inside a folder Claude grants;
 - it has no shell unless Claude asks for one. Even then, destructive git, `rm -r`/`-f`, `sudo`, network tools, builds and installs are denied;
 - every report lists the files the Head edited and every call that was denied. A write outside the project is flagged at the top.
 
@@ -111,12 +112,13 @@ Change these in `/config` (the Hydra rows) or when installing:
 | `headEffort` | `auto` | `auto` lets Claude pick per Head: `low` when it will check the result, one level up on each retry, `max` first only for subtle work it cannot check (measured in `bench/effort/`); a level fixes it (`/hydra effort=<level>`) |
 | `headsFiveHourUsd`, `headsWeeklyUsd` | `0` | Your Command Code plan's spend caps; with `0`, spend is shown without a limit |
 | `headsPlan` | empty | Your plan's name, shown in `/hydra-usage` |
+| `headReadDirs` | empty | More folders in your home that Codex Heads may read (comma separated, e.g. `~/tools, ~/.config/mytool`), on top of the toolchain folders Hydra opens; one that holds a credential folder is ignored |
 | `accountStrategy` | `fill` | With several accounts on an engine: `fill` uses the default first and moves on at a usage limit, `spread` rotates, least recently used first |
 
 ## Several accounts
 Hit a usage limit on one subscription? Give an engine more than one account and Hydra moves on by itself. Every engine has a `default` account (the CLI's normal sign-in); Codex, CodeBuddy, Antigravity, WorkBuddy and OpenCode can have more (an extra OpenCode account has its own data folder, so OpenCode's free models do not work on it: sign it in to a provider).
 - `/hydra accounts` lists each engine's accounts with ✓ signed in / ✗ not signed in, and `cooling until HH:MM` for one at its limit. Command Code keeps one account.
-- `/hydra accounts add codex work` makes a folder for the account and prints the exact login command to run (for Codex, `CODEX_HOME="…" codex login`; prefix it with `!` to run it in the session). Sign in there with the CLI itself.
+- `/hydra accounts add codex work` makes a folder for the account and prints the exact login command to run (for Codex, `CODEX_HOME="…" codex login`). Run it in a separate terminal and sign in there with the CLI itself.
 - `/hydra accounts remove codex work` forgets the account (its folder stays; the reply names the path to delete). `/hydra accounts reset` clears every cooldown.
 - When a Head stops at a usage limit, Hydra marks that account as cooling (for the wait the CLI names, else an hour) and re-runs the Head on the next account with a note listing the files already changed. The report starts with `accounts: codex/default (usage limit, cooling until 14:05) → codex/work`. If every account of an engine is cooling, the Head does not start; in auto mode Claude routes that task to another engine.
 - The `accountStrategy` option picks the order: `fill` (default) uses the default account until it is at its limit; `spread` rotates, least recently used first.
