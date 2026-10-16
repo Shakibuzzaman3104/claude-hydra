@@ -4,6 +4,7 @@
  */
 import type { EngineInterface } from 'claude-code'
 
+import { isQuotaFailure } from '../lib/accounts'
 import { effortModeOf, headEffort } from '../lib/effort'
 import { EDIT_TOOLS, applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
@@ -163,6 +164,18 @@ const buddySessionId = (id: string, now: number) => `hydra-${id}-${now.toString(
 const isBuddyError = (row: BuddyRow | null) =>
   row !== null && (row.is_error === true || (typeof row.subtype === 'string' && row.subtype.startsWith('error') && row.subtype !== 'error_max_turns'))
 
+/** A failed result row's own reason: `result`, then `errors` and each `errors_info` status and category, where a usage limit comes (429, `quota`). */
+export const buddyFailureText = (row: BuddyRow | null) => {
+  if (row === null || !isBuddyError(row)) return ''
+  const infos = Array.isArray(row.errors_info) ? (row.errors_info as unknown[]) : []
+  const kinds = infos.map(info => {
+    const { status, category } = (info && typeof info === 'object' ? info : {}) as { status?: unknown; category?: unknown }
+    return [typeof status === 'number' ? String(status) : '', typeof category === 'string' ? category : ''].filter(Boolean).join(' ')
+  })
+  const errors = Array.isArray(row.errors) ? row.errors.filter((item): item is string => typeof item === 'string') : []
+  return [typeof row.result === 'string' ? row.result : '', ...errors, ...kinds].filter(Boolean).join('\n')
+}
+
 /** How CodeBuddy answers in a round when its config folder has no sign-in: a reply, not an error, so the round looks finished. */
 export const BUDDY_SIGNED_OUT = /Authentication required\. Please use \/login/i
 
@@ -216,7 +229,7 @@ async function runRoundBuddy(
     subtype: isCapped ? 'error_max_turns' : typeof final?.subtype === 'string' ? final.subtype : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    errors: [errors, isBuddyError(final) ? String(final?.result ?? '') : ''].filter(Boolean).join('\n').slice(-2000),
+    errors: [errors, buddyFailureText(final)].filter(Boolean).join('\n').slice(-2000),
     startedSession: started,
   }
 }
@@ -312,7 +325,8 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   }
   const sessionId = round.sessionId ?? round.startedSession
   let rounds = 1
-  while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
+  // A usage limit answers every resume the same way: stop here so the Head moves to the next account.
+  while (!signal.aborted && sessionId && isResumable(round.code) && !isQuotaFailure(round.errors) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
     const denied = state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`)
     await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
     round = await roundAt({ prompt: continuePrompt(denied), maxTurns: maxTurns - turns, resume: sessionId })
