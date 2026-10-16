@@ -157,7 +157,7 @@ export const timeOf = (ms: number) => {
 const QUOTA_WORDING = [
   /rate[\s_-]?limit/i, /usage[\s_-]?limit/i, /\bquota\b/i, /too many requests/i, /\b429\b/, /insufficient_quota/i,
   /exceeded your current/i, /limit reached/i, /out of credits/i, /credits? (?:are |is |have been )?exhausted/i, /try again in/i, /resource_exhausted/i,
-  /provider\.(?:rate-limit|quota)/i, /insufficient[\s_-]?credits/i, /credits?[\s_-]exhausted/i,
+  /provider\.(?:rate-limit|quota)/i, /insufficient[\s_-]?credits/i, /credits?[\s_-]exhausted/i, /frequency[\s_-]?limit/i,
 ]
 
 /**
@@ -193,8 +193,22 @@ const clockTimeOf = (text: string, now: number) => {
 }
 
 /**
+ * A date and time a CLI names, as ms: ISO (`2026-10-15T14:05:00Z`, `+05:30`) or with a space and a `UTC+8` / `GMT-05:00`
+ * offset (`2026-10-17 11:28:41 UTC+8`, CodeBuddy's reset time). Without a zone it is local time.
+ */
+const stampOf = (text: string) => {
+  const found = /\b(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?: ?(Z|(?:UTC|GMT)?([+-])(\d{1,2})(?::?(\d{2}))?|UTC|GMT)\b)?/i.exec(text)
+  if (!found) return undefined
+  const [, year, month, day, hours, minutes, seconds, zone, sign, offsetHours, offsetMinutes] = found
+  const fields = [Number(year), Number(month) - 1, Number(day), Number(hours), Number(minutes), Number(seconds ?? 0)] as const
+  if (!zone) return new Date(...fields).getTime()
+  const offset = sign ? (sign === '-' ? -1 : 1) * (Number(offsetHours) * 60 + Number(offsetMinutes ?? 0)) * 60_000 : 0
+  return Date.UTC(...fields) - offset
+}
+
+/**
  * When the limit lifts, as a time in ms: the wait the CLI names ("try again in 2 hours 30 minutes", "retry-after: 90"), else a
- * reset time (an ISO date, or an epoch after "reset"), else an hour from `now`. Never more than 7 days away.
+ * reset time (a date and time, or an epoch after "reset"), else an hour from `now`. Never more than 7 days away.
  */
 export const cooldownFrom = (text: string, now: number) => {
   const clamp = (until: number) => Math.min(now + COOLDOWN_MAX_MS, Math.max(now + 1_000, until))
@@ -213,11 +227,8 @@ export const cooldownFrom = (text: string, now: number) => {
     const when = clockTimeOf(at[1]!.replace(/(\d)(st|nd|rd|th)\b/g, '$1').replace(/,/g, ' ').replace(/\s+/g, ' ').trim(), now)
     if (when !== undefined && when > now) return clamp(when)
   }
-  const iso = /\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/.exec(text)
-  if (iso) {
-    const at = Date.parse(iso[1]!)
-    if (Number.isFinite(at) && at > now) return clamp(at)
-  }
+  const stamp = stampOf(text)
+  if (stamp !== undefined && stamp > now) return clamp(stamp)
   const epoch = /reset[\w\s]{0,12}?\D{0,6}(\d{10,13})\b/i.exec(text)
   if (epoch) {
     const raw = Number(epoch[1])

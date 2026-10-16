@@ -42,6 +42,7 @@ test('recognises usage and rate limit wording in a CLI failure', async () => {
     'You are out of credits',
     'The 5 hour limit reached',
     'Please try again in 20 minutes',
+    'usage exceeds frequency limit',
   ]) expect(isQuotaFailure(text)).toBe(true)
 })
 
@@ -81,6 +82,10 @@ test('reads a reset time when the wait is not given', async () => {
   expect(cooldownFrom('quota exceeded, resets at 2026-10-15T14:05:00Z', NOW)).toBe(Date.parse('2026-10-15T14:05:00Z'))
   expect(cooldownFrom('limit reached {"resetsAt": 1792072800}', NOW)).toBe(1792072800 * 1000)
   expect(cooldownFrom('limit reached, reset_time: 1792072800000', NOW)).toBe(1792072800000)
+  expect(cooldownFrom("429 usage exceeds frequency limit, but don't worry, your usage will reset at 2026-10-17 11:28:41 UTC+8", NOW)).toBe(Date.parse('2026-10-17T03:28:41Z'))
+  expect(cooldownFrom('limit reached, resets at 2026-10-16 09:30 GMT-05:00', NOW)).toBe(Date.parse('2026-10-16T14:30:00Z'))
+  expect(cooldownFrom('limit reached, resets at 2026-10-16 09:30:00 UTC', NOW)).toBe(Date.parse('2026-10-16T09:30:00Z'))
+  expect(cooldownFrom('limit reached, resets at 2026-10-16 09:30', NOW)).toBe(new Date(2026, 9, 16, 9, 30).getTime())
   // A reset time in the past is no use.
   expect(cooldownFrom('quota exceeded, resets at 2020-01-01T00:00:00Z', NOW)).toBe(NOW + COOLDOWN_DEFAULT_MS)
 })

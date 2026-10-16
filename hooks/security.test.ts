@@ -5,7 +5,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import { failureReason } from './engines/agy'
-import { buddySecretDeny, buddySettings, isSignedOutRow } from './engines/codebuddy'
+import { buddyFailureText, buddySecretDeny, buddySettings, isSignedOutRow } from './engines/codebuddy'
+import { isQuotaFailure } from './lib/accounts'
 import { CODEX_PLAN_MODEL, CODEX_PLAN_REFUSAL, codexFilesystem, foldCodexRow, newCodexState } from './engines/codex'
 import { headSettings, secretReadDeny } from './engines/commandcode'
 import { REPORT_HEAD, reportContext, reportNotice } from './lib/format'
@@ -151,4 +152,20 @@ test('a CodeBuddy sign-in prompt stops the Head instead of looking like a reply'
   // A model that writes about /login spends tokens doing it.
   expect(isSignedOutRow({ ...signedOut, message: { ...signedOut.message, usage: { output_tokens: 40 } } })).toBe(false)
   expect(isSignedOutRow({ type: 'assistant', message: { id: 'm', content: [{ type: 'text', text: 'Done.' }], usage: { output_tokens: 0 } } })).toBe(false)
+})
+
+test('a CodeBuddy usage limit reaches the account switch from the result row', async () => {
+  const limit = "429 usage exceeds frequency limit, but don't worry, your usage will reset at 2026-10-17 11:28:41 UTC+8, alternatively, you can switch to the other models to continue using it."
+  // The row CodeBuddy 2.x prints: no `result`, the reason only in `errors` and `errors_info`, and exit 0.
+  const row = {
+    type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 2,
+    usage: { input_tokens: 0, output_tokens: 0 }, errors: [limit], errors_info: [{ status: 429, code: 6004, category: 'quota', details: limit }],
+  }
+  expect(buddyFailureText(row)).toBe(`${limit}\n429 quota`)
+  expect(isQuotaFailure(buddyFailureText(row))).toBe(true)
+  expect(isQuotaFailure(buddyFailureText({ ...row, errors: [], errors_info: [{ status: 429, category: 'quota' }] }))).toBe(true)
+  // A clean finish is the model's report, never a failure reason.
+  expect(buddyFailureText({ type: 'result', subtype: 'success', result: 'rate limit handling added. HEAD DONE' })).toBe('')
+  expect(buddyFailureText(null)).toBe('')
+  expect(buddyFailureText({ type: 'result', subtype: 'error_during_execution', result: 'boom' })).toBe('boom')
 })
