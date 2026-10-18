@@ -169,5 +169,10 @@ While Hydra is on, it writes `🐉 <head model> · <effort> | Heads 5h $… | 7d
 - **An OpenCode Head was refused before it ran:** the reason says which rule. A monorepo subfolder, a home-folder grant, or a project with links Hydra can't list or too many to deny needs another engine (or `cwd` at the repository root).
 - **CodeBuddy, WorkBuddy, Codex, Antigravity and OpenCode show tokens, not dollars:** they count credits, plan usage or account quota, so `/hydra-usage` has no Heads spend while the engine is one of them; each Head's report and `/heads` row show its tokens.
 - **A very large file (1,500+ lines)** can take a Head past its 40-minute limit. Ask Claude to split the work.
+- **"`.hydraignore` could not be read":** Hydra reads it with git, so the folder must be in a git repository (`git init` it, or remove the file). The reason names what git said.
+- **"`.hydraignore` matches N paths":** more than 200 matches is too many to deny one by one. Name a folder (`secrets/`) instead of the files in it.
+- **An Antigravity Head was refused on a Mac:** a macOS disk ignores letter case, so Hydra denies each protected path in every spelling, and a long name (`local.properties`) needs too many rules, or a granted folder holds a credential folder. Use another engine for that project, or `/hydra engine=auto` and Claude routes around it.
+- **"The person has not agreed to let Hydra run checks":** the one-time question was dismissed, or Claude Code runs headless (`-p`), where nobody can answer. Claude then runs the build or tests itself.
+- **A check says `? UNKNOWN`:** the command was not found, could not start or ran past `checkMinutes`. Run it yourself to see why; Hydra does not retry it.
 
 Building on Hydra or changing how it works: see [DEVELOPING.md](DEVELOPING.md). Changes by version are in [CHANGELOG.md](CHANGELOG.md).
