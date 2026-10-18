@@ -12,6 +12,8 @@ import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isRe
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { baseName } from '../lib/protect'
+import type { Guarded } from '../lib/protect'
 import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
 
@@ -99,10 +101,11 @@ export const foldBuddyRow = (row: BuddyRow, state: BuddyState): StreamEvent[] =>
 export const BUDDY_SHELL_DENY = [
   ...DANGEROUS_SHELL.map(rule => rule.replace(/^Shell\((.*)\)$/, 'Bash($1)')),
   'Bash(* .env*)', 'Bash(*/.env*)', 'Bash(*=.env*)',
+  'Bash(* .hydraignore*)', 'Bash(*/.hydraignore*)', 'Bash(*=.hydraignore*)',
 ]
 
 /** The built-in tools a CodeBuddy Head gets: files and search, and a shell only when its task asked for one. */
-export const buddyTools = (shell: boolean) => ['Read', 'Write', 'Edit', 'Glob', 'Grep', ...(shell ? ['Bash'] : [])].join(',')
+export const buddyTools = (shell: boolean, search = true) => ['Read', 'Write', 'Edit', 'Glob', ...(search ? ['Grep'] : []), ...(shell ? ['Bash'] : [])].join(',')
 
 /**
  * The permission settings one CodeBuddy Head runs with, passed with `--settings` (so no file lands in the project):
@@ -117,6 +120,12 @@ export const buddySecretDeny = (home: string) => {
   return SECRET_PATHS.flatMap(dir => [`Read(${base}/${dir})`, `Read(${base}/${dir}/**)`, `Bash(*${base}/${dir}*)`, `Bash(*~/${dir}*)`, `Bash(*$HOME/${dir}*)`])
 }
 
+/** The paths `.hydraignore` names, kept from CodeBuddy's tools as `.env` files are: read, edit, write, and shell lines that name them. */
+export const buddyGuardedDeny = (paths: readonly string[]) => [
+  ...paths.flatMap(path => ['Read', 'Edit', 'Write'].flatMap(tool => [`${tool}(${path})`, `${tool}(${path}/**)`])),
+  ...[...new Set(paths.map(baseName))].flatMap(name => [`Bash(* ${name}*)`, `Bash(*/${name}*)`, `Bash(*=${name}*)`]),
+]
+
 export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string, home = '') => {
   const own = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
   const extra = union(head.addDirs.map(trimSlash), (head.writeDirs ?? []).map(trimSlash))
@@ -126,12 +135,13 @@ export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string, home
       allow: [...own.flatMap(root => [`Edit(${root}/**)`, `Write(${root}/**)`]), ...extra.map(dir => `Read(${dir}/**)`), ...(head.shell ? ['Bash'] : [])],
       deny: [
         ...own.flatMap(root => [
-          `Edit(${root}/.git/**)`, `Write(${root}/.git/**)`,
+          `Edit(${root}/.git/**)`, `Write(${root}/.git/**)`, `Edit(${root}/**/.hydraignore)`, `Write(${root}/**/.hydraignore)`,
           `Edit(${root}/**/.env)`, `Edit(${root}/**/.env.*)`, `Write(${root}/**/.env)`, `Write(${root}/**/.env.*)`,
           `Read(${root}/**/.env)`, `Read(${root}/**/.env.*)`,
         ]),
         ...readOnly.flatMap(dir => [`Edit(${dir}/**)`, `Write(${dir}/**)`, `Read(${dir}/**/.env)`, `Read(${dir}/**/.env.*)`]),
         ...buddySecretDeny(home),
+        ...buddyGuardedDeny(head.guarded?.paths ?? []),
         ...(head.shell ? BUDDY_SHELL_DENY : []),
       ],
     },
@@ -147,9 +157,9 @@ export const buddyEffort = (effort: string) => (effort === 'off' ? 'minimal' : e
  * do not allow is refused (headless mode cannot ask), so a Head cannot edit outside its folders or use a tool it was not given.
  * The first round names its session; later rounds resume it.
  */
-export const buddyArgs = (a: RoundArgs & { settings: string; shell: boolean; sessionId: string }) => {
+export const buddyArgs = (a: RoundArgs & { settings: string; shell: boolean; sessionId: string; search?: boolean }) => {
   const args = ['codebuddy', '-p', a.prompt, '--model', a.model, '--output-format', 'stream-json', '--verbose',
-    '--permission-mode', 'default', '--tools', buddyTools(a.shell), '--settings', a.settings, '--setting-sources', 'local',
+    '--permission-mode', 'default', '--tools', buddyTools(a.shell, a.search !== false), '--settings', a.settings, '--setting-sources', 'local',
     '--max-turns', String(a.maxTurns)]
   for (const dir of a.addDirs) args.push('--add-dir', dir)
   if (a.effort) args.push('--effort', buddyEffort(a.effort))
@@ -186,7 +196,7 @@ export const isSignedOutRow = (row: BuddyRow) =>
 
 async function runRoundBuddy(
   $: EngineInterface,
-  argv: RoundArgs & { settings: string; shell: boolean; sessionId: string; state: BuddyState },
+  argv: RoundArgs & { settings: string; shell: boolean; sessionId: string; state: BuddyState; search?: boolean },
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => Promise<void>,
 ): Promise<Round> {
@@ -234,7 +244,7 @@ async function runRoundBuddy(
   }
 }
 
-type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string>; /** WorkBuddy runs this same code with its own env. */ engine?: 'codebuddy' | 'workbuddy' }
+type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string>; /** WorkBuddy runs this same code with its own env. */ engine?: 'codebuddy' | 'workbuddy'; guarded?: Guarded }
 
 const BUDDY_SETTINGS_DIR = '.claude/hydra/heads'
 
@@ -267,7 +277,7 @@ export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: A
   let settings = ''
   const refusal =
     unsupported ??
-    (await writeBuddySettings($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell }).then(
+    (await writeBuddySettings($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell, guarded: head.guarded }).then(
       path => {
         settings = path
         return undefined
@@ -288,6 +298,9 @@ export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: A
 
 async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: string, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { task, cwd, model, maxTurns, addDirs, shell, minutes } = head
+  // Grep checks Read rules only against the path it is given, not the files it walks into, so it goes when a `.hydraignore` match is in reach.
+  const searchBlock = head.guarded?.paths[0]
+  const search = !searchBlock
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const controller = new AbortController()
@@ -314,7 +327,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundBuddy($, { ...round, model, effort, cwd, addDirs, settings, shell, sessionId: buddySessionId(id, await $.clock.now()), state, env: head.env }, signal, onEvent)
+    const ran = await runRoundBuddy($, { ...round, model, effort, cwd, addDirs, settings, shell, search, sessionId: buddySessionId(id, await $.clock.now()), state, env: head.env }, signal, onEvent)
     return { ...ran, effort }
   }
 
@@ -350,6 +363,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: head.engine ?? 'codebuddy', tokens,
+    rulesNote: searchBlock ? `search tool removed because ${relativeTo(cwd, searchBlock)} is in reach` : undefined,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

@@ -4,7 +4,9 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-export type HeadNeeds = { addDirs: readonly string[]; shell: boolean; writeDirs?: readonly string[] }
+import type { Guarded } from './protect'
+
+export type HeadNeeds = { addDirs: readonly string[]; shell: boolean; writeDirs?: readonly string[]; /** What `.hydraignore` keeps from the Head. */ guarded?: Guarded }
 
 export const union = (a: readonly string[] = [], b: readonly string[] = []) => [...new Set([...a, ...b])]
 

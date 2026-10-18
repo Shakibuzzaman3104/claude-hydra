@@ -16,8 +16,8 @@ import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, hea
 import type { Engine } from './lib/engines'
 import { REPORT_HEAD, headName, isLive, listRuns, reportContext, reportNotice, stopRuns, strings } from './lib/format'
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
-import { HYDRA_HELP, HYDRA_POLICY, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
-import { backgroundJobs, controllers, createReplyBox, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
+import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
+import { backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
 import { setExtraHomeRead } from './lib/safety'
 import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/state'
@@ -118,6 +118,8 @@ export const register: Register = (on, options) => {
           name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
           effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head (default low). Use low when you will check the result, one level up on each retry after a failed check, max first only for subtle work you cannot check. Ignored while the person has fixed a level with /hydra effort=<level>.' },
           maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
+          check: { type: 'string', description: 'Acceptance check: a shell command Hydra runs in cwd once the Head finishes (e.g. ./gradlew testDebugUnitTest --tests LoginViewModelTest). It runs as the person, outside the Head\'s lockdown. On a failure the Head is sent back with the output, one effort level up, at most twice. Scope it to what this Head changes: Heads running in the same cwd share the files. The person is asked once before the first check runs.' },
+          checkMinutes: { type: 'number', description: 'Time limit for one run of the check, in minutes (default and maximum 10)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
         required: ['task'],
@@ -291,6 +293,8 @@ export const register: Register = (on, options) => {
     if ('deny' in routed) return { deny: routed.deny }
     const engine = routed.engine
     if (!(await hasConsent($, hydra.headModel, false, engine))) return { deny: NO_CONSENT }
+    const check = typeof e.check === 'string' ? e.check.trim() : ''
+    if (check && !(await hasCheckConsent($, check))) return { deny: NO_CHECK_CONSENT }
     const headModel = headModelFor(engine, undefined, hydra.headModel, defaultHead)
     const asked = typeof e.model === 'string' && e.model ? e.model : undefined
     const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}) }

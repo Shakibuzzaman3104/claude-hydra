@@ -66,13 +66,19 @@ const lockdownRules = (engine: Engine) =>
     ? `- Heads run through CodeBuddy's headless mode with permission rules Hydra writes for each Head, plus a write guard that checks real paths: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools and installs stay denied even then). Builds and tests are yours.`
     : `- Heads run with Command Code's --yolo (its headless mode cannot edit otherwise), locked down by Hydra's deny rules: they can edit only inside \`cwd\` (never .git or \`.env\` files), read folders you list in \`addDirs\`, and have no shell unless you pass \`shell: true\` (destructive git, rm -r/-f, sudo, network tools, builds and installs stay denied even then). Builds and tests are yours.`
 
+/** `.hydraignore`, said the same way for every engine. */
+export const IGNORE_RULE = `- A \`.hydraignore\` (gitignore syntax) at the root of \`cwd\`, a \`writeDirs\` or an \`addDirs\` folder names more files a Head is kept from, as it is from \`.env\`: no reads, edits or search, and shell lines that name them are denied. Hydra matches it with git when the Head starts; a \`.hydraignore\` git cannot read, or one matching more than 200 paths, stops the Head with the reason. A Head may read \`.hydraignore\` but not change it (a change slips through only where an engine cannot block it, and is flagged at the top of the report). On a case-insensitive disk (macOS) an Antigravity Head is refused when a protected name is too long to deny in every letter case: send that task to another engine. When the person mentions secrets in a project without one, suggest one; never write it yourself without asking.`
+
+/** The `check` field: Hydra runs it and retries, so the Lead does not stack its own retries on top. */
+export const CHECK_RULE = `- Give a Head a \`check\` (a shell command, scoped to what it changes: one test class, one module's build) whenever there is something to run. Hydra runs it in \`cwd\` once the Head finishes and sends a failing Head back with the output, one effort level up, at most twice. The report's \`check:\` line is Hydra's verdict: ✓ passed, ✗ FAILED (the fix rounds are already spent: rewrite the brief or move up a level or engine, never just resend it) or ? UNKNOWN (the check could not judge the code: run it yourself). A pass is evidence, not a review: still read the diff, and when the report says the check ran code the Head changed (tests, build files), read those changes first. Heads sharing a \`cwd\` see each other's edits, so give a check only to a Head whose result does not depend on another Head still running there.`
+
 const envRule = (engine: Engine) =>
   engine === 'agy'
     ? `- \`.env\` files that exist under \`cwd\`, a \`writeDirs\` or an \`addDirs\` folder when the Head starts are unreadable to it, shell included. One created later is not covered, and other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable: do not point a Head at a project where that matters.`
     : engine === 'codex'
-    ? `- \`.env\` files anywhere under \`cwd\`, a \`writeDirs\` or an \`addDirs\` folder are unreadable to a Head, shell included (the sandbox refuses the read, so \`grep -r\` skips them too). Other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable: do not point a Head at a project where that matters.`
+    ? `- \`.env\` files anywhere under \`cwd\`, a \`writeDirs\` or an \`addDirs\` folder are unreadable to a Head, shell included (the sandbox refuses the read, so \`grep -r\` skips them too). Other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable unless the project's \`.hydraignore\` names them.`
     : engine === 'opencode'
-    ? `- \`.env\` and \`.env.*\` files (at any depth, in any letter case) are denied to an OpenCode Head's read and edit tools by name, and it has no search tool or shell to reach them another way. A symlink to one is denied when the Head starts; one made later is not. Other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable: do not point a Head at a project where that matters.`
+    ? `- \`.env\` and \`.env.*\` files (at any depth, in any letter case) are denied to an OpenCode Head's read and edit tools by name, and it has no search tool or shell to reach them another way. A symlink to one is denied when the Head starts; one made later is not. Other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable unless the project's \`.hydraignore\` names them.`
     : engine === 'codebuddy' || engine === 'workbuddy'
     ? `- \`.env\` files are denied to a Head's read, edit and search tools. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
     : `- If the project or an \`addDirs\` folder holds a \`.env\` file, Heads have no search tool: name the exact files in the task. A Head with \`shell: true\` can still read \`.env\` through a command that does not name it (\`grep -r\`), so avoid shell in projects with real secrets.`
@@ -117,11 +123,13 @@ ${autoEffortRule(effort)}
 - How each engine locks a Head down (builds and tests are yours):
 ${pool.map(engine => `  - ${ENGINE_LABEL[engine]}: ${LOCKDOWN_BRIEF[engine]}`).join('\n')}
 - A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
-- About secrets: \`.env\` files are kept from Heads, but other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable, and on ${pool.filter(engine => engine === 'codebuddy' || engine === 'workbuddy' || engine === 'commandcode').map(engine => ENGINE_LABEL[engine]).join(' and ') || 'some engines'} a Head with \`shell: true\` can still read a \`.env\` through a command that does not name it. Avoid shell, and keep Heads out of projects where that matters.
+- About secrets: \`.env\` files are kept from Heads, but other project secrets (\`local.properties\`, keystores, \`google-services.json\`) are readable unless \`.hydraignore\` names them, and on ${pool.filter(engine => engine === 'codebuddy' || engine === 'workbuddy' || engine === 'commandcode').map(engine => ENGINE_LABEL[engine]).join(' and ') || 'some engines'} a Head with \`shell: true\` can still read a \`.env\` through a command that does not name it. Avoid shell, and keep Heads out of projects where that matters.
+${IGNORE_RULE}
 - Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Dependent tasks run in sequence; independent ones in parallel.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the engine, the files the Head edited and every call that was denied.
+${CHECK_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 - A report starting with "all accounts of <engine> are at their usage limit" means that engine cannot take the task now: route it to another engine in the pool.
 - End with what each Head did (and on which engine), what you verified, and the Heads' total cost.`
@@ -134,10 +142,12 @@ ${effortRule(effort, headModel, engine)}
 ${lockdownRules(engine)}
 - A Head writes only inside \`cwd\`; a write anywhere else, a symlink pointing out of the project included, is denied. When the task must change a folder outside it (a symlinked package's real location, a sibling repo), pass that folder in \`writeDirs\`, and only that folder.
 ${envRule(engine)}
+${IGNORE_RULE}
 - Give every Head a short \`name\` that says what it works on (\`prefs-utils\`, \`login-tests\`): you and the person track, stop and discuss Heads by that name. Without one, Hydra makes one from the task.
 - Independent tasks on disjoint files go out as parallel ${HEAD_TOOL} calls with \`background: true\`: each returns at once and its report arrives later as a message from the hydra plugin. Dependent tasks run in sequence.
 - Keep the judgement-heavy part yourself: architecture, tricky bugs, anything under ~20 lines.
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the files the Head edited and every call that was denied.
+${CHECK_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 - End with what each Head did, what you verified, and the Heads' total cost.`
 
@@ -217,6 +227,13 @@ export const CONSENT_QUESTION = (headModel: string, engine: Engine = DEFAULT_ENG
     : `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through Command Code, and Heads edit this project unattended (Command Code's --yolo, locked down by Hydra: nothing outside the project, no .git or .env, no shell unless Claude asks). Turn Hydra on?`
 
 export const CONSENT_YES = 'Turn Hydra on'
+
+export const CHECK_CONSENT_QUESTION = (check: string) =>
+  `Claude asked Hydra to run an acceptance check after a Head finishes: \`${check.slice(0, 200)}\`. Hydra runs it in the project as you, outside the Head's lockdown and without asking again, and that runs code the Head may have just written (tests, build scripts). On a failure the Head is sent back with the check's last output, which goes to its model. Let Hydra run checks like this from now on?`
+
+export const CHECK_CONSENT_YES = 'Run checks'
+
+export const NO_CHECK_CONSENT = 'The person has not agreed to let Hydra run checks. Run the Head without `check` and run the build or tests yourself.'
 
 export const NO_CONSENT = 'The person has not agreed to send code to this engine. They turn it on with /hydra engine=<name> (or engines=…), which asks them.'
 

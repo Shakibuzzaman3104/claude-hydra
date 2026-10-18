@@ -360,6 +360,9 @@ export const outsideFiles = (cwd: string, files: readonly string[], writeDirs: r
 /** How the person resumes a Head's session by hand: `opencode run -s <id>` for OpenCode, `<cli> --resume <id>` for the rest. */
 export const resumeCommand = (engine: Engine) => (engine === 'opencode' ? 'opencode run -s' : `${ENGINE_BIN[engine]} --resume`)
 
+/** Whether a path is a `.hydraignore` file, in any letter case: a Head that changed one changes what the next Head is kept from. */
+export const isIgnoreFile = (path: string) => /(^|\/)\.hydraignore$/i.test(path)
+
 export const formatReport = (head: {
   id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
@@ -374,6 +377,8 @@ export const formatReport = (head: {
   if (head.writeDirs && head.writeDirs.length > 0) lines.push(`may also write: ${head.writeDirs.join(', ')}`)
   const outside = outsideFiles(head.cwd, head.files, head.writeDirs)
   if (outside.length > 0) lines.push(`⚠ WROTE OUTSIDE THE PROJECT (${outside.length}): ${outside.join(', ')}`)
+  const ignoreEdits = head.files.filter(isIgnoreFile)
+  if (ignoreEdits.length > 0) lines.push(`⚠ CHANGED .hydraignore (${ignoreEdits.map(file => relativeTo(head.cwd, file)).join(', ')}): check it before the next Head runs`)
   lines.push(head.files.length > 0 ? `edited (${head.files.length}): ${head.files.map(file => relativeTo(head.cwd, file)).join(', ')}` : 'edited: nothing')
   if (head.denied.length > 0) {
     lines.push(`denied (${head.denied.length}):`, ...head.denied.map(d => `  - ${d.tool} ${relativeTo(head.cwd, d.target)}: ${d.text.slice(0, 140)}`))
@@ -401,6 +406,8 @@ export const reportNotice = (text: string) => {
   const parts = [
     isFinished ? '✓ finished' : '✗ did not finish', edited ? `${edited} file${edited === '1' ? '' : 's'} edited` : 'no edits',
     denied ? `${denied} denied` : '', /WROTE OUTSIDE THE PROJECT/.test(summary) ? '⚠ wrote outside the project' : '',
+    /^⚠ CHANGED \.hydraignore/m.test(summary) ? '⚠ changed .hydraignore' : '',
+    /^check: .* ✓ passed/m.test(summary) ? '✓ check passed' : /^check: .* ✗ FAILED/m.test(summary) ? '✗ check failed' : /^check: .* \? UNKNOWN/m.test(summary) ? '? check could not run' : '',
   ]
   return `🐉 Head ${name} · ${parts.filter(Boolean).join(' · ')} · report sent to Claude (/heads for detail)`
 }

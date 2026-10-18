@@ -12,6 +12,8 @@ import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { homeOf, runScript } from '../lib/platform'
+import { baseName } from '../lib/protect'
+import type { Guarded } from '../lib/protect'
 import { readMode } from '../lib/state'
 
 const RULES_FILE = '.commandcode/settings.local.json'
@@ -43,7 +45,7 @@ async function sessionReport($: EngineInterface, sessionId: string): Promise<Ses
  * Shell rules match `.env` only as a path (after a space, `/` or `=`), so `process.env` still runs.
  */
 export const PROJECT_DENY = [
-  'Edit(/.git/**)', 'Edit(/.commandcode/**)',
+  'Edit(/.git/**)', 'Edit(/.commandcode/**)', 'Edit(.hydraignore)', 'Shell(* .hydraignore*)', 'Shell(*/.hydraignore*)', 'Shell(*=.hydraignore*)',
   'Read(.env)', 'Read(.env.*)', 'Edit(.env)', 'Edit(.env.*)', 'Shell(* .env*)', 'Shell(*/.env*)', 'Shell(*=.env*)',
 ]
 
@@ -66,7 +68,7 @@ export const writeDirsOf = (heads: readonly HeadNeeds[]) => heads.reduce<string[
 
 /** What stays protected inside a folder a Head may write to: its history, its Command Code settings and its secrets. */
 export const writeDirDeny = (dir: string) => [
-  `Edit(/${dir}/.git/**)`, `Edit(/${dir}/.commandcode/**)`,
+  `Edit(/${dir}/.git/**)`, `Edit(/${dir}/.commandcode/**)`, `Edit(/${dir}/**/.hydraignore)`,
   `Edit(/${dir}/**/.env)`, `Edit(/${dir}/**/.env.*)`, `Read(/${dir}/**/.env)`, `Read(/${dir}/**/.env.*)`,
 ]
 
@@ -85,15 +87,25 @@ export const secretReadDeny = (home: string) => {
   ])
 }
 
+/** The paths `.hydraignore` names, kept from every tool as `.env` files are: read, edit, and shell lines that name them. */
+export const guardedDeny = (paths: readonly string[]) => [
+  ...paths.flatMap(path => [`Read(/${path})`, `Read(/${path}/**)`, `Edit(/${path})`, `Edit(/${path}/**)`]),
+  ...[...new Set(paths.map(baseName))].flatMap(name => [`Shell(* ${name}*)`, `Shell(*/${name}*)`, `Shell(*=${name}*)`]),
+]
+
+/** Every running Head's `.hydraignore` matches. */
+export const guardedOf = (heads: readonly HeadNeeds[]) => heads.reduce<string[]>((paths, head) => union(paths, head.guarded?.paths ?? []), [])
+
 export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string, home = ''): HeadSettings => {
   const shell = heads.some(head => head.shell)
   const writeDirs = writeDirsOf(heads)
+  const guarded = guardedOf(heads)
   return {
     managedBy: OWNER,
     permissions: {
       deny: [
-        ...outsideDeny, ...PROJECT_DENY, ...writeDirs.flatMap(writeDirDeny), ...secretReadDeny(home),
-        ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile ? [SEARCH_DENY] : []),
+        ...outsideDeny, ...PROJECT_DENY, ...writeDirs.flatMap(writeDirDeny), ...secretReadDeny(home), ...guardedDeny(guarded),
+        ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile || guarded.length > 0 ? [SEARCH_DENY] : []),
       ],
       additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, [...head.addDirs, ...(head.writeDirs ?? [])]), []),
     },
@@ -190,7 +202,7 @@ export async function writeRules($: EngineInterface, cwd: string): Promise<strin
     return undefined
   }
   const writeDirs = writeDirsOf(heads)
-  const envFile = await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []), ...writeDirs])
+  const envFile = (await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []), ...writeDirs])) ?? guardedOf(heads)[0]
   if (envFile) searchOff.set(cwd, envFile)
   else searchOff.delete(cwd)
   const outsideDeny = await outsideDenyRules($, [cwd, ...writeDirs])
@@ -284,13 +296,13 @@ async function runRoundAt(
 /** A Head on Command Code: the project's shared rules file, then rounds until it reports HEAD DONE. */
 export async function runCommandCodeHead(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; guarded?: Guarded },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort } = head
-  const refusal = await joinProject($, cwd, id, { addDirs, writeDirs, shell }, minutes)
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, guarded } = head
+  const refusal = await joinProject($, cwd, id, { addDirs, writeDirs, shell, guarded }, minutes)
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)

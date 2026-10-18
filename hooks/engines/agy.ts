@@ -13,8 +13,11 @@ import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, is
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { NO_GUARD } from '../lib/protect'
+import type { Guarded } from '../lib/protect'
 import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
+import { caseVariants } from './opencode'
 
 /** Antigravity's tool names as the names Command Code's stream uses, so one live view reads every engine. */
 const AGY_TOOLS: Record<string, string> = {
@@ -125,21 +128,83 @@ export const agyTempDeny = (roots: readonly string[], existing: readonly string[
 
 export const AGY_TEMP_DIRS = ['/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp']
 
-export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: readonly string[] = [], tempDirs: readonly string[] = []) => {
+/** More deny rules than this and an Antigravity Head is refused: every letter-case spelling of a long name would bloat its rules. */
+export const AGY_RULE_CAP = 4096
+
+/**
+ * Every spelling of `path` that reaches it on a disk that ignores letter case: the part below the root that holds it in any
+ * case, the root as written (any other spelling of the root is outside the workspace, which a headless Head is refused).
+ */
+export const agySpellings = (path: string, roots: readonly string[], caseless: boolean) => {
+  const isDir = path.endsWith('/')
+  const bare = trimSlash(path)
+  const root = caseless ? roots.filter(dir => bare !== dir && isWithin(bare, dir)).sort((a, b) => b.length - a.length)[0] : undefined
+  const spellings = root ? caseVariants(bare.slice(root.length + 1)).map(rest => `${root}/${rest}`) : [bare]
+  return spellings.map(spelling => (isDir ? `${spelling}/` : spelling))
+}
+
+/**
+ * The permission settings one Antigravity Head runs with: it writes only under the project and the folders it may write to
+ * (`.git` denied), reads outside them only the `addDirs`, reads none of `envFiles` or the paths `.hydraignore` names (whose
+ * `.hydraignore` stays read-only), reads no credential folder, and has a shell (inside the terminal sandbox, minus the dangerous
+ * commands) only when asked. `tempDirs` are system temp folders the sandbox would leave writable. Rules name paths (a glob or a
+ * regex makes the sandbox refuse every command) and match one spelling, so on a `caseless` disk each path inside a root is denied
+ * in every letter case. A refused call ends the Head's turn.
+ */
+export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: readonly string[] = [], tempDirs: readonly string[] = [], caseless = false) => {
   const own = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
   const extra = union(head.addDirs.map(trimSlash), (head.writeDirs ?? []).map(trimSlash))
+  const roots = union(own, extra)
+  const rules = (action: string, path: string) => agySpellings(path, roots, caseless).map(spelling => `${action}(${spelling})`)
+  const guarded = head.guarded ?? NO_GUARD
   return {
     permissions: {
       allow: [...own.map(root => `write_file(${root}/)`), ...extra.map(dir => `read_file(${dir}/)`), ...(head.shell ? ['command(*)'] : [])],
       deny: [
-        ...own.map(root => `write_file(${root}/.git/)`),
+        ...own.flatMap(root => rules('write_file', `${root}/.git/`)),
         ...tempDirs.map(dir => `write_file(${dir}/)`),
-        ...envFiles.map(file => `read_file(${file})`),
+        ...envFiles.flatMap(file => rules('read_file', file)),
+        ...guarded.paths.flatMap(path => {
+          const target = guarded.folders.includes(path) ? `${path}/` : path
+          return [...rules('read_file', target), ...rules('write_file', target)]
+        }),
+        ...guarded.ignoreFiles.flatMap(file => rules('write_file', file)),
         ...(home ? AGY_SECRET_DIRS.map(dir => `read_file(${home.replace(/\/$/, '')}/${dir})`) : []),
         ...(head.shell ? AGY_SHELL_DENY : []),
       ],
     },
   }
+}
+
+/** Whether the disk under `cwd` ignores letter case: the path in swapped case leads to it too. A path without letters, or a failed check, counts as yes. */
+async function isCaseless($: EngineInterface, cwd: string) {
+  const swapped = [...cwd].map(char => (char === char.toLowerCase() ? char.toUpperCase() : char.toLowerCase())).join('')
+  return swapped === cwd || (await $.fs.exists(swapped).catch(() => true))
+}
+
+/** A grant that holds a credential folder: on a disk that ignores case, a rule naming `~/.ssh` misses `~/.SSH` inside the grant. */
+export const agyGrantRefusal = (grants: readonly string[], home: string) => {
+  const base = trimSlash(home)
+  if (!base) return undefined
+  for (const grant of grants) {
+    const secret = SECRET_PATHS.find(path => isWithin(`${base}/${path}`, trimSlash(grant)))
+    if (secret) return `addDirs/writeDirs: ${grant} holds ${base}/${secret}, and on this disk (which ignores letter case) Antigravity's rules cannot deny it in every spelling. Grant a narrower folder.`
+  }
+  return undefined
+}
+
+export const tooManySpellings = (count: number) =>
+  `This disk ignores letter case, so Hydra denies each protected path in every spelling for Antigravity, and this Head would need ${count} rules (over ${AGY_RULE_CAP}): a long name in .hydraignore (local.properties alone has 32,768 spellings) or many .env files. Use another engine here (Codex, Command Code or CodeBuddy).`
+
+/** Why an Antigravity Head may not start here, if it may not: only on a disk that ignores letter case. */
+export async function agyCaseRefusal($: EngineInterface, cwd: string, needs: HeadNeeds) {
+  if (!(await isCaseless($, cwd))) return undefined
+  const home = await homeOf($)
+  const grant = agyGrantRefusal(union(needs.addDirs, needs.writeDirs ?? []), home)
+  if (grant) return grant
+  const envFiles = await findEnvFiles($, union([cwd, ...(needs.writeDirs ?? [])], needs.addDirs))
+  const count = agySettings(cwd, needs, home, envFiles, [], true).permissions.deny.length
+  return count > AGY_RULE_CAP ? tooManySpellings(count) : undefined
 }
 
 /**
@@ -232,7 +297,8 @@ async function writeAgySettings($: EngineInterface, dir: string, cwd: string, ne
   const envFiles = await findEnvFiles($, union(roots, needs.addDirs))
   const present: string[] = []
   for (const temp of AGY_TEMP_DIRS) if (await $.fs.exists(temp).catch(() => false)) present.push(temp)
-  await $.fs.write(`${dir}/.gemini/antigravity-cli/settings.json`, JSON.stringify(agySettings(cwd, needs, real, envFiles, agyTempDeny(roots, present)), null, 2) + '\n')
+  const settings = agySettings(cwd, needs, real, envFiles, agyTempDeny(roots, present), await isCaseless($, cwd))
+  await $.fs.write(`${dir}/.gemini/antigravity-cli/settings.json`, JSON.stringify(settings, null, 2) + '\n')
 }
 
 /** Removes a Head's `HOME` folder; refuses any path that is not one of Hydra's own. */
@@ -255,7 +321,7 @@ export async function sweepAgyHomes($: EngineInterface) {
   }
 }
 
-type AgyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; /** An extra account's folder: the sign-in token is copied from there instead of the person's own home. */ tokenDir?: string }
+type AgyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; /** An extra account's folder: the sign-in token is copied from there instead of the person's own home. */ tokenDir?: string; guarded?: Guarded }
 
 /** A Head on Antigravity: its own HOME with permission rules, then rounds until it reports HEAD DONE. */
 export async function runAgyHead($: EngineInterface, head: AgyHead, outer: AbortSignal, limits: HeadLimits, id: string) {
@@ -264,7 +330,7 @@ export async function runAgyHead($: EngineInterface, head: AgyHead, outer: Abort
   const refusal =
     /^[A-Za-z]:|^\\\\|\\/.test(cwd)
       ? `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.`
-      : await writeAgyHome($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell }, head.tokenDir).then(
+      : (await agyCaseRefusal($, cwd, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell, guarded: head.guarded })) ?? await writeAgyHome($, cwd, id, { addDirs: head.addDirs, writeDirs: head.writeDirs, shell: head.shell, guarded: head.guarded }, head.tokenDir).then(
           dir => {
             home = dir
             return undefined
@@ -312,7 +378,7 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    await writeAgySettings($, home, cwd, { addDirs, writeDirs: head.writeDirs, shell: head.shell }).catch(() => undefined)
+    await writeAgySettings($, home, cwd, { addDirs, writeDirs: head.writeDirs, shell: head.shell, guarded: head.guarded }).catch(() => undefined)
     const ran = await runRoundAgy($, { ...round, model, effort, cwd, addDirs, home, state }, signal, onEvent)
     return { ...ran, effort }
   }

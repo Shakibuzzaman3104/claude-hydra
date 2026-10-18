@@ -10,7 +10,7 @@ import type { Engine } from './engines'
 import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
-import { AUTO_CONSENT_QUESTION, CONSENT_QUESTION, CONSENT_YES } from './policy'
+import { AUTO_CONSENT_QUESTION, CHECK_CONSENT_QUESTION, CHECK_CONSENT_YES, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, secretDirRefusal, union } from './safety'
 import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
 import { readHeads, readMode, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
@@ -150,6 +150,17 @@ export async function readyEngines($: EngineInterface, wanted: readonly Engine[]
     } else skipped.push({ engine, problem: check.problems[0]! })
   }
   return { pool, skipped, warnings }
+}
+
+const CHECK_CONSENT_KEY = 'consent-check-v1'
+
+/** Asks once, the first time Claude gives a Head a `check`: Hydra then runs code on the person's machine without the Bash prompt. */
+export async function hasCheckConsent($: EngineInterface, check: string) {
+  if ((await $.store.get(CHECK_CONSENT_KEY)) === true) return true
+  const answer = await $.ui.ask(CHECK_CONSENT_QUESTION(check), { options: [CHECK_CONSENT_YES, 'Not now'], header: 'Hydra' }).catch(() => undefined)
+  if (answer !== CHECK_CONSENT_YES) return false
+  await $.store.set(CHECK_CONSENT_KEY, true)
+  return true
 }
 
 /** Asks once, the first time Hydra turns on; the answer is kept across sessions. */

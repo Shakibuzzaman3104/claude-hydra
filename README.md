@@ -92,15 +92,46 @@ A Head runs its CLI unattended. On Command Code that is `--yolo` (its headless m
 - it can read folders outside the project only when Claude passes them in `addDirs`. System folders and, on Codex, the toolchain folders in your home (git config, nvm, cargo, gradle…) stay readable so builds and tests run; add more with the `headReadDirs` option;
 - it never reads your credentials: SSH and GPG keys, git credential stores, cloud and registry logins, keychains and the agent CLIs' own sign-ins are denied on every engine, even inside a folder Claude grants;
 - it has no shell unless Claude asks for one. Even then, destructive git, `rm -r`/`-f`, `sudo`, network tools, builds and installs are denied;
-- every report lists the files the Head edited and every call that was denied. A write outside the project is flagged at the top.
+- it never reads what your project's `.hydraignore` names (see below). It can't edit, delete or rename a `.hydraignore` either, and a report flags any `.hydraignore` that changed or went missing during the run;
+- every report lists the files the Head edited and every call that was denied. A write outside the project is flagged at the top;
+- when Claude gives it a `check`, Hydra runs that command **as you, outside the Head's lockdown**, after the Head finishes (see below). That runs code the Head may have just written, so Hydra asks you once before the first check, and the report flags a check that ran test or build files the Head changed.
 
 **OpenCode Heads (beta) are locked down by OpenCode's own permission rules only, so their lockdown is weaker.** Hydra writes a per-Head OpenCode config (kept outside the project) that denies everything by default and allows reading the project (never `.env` files or your credential folders), editing inside it (never `.git`, `.env`, `.opencode/`, `opencode.json`, `.claude/` or `.codebuddy/`), `glob` and a todo list; `external_directory` closes everything outside the project except `writeDirs` and `addDirs`. OpenCode's rules are case-sensitive and a macOS disk is not, so `.git` and `.env` are denied in every letter case (`.GIT`, `.Env.local`…). Verified live against OpenCode v2.0.18 with 18 probes (see the changelog). What is different:
 - there is no OS sandbox and no write guard (OpenCode has no hook to run one): the rules are all there is;
 - an OpenCode Head **never** has a shell, even when Claude asks for one, because OpenCode does not check a shell command's paths. It has no search tool either (OpenCode's grep reads `.env` files), and no web, subagents or code tool, so Claude names the exact files in the task;
 - it runs only with `cwd` at a repository's root. Hydra refuses it in a monorepo subfolder (OpenCode would let it reach the whole repository), and refuses an `addDirs`/`writeDirs` folder that holds a credential folder (such as your home folder);
 - every symlink in the project and the granted folders is listed when the Head starts. One that leads out, or around a deny (`a -> .`, a link to `.git` or `.env`), is denied by its own path, in any letter case. If the links can't be listed, or more than 100 need denying, the Head is refused. A link created later (no OpenCode Head can make one) is not covered;
-- not covered: hard links (pnpm's store links files into `node_modules`, so editing one edits the store copy), project files that run code later (`.envrc`, `package.json` scripts, `.vscode/tasks.json`), and other project secrets (`local.properties`, keystores);
+- not covered: hard links (pnpm's store links files into `node_modules`, so editing one edits the store copy), project files that run code later (`.envrc`, `package.json` scripts, `.vscode/tasks.json`), and project secrets that `.hydraignore` does not name;
 - its own config folder (`~/.config/opencode`, which can hold API keys) is replaced by an empty one per Head, so providers defined only there are not available to Heads; sign providers in with `opencode auth login` instead.
+
+### Keeping more files from Heads: `.hydraignore`
+`.env` files are kept from Heads everywhere. For other secrets (`local.properties`, keystores, `google-services.json`, a `secrets/` folder), put a `.hydraignore` at the root of the project, in gitignore syntax:
+
+```
+local.properties
+app/google-services.json
+*.jks
+secrets/
+```
+
+When a Head starts, Hydra asks git which paths it matches (tracked or not, patterns anchored at the file's folder, so a monorepo subfolder works) and denies each one as it denies `.env`: no reads, edits or search, and shell lines that name it are refused. It works the same in an `addDirs` or `writeDirs` folder with its own `.hydraignore`. A Head may read `.hydraignore` but not change it: edits, and shell lines that name it, are denied, and every run ends by comparing each `.hydraignore` with how it started, flagging one that was removed or changed (`⚠ .hydraignore REMOVED OR CHANGED`). Hydra never treats an unreadable list as empty: the Head is refused when the folder is not in a git repository, git fails or times out, or the file matches more than 200 paths (name the folder instead of the files in it). Files that start matching mid-run are covered from the next Head on.
+
+Per engine (verified live on macOS, a case-insensitive disk; see the changelog):
+- **Codex, Command Code, OpenCode:** reads are refused in any letter case (`LOCAL.PROPERTIES`), and so are `grep -r` (Codex's sandbox) or the search tool (removed on the others);
+- **CodeBuddy and WorkBuddy:** reads are refused in any case. Their search tool walks into files the read rules deny, so it is removed while a match is in reach (Claude names exact files in the task);
+- **Antigravity:** its rules name one exact spelling, so on a disk that ignores case Hydra writes a rule for every spelling of each protected path below the project (`.Env`, `SECRETS/KEY.TXT`…). That caps out at 4,096 rules: a long name (`local.properties` alone has 32,768 spellings) refuses the Antigravity Head, and in auto mode Claude routes the task to another engine. Short names (`secrets/`, `*.jks` matches like `a.jks`) fit.
+
+### Acceptance checks
+Claude can give a Head a `check`, a shell command such as `./gradlew testDebugUnitTest --tests LoginViewModelTest`. When the Head finishes, Hydra runs it in the project:
+- **passed:** the report says `check: … ✓ passed`. Claude still reads the diff;
+- **failed:** the Head is sent back with the check's last 60 lines of output, one effort level up (unless you fixed the level), at most twice. The report shows every try (`3 tries: ✗ ✗ ✓`) and, if it never passed, `✗ FAILED` with the output;
+- **could not run** (not found, no start, over its time limit): the report says `? UNKNOWN` and the Head is not retried. A Head that did not finish is never checked.
+
+What to know:
+- the check runs as you, with your environment, outside every Head's lockdown, and Claude Code's Bash prompt is not involved. Hydra asks once (`Run checks`) before the first one. It runs code the Head may have written (tests, build scripts), so the report adds `⚠ the check ran code this Head changed (…)` when the Head edited test or build files or a file the check names;
+- on a failure the check's output goes to the Head's model with the task. A test suite that prints secrets would send them;
+- one run of a check is limited to 10 minutes (`checkMinutes`, at most 10), and fix rounds come out of the Head's own `maxMinutes`. Stopping a Head while its check runs takes effect when the check ends;
+- Heads sharing a project see each other's edits, so Claude gives checks only to Heads whose result does not depend on another running Head.
 
 **Your code leaves your machine.** Each Head's task, and every file it reads, goes to the Head model through Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode. Leave Hydra off in projects whose code must not leave your machine. A Head with shell access can still read a `.env` file through a command that doesn't name it (`grep -r KEY .`), so Claude avoids giving Heads a shell in projects with real secrets.
 

@@ -11,6 +11,7 @@ import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, is
 import type { Round, RoundArgs } from '../lib/runtime'
 import { SECRET_PATHS, homeReadDirs, homeRelative, isSecretPath, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import type { Guarded } from '../lib/protect'
 import { homeOf } from '../lib/platform'
 import { readMode } from '../lib/state'
 
@@ -133,6 +134,9 @@ export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRea
     ...readable.map((dir): [string, string] => [dir, 'read']),
     ...writable.map((dir): [string, string] => [dir, 'write']),
     ...roots.flatMap((dir): [string, string][] => [[`${dir}/**/.env`, 'none'], [`${dir}/**/.env.*`, 'none']]),
+    // Codex takes only `none` on a glob, so each `.hydraignore` is made read-only by its exact path.
+    ...(head.guarded?.ignoreFiles ?? []).filter(file => writable.some(root => isWithin(file, root))).map((file): [string, string] => [file, 'read']),
+    ...(head.guarded?.paths ?? []).filter(path => roots.some(root => isWithin(path, root))).map((path): [string, string] => [path, 'none']),
     ...(homeDir ? SECRET_PATHS.map((dir): [string, string] => [`${homeDir}/${dir}`, 'none']) : []),
   ]
   // Codex refuses a profile that names a path twice; where two entries meet, the stricter access stands.
@@ -193,7 +197,7 @@ async function runRoundCodex(
   }
 }
 
-type CodexHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; effort?: string; env?: Record<string, string> }
+type CodexHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; effort?: string; env?: Record<string, string>; guarded?: Guarded }
 
 /** Empty folders Codex's sandbox leaves in a writable root as mount points for the paths it protects. */
 const CODEX_MOUNT_POINTS = ['.agents', '.aws', '.codex']
@@ -254,7 +258,7 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
   const repoDirs = await gitReadDirs($, realCwd!, realHome)
-  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true }, realHome, homeRead)
+  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead)
   return runCodexRounds($, head, filesystem, outer, limits, id)
 }
 

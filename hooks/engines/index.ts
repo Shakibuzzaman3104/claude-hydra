@@ -10,11 +10,14 @@ import type { Account } from '../lib/accounts'
 import { isHeadEffort } from '../lib/effort'
 import { AGY_MODEL, DEFAULT_ENGINE, modelFor, workbuddyEnv } from '../lib/engines'
 import type { Engine } from '../lib/engines'
+import { checkHead, checkMinutesOf, runCheck, withSummary } from '../lib/check'
 import { addTokens, formatReport, strings } from '../lib/format'
 import type { HeadLimits } from '../lib/format'
 import { DEFAULT_MINUTES, gate, notStarted, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
 import type { HeadResult } from '../lib/runtime'
 import { homeOf } from '../lib/platform'
+import { guardedPaths, ignoreChangedLine, ignoreChanges, snapshotIgnoreFiles } from '../lib/protect'
+import type { Guarded } from '../lib/protect'
 import { homeHeadRefusal, secretDirRefusal, union } from '../lib/safety'
 import { readRuns, updateRuns, updateTick } from '../lib/state'
 import { runAgyHead } from './agy'
@@ -36,6 +39,8 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
   const shell = input.shell === true || strings(input.allowShell).length > 0
   const minutes = Number(input.maxMinutes ?? DEFAULT_MINUTES)
   const effort = isHeadEffort(input.effort) ? input.effort : undefined
+  const check = typeof input.check === 'string' ? input.check.trim() : ''
+  const checkMinutes = checkMinutesOf(input.checkMinutes)
 
   const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot', cwd, engine }
   await updateRuns($, list => [...list, queued].slice(-RUN_HISTORY))
@@ -54,7 +59,7 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
   await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
   await updateTick($, () => startedAt)
   try {
-    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine }, signal, limits, id)
+    return await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes }, signal, limits, id)
   } finally {
     gate.leave()
   }
@@ -67,12 +72,12 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
  */
 async function runHeadInside(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; check: string; checkMinutes: number },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine } = head
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes } = head
   const home = await homeOf($)
   const [realCwd, realHome] = await realPaths($, home ? [cwd, home] : [cwd])
   const granted = await realPaths($, union(addDirs, writeDirs))
@@ -82,28 +87,82 @@ async function runHeadInside(
     await refreshStatus($, limits)
     return notStarted(id, model, cwd, `${refusal} A Head never runs where Hydra's rules cannot keep it inside a project.`, engine)
   }
+  const given = union([cwd, ...writeDirs], addDirs)
+  const reals = await realPaths($, given)
+  const guarded = await guardedPaths($, given.map((path, index) => ({ path, real: reals[index] })))
+  if ('refusal' in guarded) {
+    await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: guarded.refusal })
+    await refreshStatus($, limits)
+    return notStarted(id, model, cwd, guarded.refusal, engine)
+  }
+  const spec = { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded }
   const accounts = await accountsOf($, engine)
   // One account (the usual case, and every engine without account support): run as before, nothing recorded.
-  if (accounts.length <= 1) return startHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine }, undefined, outer, limits, id)
-  return runOnAccounts($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine }, accounts, outer, limits, id)
+  const run = (head: HeadSpec) => (accounts.length <= 1 ? startHead($, head, undefined, outer, limits, id) : runOnAccounts($, head, accounts, outer, limits, id))
+  // Not every engine can stop a delete or a new spelling, so every run ends by comparing each `.hydraignore` with how it started.
+  const before = await snapshotIgnoreFiles($, guarded.ignoreFiles)
+  const result = check ? await runChecked($, spec, check, checkMinutes, run, outer, limits, id) : await run(spec)
+  const changed = ignoreChanges(before, await snapshotIgnoreFiles($, guarded.ignoreFiles))
+  return changed.length > 0 ? { ...result, text: withSummary(result.text, [ignoreChangedLine(changed)]) } : result
 }
 
-type HeadSpec = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine }
+/** A Head with an acceptance check (`checkHead` in lib/check.ts), wired to the engine, the run record and the views. */
+async function runChecked(
+  $: EngineInterface,
+  spec: HeadSpec,
+  check: string,
+  checkMinutes: number,
+  run: (head: HeadSpec) => Promise<HeadResult>,
+  outer: AbortSignal,
+  limits: HeadLimits,
+  id: string,
+): Promise<HeadResult> {
+  // Each fix round reports its own tokens; the Head used all of them.
+  let spent: string | undefined
+  const tokensNow = async () => (await readRuns($)).find(entry => entry.id === id)?.tokens
+  const { result, outcome } = await checkHead<HeadResult>({
+    check,
+    cwd: spec.cwd,
+    minutes: spec.minutes,
+    effort: spec.effort,
+    run: async change => {
+      if (!change) return run(spec)
+      spent = addTokens(spent, await tokensNow())
+      const ran = await run({ ...spec, task: spec.task + change.note, effort: change.effort, minutes: change.minutes })
+      await setRun($, id, { tokens: addTokens(spent, await tokensNow()) })
+      return ran
+    },
+    runCheck: () => runCheck($, check, spec.cwd, checkMinutes),
+    now: () => $.clock.now(),
+    isAborted: () => outer.aborted,
+    onStep: async activity => {
+      await setRun($, id, { state: 'running', endedAt: undefined, activity: activity.slice(0, 80) })
+      await refreshStatus($, limits)
+    },
+  })
+  if (outcome) {
+    await setRun($, id, { state: outcome.kind === 'failed' ? 'failed' : 'done', endedAt: await $.clock.now(), activity: outcome.kind === 'passed' ? 'check passed' : outcome.kind === 'failed' ? `check failed (exit ${outcome.exitCode})` : 'check could not run' })
+    await refreshStatus($, limits)
+  }
+  return result
+}
+
+type HeadSpec = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; guarded: Guarded }
 
 /** Starts one Head run on `account` (undefined: the CLI's own config): its engine's run function, with the account's env or token folder. */
 async function startHead($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
-  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine } = head
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded } = head
   const env = accountEnv(account)
-  if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, tokenDir: account?.dir }, outer, limits, id)
-  if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort, env }, outer, limits, id)
-  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env }, outer, limits, id)
+  if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, tokenDir: account?.dir, guarded }, outer, limits, id)
+  if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort, env, guarded }, outer, limits, id)
+  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env, guarded }, outer, limits, id)
   if (engine === 'workbuddy') {
     const buddyEnv = { ...workbuddyEnv(await homeOf($)), ...(env ?? {}) }
-    return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env: buddyEnv, engine: 'workbuddy' }, outer, limits, id)
+    return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env: buddyEnv, engine: 'workbuddy', guarded }, outer, limits, id)
   }
   // OpenCode never gets a shell (it does not check a command's paths) and takes no effort level.
-  if (engine === 'opencode') return runOpenCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, env }, outer, limits, id)
-  return runCommandCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort }, outer, limits, id)
+  if (engine === 'opencode') return runOpenCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, env, guarded }, outer, limits, id)
+  return runCommandCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, guarded }, outer, limits, id)
 }
 
 /**

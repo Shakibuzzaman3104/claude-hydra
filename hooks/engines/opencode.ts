@@ -10,6 +10,8 @@ import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, is
 import type { IdleLimits, Round } from '../lib/runtime'
 import { SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
+import { IGNORE_FILE } from '../lib/protect'
+import type { Guarded } from '../lib/protect'
 import { homeOf, runScript } from '../lib/platform'
 import { OPENCODE_NO_PROJECT_CONFIG } from '../lib/checks'
 
@@ -103,6 +105,11 @@ export const OPENCODE_GIT = caseVariants('.git').flatMap(name => [...below(name)
  */
 export const OPENCODE_ENV = caseVariants('.env').flatMap(name => [`*${name}`, `*${name}.*`])
 
+export const CONFIG_TOO_LARGE = `The OpenCode config for this Head would be too large to pass (the project's symlinks and .hydraignore matches each need rules). Name whole folders in .hydraignore instead of the files in them, or use another engine here.`
+
+/** `.hydraignore` at any depth, in any letter case (`anyCase` keeps the list short): a Head may read it but never change what it keeps from the next one. */
+export const OPENCODE_IGNORE = anyCase(IGNORE_FILE).map(spelling => `*${spelling}`)
+
 /**
  * Project files that would run code or change rules after the Head is gone: OpenCode's own project config, and the
  * project settings of Claude Code (the Lead's hooks) and CodeBuddy. A Head never edits them, at any depth. They are
@@ -154,11 +161,13 @@ export const linkDenies = (links: readonly FoundLink[], cwd: string, head: HeadN
   const read = new Set<string>()
   const edit = new Set<string>()
   const holds = (target: string, denied: Iterable<string>) => [...denied].some(path => path !== target && isWithin(path, target))
+  const guarded = (head.guarded?.paths ?? []).map(path => path.toLowerCase())
+  const isGuarded = (target: string) => guarded.some(path => isWithin(target.toLowerCase(), path) || isWithin(path, target.toLowerCase()))
   for (let isChanged = true; isChanged && edit.size <= limit;) {
     isChanged = false
     for (const { path, target } of links) {
       const isAlias = isWithin(path, target)
-      if (!read.has(path) && (isAlias || isEnvPath(target) || !readable.some(root => isWithin(target, root)) || holds(target, read))) {
+      if (!read.has(path) && (isAlias || isEnvPath(target) || isGuarded(target) || !readable.some(root => isWithin(target, root)) || holds(target, read))) {
         read.add(path)
         isChanged = true
       }
@@ -203,16 +212,17 @@ export const opencodeConfig = (cwd: string, head: HeadNeeds, denied: LinkDenies 
   const each = (patterns: readonly string[], rule: Rule) => patterns.map(pattern => [pattern, rule] as const)
   const deny = (paths: readonly string[]) => each(paths.flatMap(path => spellingsOf(path, root, [...writable, ...readOnly])).flatMap(below), 'deny')
   const secrets = home ? SECRET_PATHS.flatMap(path => below(`${trimSlash(home)}/${path}`)) : []
+  const guarded = (head.guarded?.paths ?? []).filter(path => [...writable, ...readOnly].some(dir => isWithin(path, dir)))
   return {
     autoupdate: false,
     share: 'disabled',
     tools: Object.fromEntries(OPENCODE_DENY.map(key => [key, false])),
     permission: {
       '*': 'deny' as Rule,
-      read: rulesOf([['*', 'allow'], ...deny(denied.read), ...each(OPENCODE_ENV, 'deny'), ...each(secrets, 'deny')]),
+      read: rulesOf([['*', 'allow'], ...deny(denied.read), ...deny(guarded), ...each(OPENCODE_ENV, 'deny'), ...each(secrets, 'deny')]),
       edit: rulesOf([
-        ['*', 'allow'], ...deny(readOnly), ...each(writable.slice(1).flatMap(below), 'allow'), ...deny(denied.edit),
-        ...each(OPENCODE_GIT, 'deny'), ...each(OPENCODE_ENV, 'deny'), ...each(OPENCODE_PROTECTED, 'deny'), ...each(secrets, 'deny'),
+        ['*', 'allow'], ...deny(readOnly), ...each(writable.slice(1).flatMap(below), 'allow'), ...deny(denied.edit), ...deny(guarded),
+        ...each(OPENCODE_GIT, 'deny'), ...each(OPENCODE_ENV, 'deny'), ...each(OPENCODE_IGNORE, 'deny'), ...each(OPENCODE_PROTECTED, 'deny'), ...each(secrets, 'deny'),
       ]),
       glob: rulesOf([['*', 'allow'], ...each(secrets, 'deny')]),
       todowrite: 'allow' as Rule,
@@ -451,7 +461,7 @@ async function runRoundOpenCode(
   }
 }
 
-type OpenCodeHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; env?: Record<string, string> }
+type OpenCodeHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; env?: Record<string, string>; guarded?: Guarded }
 
 const HEADS_DIR = '.claude/hydra/heads'
 const PREFIX = 'opencode-'
@@ -499,7 +509,7 @@ async function prepareOpenCode($: EngineInterface, head: OpenCodeHead, id: strin
   const [cwd = head.cwd, realHome = ''] = await realPaths($, home ? [head.cwd, home] : [head.cwd])
   const addDirs = await realPaths($, head.addDirs)
   const writeDirs = await realPaths($, head.writeDirs)
-  const needs = { addDirs, writeDirs, shell: false }
+  const needs = { addDirs, writeDirs, shell: false, guarded: head.guarded }
   const vcs = await vcsRootOf($, cwd)
   if ('failure' in vcs) return { refusal: vcs.failure }
   const refusal = projectRootRefusal(cwd, vcs.root) ?? opencodeGrantRefusal(union(addDirs, writeDirs), realHome)
@@ -509,7 +519,7 @@ async function prepareOpenCode($: EngineInterface, head: OpenCodeHead, id: strin
   const denied = linkDenies(scanned.links, cwd, needs)
   if (denied.edit.length > OPENCODE_LINK_CAP) return { refusal: tooManyLinks(denied.edit.length) }
   const config = JSON.stringify(opencodeConfig(cwd, needs, denied, realHome))
-  if (config.length > OPENCODE_CONFIG_LIMIT) return { refusal: tooManyLinks(denied.edit.length) }
+  if (config.length > OPENCODE_CONFIG_LIMIT) return { refusal: (head.guarded?.paths.length ?? 0) > 0 ? CONFIG_TOO_LARGE : tooManyLinks(denied.edit.length) }
   return { cwd, addDirs, writeDirs, config, ...(await writeOpenCodeFiles($, home, id, config)) }
 }
 
