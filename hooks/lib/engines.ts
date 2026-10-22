@@ -32,11 +32,11 @@ export const agyBaseOf = (model: string): AgyModel | undefined => {
   const base = model.replace(/^google\//i, '').replace(/-(low|medium|high)$/i, '').toLowerCase()
   return Object.hasOwn(AGY_MODELS, base) ? (base as AgyModel) : undefined
 }
-/** The id `agy --model` takes: the base with its level built in (agy refuses `--effort` beside it); a level the model lacks is its middle one. */
+/** The id `agy --model` takes: the base with its level built in (agy refuses `--effort` beside it); no level is `low`, and one the model lacks is its middle one. */
 export const agyModelId = (model: string, effort?: string) => {
   const base = agyBaseOf(model) ?? AGY_MODEL
   const levels: readonly string[] = AGY_MODELS[base].levels
-  const wanted = effort === 'off' ? 'low' : effort === 'xhigh' || effort === 'max' ? 'high' : effort
+  const wanted = !effort || effort === 'off' || effort === 'auto' ? 'low' : effort === 'xhigh' || effort === 'max' ? 'high' : effort
   const level = wanted && levels.includes(wanted) ? wanted : levels.includes('medium') ? 'medium' : levels[0]!
   return `${base}-${level}`
 }

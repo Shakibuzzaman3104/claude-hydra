@@ -843,9 +843,9 @@ test('builds the Antigravity command: stdin closed, own HOME, the model with its
   expect(first).not.toContain('--add-dir')
   expect(first).not.toContain('--conversation')
   expect(agyArgs({ ...base, resume: 'c-1' }).slice(-2)).toEqual(['--conversation', 'c-1'])
-  expect(agyArgs({ ...base, effort: undefined })).toContain('gemini-3.8-flash-medium')
+  expect(agyArgs({ ...base, effort: undefined })).toContain('gemini-3.8-flash-low')
   expect(['off', 'low', 'medium', 'high', 'xhigh', 'max', 'auto', undefined].map(effort => agyModelId('gemini-4-argon', effort))).toEqual(
-    ['low', 'low', 'medium', 'high', 'high', 'high', 'medium', 'medium'].map(level => `gemini-4-argon-${level}`))
+    ['low', 'low', 'medium', 'high', 'high', 'high', 'low', 'low'].map(level => `gemini-4-argon-${level}`))
   expect(agyModelId('gpt-oss-120b', 'high')).toBe('gpt-oss-120b-medium')
   expect(agyModelId('claude-sonnet-5-5-high', 'low')).toBe('claude-sonnet-5-5-low')
   expect(agyModelId('gemini-3.1-pro', 'low')).toBe('gemini-3.8-flash-low')
