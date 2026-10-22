@@ -234,6 +234,27 @@ test('removing an account keeps its folder and forgets its cooldown', async () =
   expect(await removeAccount($, 'codex', 'work')).toHaveProperty('error')
 })
 
+test('keeps Antigravity limits per usage pool: one pool cooling leaves the others free', async () => {
+  const AGY: Account[] = [{ engine: 'agy', name: 'default' }, { engine: 'agy', name: 'work', dir: '/w' }]
+  const claudeOut = { 'agy/default#claude': NOW + 30 * MIN }
+  expect(pickAccount('agy', AGY, claudeOut, NOW, 'fill', {}, [], 'claude')).toEqual({ account: AGY[1] })
+  expect(pickAccount('agy', AGY, claudeOut, NOW, 'fill', {}, [], 'gemini')).toEqual({ account: AGY[0] })
+  expect(pickAccount('agy', AGY, { 'agy/default': NOW + MIN }, NOW, 'fill', {}, [], 'argon')).toEqual({ account: AGY[1] })
+  expect(pickAccount('agy', AGY, { ...claudeOut, 'agy/work#claude': NOW + 10 * MIN }, NOW, 'fill', {}, [], 'claude')).toEqual({ account: null, until: NOW + 10 * MIN })
+  expect(allCoolingText('agy', null, 'claude')).toContain('Claude + GPT-OSS usage limit')
+  expect(allCoolingText('agy', null, 'claude')).toContain('another pool')
+
+  const { $, kept } = withHome({ 'accounts-v1': { agy: ['work'] }, 'cooldowns-v1': { 'agy/work#argon': 1_000_000 + 30 * MIN, 'agy/default#claude': 1_000_000 + 20 * MIN } })
+  const [agy] = await accountOverview($, ['agy'])
+  expect(agy!.rows).toEqual([
+    { name: 'default', signedIn: false, pools: [{ pool: 'claude', until: 1_000_000 + 20 * MIN }] },
+    { name: 'work', signedIn: false, pools: [{ pool: 'argon', until: 1_000_000 + 30 * MIN }] },
+  ])
+  expect(rowText(agy!.rows[1]!)).toContain(`Gemini 4 Argon cooling until ${timeOf(1_000_000 + 30 * MIN)}`)
+  await removeAccount($, 'agy', 'work')
+  expect(kept.get('cooldowns-v1')).toEqual({ 'agy/default#claude': 1_000_000 + 20 * MIN })
+})
+
 test('ignores bad entries in the stored accounts', async () => {
   const { $ } = withHome({ 'accounts-v1': { codex: ['ok', 'Bad', 3, 'ok'], commandcode: ['x'], nope: ['y'], agy: 'z' }, 'cooldowns-v1': { 'codex/ok': 5, 'codex/x': 'soon' } })
   expect(await readAccountNames($)).toEqual({ codex: ['ok'] })
