@@ -4,8 +4,8 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-import { AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
-import type { Engine } from './engines'
+import { AGY_POOL_LABEL, AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
+import type { AgyPool, Engine } from './engines'
 import { opencodeCheckInit, opencodeProviders } from './checks'
 import { relativeTo } from './format'
 import { commandOf, homeOf, platformOf } from './platform'
@@ -40,6 +40,9 @@ export const setAccountStrategy = (strategy: Strategy) => {
 export const accountStrategy = () => configuredStrategy
 
 export const accountId = (account: Pick<Account, 'engine' | 'name'>) => `${account.engine}/${account.name}`
+/** The cooldown key of an account's usage pool (`agy/default#claude`): one Antigravity pool's limit leaves the others free. */
+export const cooldownKey = (id: string, pool?: string) => (pool ? `${id}#${pool}` : id)
+const poolLabel = (pool: string) => AGY_POOL_LABEL[pool as AgyPool] ?? pool
 export const accountDir = (home: string, engine: Engine, name: string) => `${home}/${ACCOUNTS_DIR}/${engine}/${name}`
 
 /** Lowercase kebab, at most 20 characters; `default` is the implicit account and cannot be added. */
@@ -247,6 +250,9 @@ export type LastUsed = Record<string, number>
 export const activeCooldowns = (cooldowns: Cooldowns, now: number): Cooldowns =>
   Object.fromEntries(Object.entries(cooldowns).filter(([, until]) => until > now))
 
+/** When an account frees up for `pool`: the later of its own cooldown and the pool's. */
+const coolingUntil = (cooldowns: Cooldowns, id: string, pool?: string) => Math.max(cooldowns[id] ?? 0, pool ? (cooldowns[cooldownKey(id, pool)] ?? 0) : 0)
+
 export type Picked = { account: Account } | { account: null; until: number | null }
 
 /**
@@ -262,16 +268,17 @@ export const pickAccount = (
   strategy: Strategy = 'fill',
   lastUsed: LastUsed = {},
   skip: readonly string[] = [],
+  pool?: string,
 ): Picked => {
   const ofEngine = accounts.filter(account => account.engine === engine && !skip.includes(accountId(account)))
-  const free = ofEngine.filter(account => (cooldowns[accountId(account)] ?? 0) <= now)
+  const free = ofEngine.filter(account => coolingUntil(cooldowns, accountId(account), pool) <= now)
   if (free.length > 0) {
     if (strategy === 'fill') return { account: free[0]! }
     let best = free[0]!
     for (const account of free) if ((lastUsed[accountId(account)] ?? 0) < (lastUsed[accountId(best)] ?? 0)) best = account
     return { account: best }
   }
-  const waits = ofEngine.map(account => cooldowns[accountId(account)] ?? 0).filter(until => until > now)
+  const waits = ofEngine.map(account => coolingUntil(cooldowns, accountId(account), pool)).filter(until => until > now)
   return { account: null, until: waits.length > 0 ? Math.min(...waits) : null }
 }
 
@@ -284,8 +291,8 @@ export const accountsLine = (trail: readonly Attempt[]) =>
   `accounts: ${trail.map(step => (step.until !== undefined ? `${step.id} (usage limit, cooling until ${timeOf(step.until)})` : step.id)).join(' → ')}`
 
 /** The not-started report's reason when every account of an engine is at its limit. */
-export const allCoolingText = (engine: Engine, until: number | null) =>
-  `all accounts of ${engine} are at their usage limit${until !== null ? `; the earliest frees up at ${timeOf(until)}` : ''}. Route this task to another engine, or run /hydra accounts reset if the limits have lifted.`
+export const allCoolingText = (engine: Engine, until: number | null, pool?: string) =>
+  `all accounts of ${engine} are at their ${pool ? `${poolLabel(pool)} ` : ''}usage limit${until !== null ? `; the earliest frees up at ${timeOf(until)}` : ''}. Route this task to ${pool ? `an Antigravity model in another pool or ` : ''}another engine, or run /hydra accounts reset if the limits have lifted.`
 
 /** The note a Head gets when it continues another account's work. */
 export const switchNote = (files: readonly string[]) =>
@@ -333,8 +340,8 @@ export async function removeAccount($: EngineInterface, engine: Engine, name: st
   if (!(names[engine] ?? []).includes(name)) return { error: `There is no ${engine} account named "${name}". /hydra accounts lists them.` }
   const left = (names[engine] ?? []).filter(item => item !== name)
   await $.store.set(ACCOUNTS_KEY, { ...names, [engine]: left })
-  const cooldowns = await readCooldowns($)
-  delete cooldowns[`${engine}/${name}`]
+  const id = `${engine}/${name}`
+  const cooldowns = Object.fromEntries(Object.entries(await readCooldowns($)).filter(([key]) => key !== id && !key.startsWith(`${id}#`)))
   await $.store.set(COOLDOWNS_KEY, cooldowns)
   return { dir: accountDir(await homeOf($), engine, name) }
 }
@@ -401,13 +408,13 @@ export async function signedInOf($: EngineInterface, account: Account, fresh = f
  */
 const claims: LastUsed = {}
 
-export async function pickUsable($: EngineInterface, engine: Engine, accounts: readonly Account[], skip: readonly string[] = []): Promise<Picked> {
+export async function pickUsable($: EngineInterface, engine: Engine, accounts: readonly Account[], skip: readonly string[] = [], pool?: string): Promise<Picked> {
   const now = await $.clock.now()
   const cooldowns = await readCooldowns($)
   const lastUsed = await readLastUsed($)
   const passed = [...skip]
   for (;;) {
-    const picked = pickAccount(engine, accounts, cooldowns, now, configuredStrategy, { ...lastUsed, ...claims }, passed)
+    const picked = pickAccount(engine, accounts, cooldowns, now, configuredStrategy, { ...lastUsed, ...claims }, passed, pool)
     if (!picked.account) return picked
     const id = accountId(picked.account)
     const held = claims[id]
@@ -430,6 +437,8 @@ export type Rotation<R extends { text: string; isDone: boolean; failure?: string
   minutes: number
   cwd: string
   engine: Engine
+  /** The usage pool the Head draws on, when the engine has several (Antigravity): limits are kept per pool. */
+  pool?: string
   isAborted: () => boolean
   pick: (tried: readonly string[]) => Promise<Picked>
   now: () => Promise<number>
@@ -437,7 +446,7 @@ export type Rotation<R extends { text: string; isDone: boolean; failure?: string
   begin: (name: string, isSwitch: boolean) => Promise<void>
   /** Runs the Head on `account`; `note` is appended to its task after a switch. */
   run: (account: Account, note: string, minutes: number) => Promise<R>
-  /** `name` stopped at a usage limit until `until`. */
+  /** `name` (with the pool, when there is one) stopped at a usage limit until `until`. */
   cooled: (name: string, until: number) => Promise<void>
   /** The Head cannot start: every account is cooling down. */
   refuse: (reason: string) => Promise<R>
@@ -460,7 +469,7 @@ export async function rotateAccounts<R extends { text: string; isDone: boolean; 
     const picked = await steps.pick(tried)
     if (!picked.account) {
       const earliest = picked.until !== null ? `; the earliest frees up at ${timeOf(picked.until)}` : ''
-      return last ? withTrail(last, `no other account of ${steps.engine} is free${earliest}`) : steps.refuse(allCoolingText(steps.engine, picked.until))
+      return last ? withTrail(last, `no other account of ${steps.engine} is free${earliest}`) : steps.refuse(allCoolingText(steps.engine, picked.until, steps.pool))
     }
     const name = accountId(picked.account)
     tried.push(name)
@@ -474,7 +483,7 @@ export async function rotateAccounts<R extends { text: string; isDone: boolean; 
       return withTrail(last)
     }
     const until = cooldownFrom(last.failure ?? '', await steps.now())
-    await steps.cooled(name, until)
+    await steps.cooled(cooldownKey(name, steps.pool), until)
     trail.push({ id: name, until })
   }
   return withTrail(last!, 'every account hit its limit')
@@ -482,7 +491,7 @@ export async function rotateAccounts<R extends { text: string; isDone: boolean; 
 
 // --- The overview (/hydra accounts, /hydra-usage) ---------------------------------------------------------------------
 
-export type AccountRow = { name: string; signedIn?: boolean; until?: number }
+export type AccountRow = { name: string; signedIn?: boolean; until?: number; /** Usage pools cooling apart from the account (Antigravity's). */ pools?: { pool: string; until: number }[] }
 export type EngineAccounts = { engine: Engine; isSupported: boolean; rows: AccountRow[] }
 
 /** Every engine's accounts with their sign-in and cooldown state. Sign-ins are checked afresh unless `fresh` is false (a pane that redraws often reads the session's cache). */
@@ -497,8 +506,10 @@ export async function accountOverview($: EngineInterface, engines: readonly Engi
     }
     const rows: AccountRow[] = []
     for (const account of await accountsOf($, engine)) {
-      const until = cooldowns[accountId(account)]
-      rows.push({ name: account.name, signedIn: await signedInOf($, account, fresh), ...(until !== undefined ? { until } : {}) })
+      const id = accountId(account)
+      const until = cooldowns[id]
+      const pools = Object.entries(cooldowns).filter(([key]) => key.startsWith(`${id}#`)).map(([key, at]) => ({ pool: key.slice(id.length + 1), until: at }))
+      rows.push({ name: account.name, signedIn: await signedInOf($, account, fresh), ...(until !== undefined ? { until } : {}), ...(pools.length > 0 ? { pools } : {}) })
     }
     overview.push({ engine, isSupported: true, rows })
   }
@@ -508,7 +519,7 @@ export async function accountOverview($: EngineInterface, engines: readonly Engi
 export const hasExtraAccounts = (overview: readonly EngineAccounts[]) => overview.some(item => item.rows.length > 1)
 
 export const rowText = (row: AccountRow) =>
-  `${row.signedIn === true ? '✓ signed in' : row.signedIn === false ? '✗ not signed in' : '· sign-in not checked'}${row.until !== undefined ? ` · cooling until ${timeOf(row.until)}` : ''}`
+  `${row.signedIn === true ? '✓ signed in' : row.signedIn === false ? '✗ not signed in' : '· sign-in not checked'}${row.until !== undefined ? ` · cooling until ${timeOf(row.until)}` : ''}${(row.pools ?? []).map(item => ` · ${poolLabel(item.pool)} cooling until ${timeOf(item.until)}`).join('')}`
 
 export const accountsText = (overview: readonly EngineAccounts[], strategy: Strategy) => {
   const lines = [`🐉 Accounts (strategy: ${strategy}${strategy === 'fill' ? ', default first, the next when one is at its limit' : ', the least recently used first'})`]

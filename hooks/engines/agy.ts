@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { effortModeOf, headEffort } from '../lib/effort'
 import { agyTokenOf } from '../lib/accounts'
-import { AGY_MODEL, AGY_TOKEN } from '../lib/engines'
+import { AGY_TOKEN, agyModelId } from '../lib/engines'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
@@ -101,8 +101,6 @@ export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
   return events
 }
 
-/** Gemini 3.8 Flash takes low, medium and high; Hydra's `off` is `low`, `xhigh` and `max` are `high`. */
-export const agyEffort = (effort: string) => (effort === 'off' ? 'low' : effort === 'xhigh' || effort === 'max' ? 'high' : effort)
 
 /** Credential folders under the person's home that an Antigravity Head must not read (its own, with the sign-in token, included). */
 export const AGY_SECRET_DIRS = SECRET_PATHS
@@ -213,8 +211,7 @@ export async function agyCaseRefusal($: EngineInterface, cwd: string, needs: Hea
  */
 export const agyArgs = (a: RoundArgs & { home: string }) => {
   const args = ['agy', '-p', a.prompt,
-    '--model', AGY_MODEL, '--sandbox', '--output-format', 'stream-json']
-  if (a.effort) args.push('--effort', agyEffort(a.effort))
+    '--model', agyModelId(a.model, a.effort), '--sandbox', '--output-format', 'stream-json']
   // No --add-dir: it turns the project read-only in the sandbox. The permission rules already open the folders the Head may use.
   if (a.resume) args.push('--conversation', a.resume)
   return args

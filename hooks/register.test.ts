@@ -8,7 +8,7 @@ import {
   ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
   ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexEffort, SECRET_PATHS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
-  foldAgyRow, newAgyState, agySettings, agyArgs, agyEffort, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
+  foldAgyRow, newAgyState, agySettings, agyArgs, agyModelId, agyBaseOf, agyPoolOf, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
   AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
 } from './register'
 import type { On } from 'claude-code'
@@ -754,11 +754,19 @@ test('tells the Lead which lockdown and models apply on Codex, and shows the eng
   expect(formatReport({ id: 'h', model: 'gpt-6-luna', cwd: '/p', sessionId: 't-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [], finalText: 'ok', exit: '0', engine: 'codex', tokens: '1.2k in / 80 out' })).toContain('(codex --resume t-1)')
 })
 
-test('picks Google models for Antigravity and keeps them out of the other engines', async () => {
+test('picks Antigravity models for Antigravity and keeps them out of the other engines', async () => {
   expect(AGY_MODEL).toBe('gemini-3.8-flash')
   expect(isModelFor('agy', 'gemini-3.8-flash')).toBe(true)
   expect(isModelFor('agy', 'google/gemini-3.8-flash')).toBe(true)
+  expect(isModelFor('agy', 'gemini-4-argon-high')).toBe(true)
+  expect(isModelFor('agy', 'claude-opus-5-5')).toBe(true)
+  expect(isModelFor('agy', 'gpt-oss-120b')).toBe(true)
   expect(isModelFor('agy', 'gpt-6-luna')).toBe(false)
+  expect(isModelFor('agy', 'gemini-3.1-pro')).toBe(false)
+  expect(isModelFor('codex', 'gpt-oss-120b')).toBe(false)
+  expect(isModelFor('codex', 'gpt-6-luna')).toBe(true)
+  expect(isModelFor('codebuddy', 'claude-sonnet-5-5-medium')).toBe(false)
+  expect(headModelFor('codex', undefined, 'gpt-oss-120b', 'deepseek/deepseek-v4.1-flash')).toBe('gpt-6.1-sol')
   expect(isModelFor('codex', 'gemini-3.8-flash')).toBe(false)
   expect(isModelFor('codebuddy', 'gemini-3.8-flash')).toBe(false)
   expect(isModelFor('commandcode', 'deepseek/deepseek-v4.1-flash')).toBe(true)
@@ -822,26 +830,36 @@ test('writes the Antigravity permission rules: writes only in the project, reads
   expect(AGY_SHELL_DENY.every(rule => rule.startsWith('command(regex:') && rule.endsWith(')'))).toBe(true)
 })
 
-test('builds the Antigravity command: stdin closed, own HOME, the one model, sandbox on, a conversation to resume', async () => {
+test('builds the Antigravity command: stdin closed, own HOME, the model with its level, sandbox on, a conversation to resume', async () => {
   const base = { prompt: 'do it', model: 'whatever', effort: 'max', maxTurns: 10, cwd: '/p', addDirs: ['/p/brief'], home: '/h/agy-1' }
   const first = agyArgs(base)
   expect(first.slice(0, 2)).toEqual(['agy', '-p'])
   expect(first).toContain('--sandbox')
   expect(first).not.toContain('--dangerously-skip-permissions')
-  expect(first.slice(first.indexOf('--model'), first.indexOf('--model') + 2)).toEqual(['--model', 'gemini-3.8-flash'])
+  expect(first.slice(first.indexOf('--model'), first.indexOf('--model') + 2)).toEqual(['--model', 'gemini-3.8-flash-high'])
   expect(first.slice(first.indexOf('--output-format'), first.indexOf('--output-format') + 2)).toEqual(['--output-format', 'stream-json'])
-  expect(first.slice(first.indexOf('--effort'), first.indexOf('--effort') + 2)).toEqual(['--effort', 'high'])
+  expect(first).not.toContain('--effort')
+  expect(agyArgs({ ...base, model: 'claude-opus-5-5', effort: 'low' })).toContain('claude-opus-5-5-low')
   expect(first).not.toContain('--add-dir')
   expect(first).not.toContain('--conversation')
   expect(agyArgs({ ...base, resume: 'c-1' }).slice(-2)).toEqual(['--conversation', 'c-1'])
-  expect(agyArgs({ ...base, effort: undefined })).not.toContain('--effort')
-  expect([agyEffort('off'), agyEffort('low'), agyEffort('medium'), agyEffort('high'), agyEffort('xhigh'), agyEffort('max')]).toEqual(['low', 'low', 'medium', 'high', 'high', 'high'])
+  expect(agyArgs({ ...base, effort: undefined })).toContain('gemini-3.8-flash-medium')
+  expect(['off', 'low', 'medium', 'high', 'xhigh', 'max', 'auto', undefined].map(effort => agyModelId('gemini-4-argon', effort))).toEqual(
+    ['low', 'low', 'medium', 'high', 'high', 'high', 'medium', 'medium'].map(level => `gemini-4-argon-${level}`))
+  expect(agyModelId('gpt-oss-120b', 'high')).toBe('gpt-oss-120b-medium')
+  expect(agyModelId('claude-sonnet-5-5-high', 'low')).toBe('claude-sonnet-5-5-low')
+  expect(agyModelId('gemini-3.1-pro', 'low')).toBe('gemini-3.8-flash-low')
+  expect(agyBaseOf('google/gemini-4-argon-medium')).toBe('gemini-4-argon')
+  expect(agyBaseOf('constructor')).toBeUndefined()
+  expect(['gemini-3.8-flash', 'gemini-4-argon', 'claude-opus-5-5', 'claude-sonnet-5-5-low', 'gpt-oss-120b'].map(agyPoolOf)).toEqual(['gemini', 'argon', 'claude', 'claude', 'claude'])
 })
 
 test('tells the Lead which lockdown and model apply on Antigravity', async () => {
   const policy = HYDRA_POLICY('gemini-3.8-flash', 'auto', 'agy')
   expect(policy).toContain('Antigravity agents on gemini-3.8-flash')
-  expect(policy).toContain('always run `gemini-3.8-flash`')
+  expect(policy).toContain('run `gemini-3.8-flash` unless you pass another `model`')
+  expect(policy).toContain('claude-opus-5-5')
+  expect(policy).toContain('three separate usage pools')
   expect(policy).toContain('sandbox')
   expect(policy).not.toContain('--yolo')
   expect(policy).not.toContain('Measured over 126')
@@ -904,7 +922,7 @@ test('gives the Lead a routing guide for exactly the engines in the pool', async
   expect(policy).toContain('`agy` (Antigravity)')
   expect(policy).toContain('`codebuddy` (CodeBuddy)')
   expect(policy).not.toContain('`commandcode` (Command Code)')
-  expect(policy).toContain('gemini-3.8-flash only')
+  expect(policy).toContain('gemini-3.8-flash by default')
   expect(policy).toContain('no network')
   expect(policy).toContain('Measured: 95%')
   expect(policy).toContain('then on a stronger engine')
@@ -919,7 +937,7 @@ test('shows auto sessions in the status line and asks consent for every engine i
   expect(statusLine({ isOn: true, headModel: 'm', effort: 'low', engine: 'auto', engines: ['codex', 'agy'] }, null, limits)).toBe('🐉 Auto codex+agy · low')
   const question = AUTO_CONSENT_QUESTION(['codex', 'agy', 'codebuddy'])
   expect(question).toContain('Codex (OpenAI)')
-  expect(question).toContain('Antigravity (Google (Gemini))')
+  expect(question).toContain('Antigravity (Google: Gemini, Claude, GPT-OSS)')
   expect(question).toContain('CodeBuddy (DeepSeek)')
 })
 

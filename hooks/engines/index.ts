@@ -8,7 +8,7 @@ import type { HeadRun } from '../../types'
 import { accountEnv, accountsOf, markUsed, pickUsable, recordCooldown, rotateAccounts } from '../lib/accounts'
 import type { Account } from '../lib/accounts'
 import { isHeadEffort } from '../lib/effort'
-import { AGY_MODEL, DEFAULT_ENGINE, modelFor, workbuddyEnv } from '../lib/engines'
+import { AGY_MODEL, DEFAULT_ENGINE, agyBaseOf, agyPoolOf, modelFor, workbuddyEnv } from '../lib/engines'
 import type { Engine } from '../lib/engines'
 import { checkHead, checkMinutesOf, runCheck, withSummary } from '../lib/check'
 import { addTokens, formatReport, strings } from '../lib/format'
@@ -31,7 +31,8 @@ const RUN_HISTORY = 20
 export async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, limits: HeadLimits, id: string, engine: Engine = DEFAULT_ENGINE) {
   const task = String(input.task ?? '').trim()
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : await $.session.root()
-  const model = engine === 'agy' ? AGY_MODEL : modelFor(engine, typeof input.model === 'string' && input.model ? input.model : headModel)
+  const requested = typeof input.model === 'string' && input.model ? input.model : headModel
+  const model = engine === 'agy' ? (agyBaseOf(requested) ?? agyBaseOf(headModel) ?? AGY_MODEL) : modelFor(engine, requested)
   // Codex and Antigravity number no model messages, so their turns are tool calls: a Head needs more of them for the same work.
   const maxTurns = Number(input.maxTurns ?? (engine === 'codex' || engine === 'agy' ? 150 : 60))
   const addDirs = strings(input.addDirs)
@@ -171,6 +172,7 @@ async function startHead($: EngineInterface, head: HeadSpec, account: Account | 
  */
 async function runOnAccounts($: EngineInterface, head: HeadSpec, accounts: readonly Account[], outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
   const { engine, cwd, model } = head
+  const pool = engine === 'agy' ? agyPoolOf(model) : undefined
   // Each account's run reports its own tokens; a Head that switched used every one of them.
   let spent: string | undefined
   const tokensNow = async () => (await readRuns($)).find(run => run.id === id)?.tokens
@@ -179,8 +181,9 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, accounts: reado
     minutes: head.minutes,
     cwd,
     engine,
+    pool,
     isAborted: () => outer.aborted,
-    pick: tried => pickUsable($, engine, accounts, tried),
+    pick: tried => pickUsable($, engine, accounts, tried, pool),
     now: () => $.clock.now(),
     begin: async (name, isSwitch) => {
       if (isSwitch) spent = addTokens(spent, await tokensNow())

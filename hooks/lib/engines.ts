@@ -11,8 +11,36 @@ import type { HydraMode } from '../../types'
 export const ENGINES = ['commandcode', 'codebuddy', 'codex', 'agy', 'workbuddy', 'opencode'] as const
 export type Engine = (typeof ENGINES)[number]
 export const DEFAULT_ENGINE: Engine = 'commandcode'
-/** The only model Antigravity Heads run on: the person's choice, whatever a Head's `model` says. */
-export const AGY_MODEL = 'gemini-3.8-flash'
+/**
+ * Antigravity's models by base id: the levels each takes and the usage pool it draws on. Claude and GPT-OSS share one pool;
+ * Gemini Flash and Gemini 4 Argon each have their own weekly one (no 5-hour window), so one pool's limit leaves the others free.
+ */
+export const AGY_MODELS = {
+  'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], pool: 'gemini' },
+  'gemini-4-argon': { levels: ['low', 'medium', 'high'], pool: 'argon' },
+  'claude-sonnet-5-5': { levels: ['low', 'medium', 'high'], pool: 'claude' },
+  'claude-opus-5-5': { levels: ['low', 'medium', 'high'], pool: 'claude' },
+  'gpt-oss-120b': { levels: ['medium'], pool: 'claude' },
+} as const satisfies Record<string, { levels: readonly string[]; pool: string }>
+export type AgyModel = keyof typeof AGY_MODELS
+export type AgyPool = (typeof AGY_MODELS)[AgyModel]['pool']
+export const AGY_POOL_LABEL: Record<AgyPool, string> = { gemini: 'Gemini Flash', argon: 'Gemini 4 Argon', claude: 'Claude + GPT-OSS' }
+/** Antigravity Heads' default model: the cheap, fast one. */
+export const AGY_MODEL: AgyModel = 'gemini-3.8-flash'
+/** `gemini-4-argon-high` or `google/gemini-4-argon` is `gemini-4-argon`; undefined when Antigravity has no such model. */
+export const agyBaseOf = (model: string): AgyModel | undefined => {
+  const base = model.replace(/^google\//i, '').replace(/-(low|medium|high)$/i, '').toLowerCase()
+  return Object.hasOwn(AGY_MODELS, base) ? (base as AgyModel) : undefined
+}
+/** The id `agy --model` takes: the base with its level built in (agy refuses `--effort` beside it); a level the model lacks is its middle one. */
+export const agyModelId = (model: string, effort?: string) => {
+  const base = agyBaseOf(model) ?? AGY_MODEL
+  const levels: readonly string[] = AGY_MODELS[base].levels
+  const wanted = effort === 'off' ? 'low' : effort === 'xhigh' || effort === 'max' ? 'high' : effort
+  const level = wanted && levels.includes(wanted) ? wanted : levels.includes('medium') ? 'medium' : levels[0]!
+  return `${base}-${level}`
+}
+export const agyPoolOf = (model: string): AgyPool => AGY_MODELS[agyBaseOf(model) ?? AGY_MODEL].pool
 /** Where Antigravity keeps the sign-in token, relative to the home folder. */
 export const AGY_TOKEN = '.gemini/antigravity-cli/antigravity-oauth-token'
 export const isEngine = (value: unknown): value is Engine => typeof value === 'string' && (ENGINES as readonly string[]).includes(value)
@@ -41,9 +69,9 @@ export const workbuddyEnv = (home: string, configDir?: string): Record<string, s
   CODEBUDDY_DISABLE_BROWSER_MCP: '1',
 })
 /** The Head model a session gets when it switches to an engine whose models differ from the one it had. */
-export const ENGINE_MODEL: Partial<Record<Engine, string>> = { codex: 'gpt-6.1-sol', agy: 'gemini-3.8-flash', workbuddy: 'deepseek-v4.1-flash', opencode: OPENCODE_MODEL }
-/** Codex Heads run OpenAI's models and Antigravity Heads Google's; every other engine runs the person's configured Head model (DeepSeek by default). */
-const MODEL_FAMILY: Partial<Record<Engine, RegExp>> = { codex: /^(openai\/)?(gpt|o\d|codex)/i, agy: /^(google\/)?gemini/i }
+export const ENGINE_MODEL: Partial<Record<Engine, string>> = { codex: 'gpt-6.1-sol', agy: AGY_MODEL, workbuddy: 'deepseek-v4.1-flash', opencode: OPENCODE_MODEL }
+/** Codex Heads run OpenAI's models (not Antigravity's GPT-OSS) and Antigravity Heads `AGY_MODELS`; every other engine runs the person's configured Head model (DeepSeek by default). */
+const MODEL_FAMILY: Partial<Record<Engine, RegExp>> = { codex: /^(openai\/)?(gpt(?!-oss)|o\d|codex)/i, agy: /^(google\/)?gemini/i }
 /**
  * OpenCode takes any `provider/model` the person set up in it, except Command Code's `deepseek/…` ids (OpenCode has no
  * `deepseek` provider unless the person added one, and the configured Head model uses that prefix). `opencode/…` ids are
@@ -53,8 +81,9 @@ const OPENCODE_ID = /^(?!deepseek\/)[a-z0-9][\w.-]*\/\S+$/i
 const OPENCODE_ONLY = /^opencode\//i
 export const isModelFor = (engine: Engine, model: string) => {
   if (engine === 'opencode') return OPENCODE_ID.test(model)
+  if (engine === 'agy') return agyBaseOf(model) !== undefined
   const family = MODEL_FAMILY[engine]
-  return family ? family.test(model) : !OPENCODE_ONLY.test(model) && !Object.values(MODEL_FAMILY).some(other => other.test(model))
+  return family ? family.test(model) : !OPENCODE_ONLY.test(model) && agyBaseOf(model) === undefined && !Object.values(MODEL_FAMILY).some(other => other.test(model))
 }
 /** The Head model after the person picks `engine`: their explicit `requested` one, else the current one if the engine can run it, else the engine's own default. */
 export const headModelFor = (engine: Engine, requested: string | undefined, current: string, configured: string) =>
