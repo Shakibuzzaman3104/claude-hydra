@@ -30,8 +30,12 @@ ${
       : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
   }`
 
+const AGY_MODEL_GUIDE = '`gemini-3.8-flash` for bulk, reading and mechanical edits (the cheap default); `gemini-4-argon` or `claude-sonnet-5-5` for normal implementation; `claude-opus-5-5` for hard, subtle or multi-file work; `gpt-oss-120b` for simple edits when the Gemini pools are used up.'
+
 const agyEffortRule = (effort: EffortMode) =>
-  `- Antigravity Heads always run \`${AGY_MODEL}\` (the person's choice): any \`model\` you pass is ignored. It takes three levels: \`low\`, \`medium\` and \`high\` (\`xhigh\` and \`max\` run as \`high\`).
+  `- Antigravity Heads run \`${AGY_MODEL}\` unless you pass another \`model\`: ${AGY_MODEL_GUIDE}
+- Antigravity has three separate usage pools: Claude + GPT-OSS (shared), Gemini Flash, and Gemini 4 Argon. Gemini Flash and Argon have no 5-hour window, only a weekly limit each. A Head stopped at a usage limit leaves the other pools free: send the work to a model in another pool before another engine.
+- Models take three levels: \`low\`, \`medium\` and \`high\` (\`xhigh\` and \`max\` run as \`high\`; \`gpt-oss-120b\` runs only at \`medium\`).
 ${
     effort === 'auto'
       ? `- You pick each Head's reasoning \`effort\`:
@@ -96,7 +100,7 @@ const LOCKDOWN_BRIEF: Record<Engine, string> = {
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
 export const ROUTES: Record<Engine, string> = {
   codex: `gpt-6.1-sol (pass \`model: "gpt-6-luna"\` for easy work): the strongest coder here. Send it hard, subtle or multi-file work, and anything where the Head should run the tests itself (its shell is sandboxed with no network, so nothing that downloads). Spends the person's ChatGPT plan.`,
-  agy: `gemini-3.8-flash only: fast, large context. Send it reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
+  agy: `gemini-3.8-flash by default: fast, large context, for reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. Pass \`model\` for more: \`gemini-4-argon\` or \`claude-sonnet-5-5\` for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini Flash and Argon are separate usage pools (the Gemini ones weekly only). No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
   codebuddy: `DeepSeek V4.1 Flash: the cheap default. Send it well-specified edits, renames, new tests and small features. Measured: 95% of 126 runs passed at \`low\` effort. Optional shell.`,
   workbuddy: `DeepSeek V4.1 Flash, the same DeepSeek model through your WorkBuddy subscription (credits). Send it what you would send CodeBuddy: well-specified edits, renames, new tests and small features. Optional shell.`,
   opencode: `BETA. Free or cheap models (default \`opencode/deepseek-v4.1-flash-free\`, no account needed). No shell and no search tool: name the exact files in the task. Good for well-specified small edits; send anything that needs a shell, tests or a search elsewhere.`,
@@ -215,7 +219,7 @@ A full script is in the repo's examples/statusline.sh. Without it, the band abov
 
 export const CONSENT_QUESTION = (headModel: string, engine: Engine = DEFAULT_ENGINE) =>
   engine === 'agy'
-    ? `Hydra hands each Head's task, and every file the Head reads, to ${AGY_MODEL} through the Antigravity CLI (Google), and Heads edit this project unattended (\`agy -p\` in Antigravity's terminal sandbox, locked down by Hydra's permission rules: writes only inside the project, no .git or existing .env, no network). Turn Hydra on?`
+    ? `Hydra hands each Head's task, and every file the Head reads, to the model Claude picks for it through the Antigravity CLI (Google: Gemini by default, or Claude and GPT-OSS models it serves), and Heads edit this project unattended (\`agy -p\` in Antigravity's terminal sandbox, locked down by Hydra's permission rules: writes only inside the project, no .git or existing .env, no network). Turn Hydra on?`
     : engine === 'codex'
     ? `Hydra hands each Head's task, and every file the Head reads, to ${headModel} through Codex (OpenAI, on your ChatGPT plan), and Heads edit this project unattended (\`codex exec\` in Codex's OS sandbox, locked down by Hydra's filesystem profile: writes only inside the project, no .git or .env, no network). Turn Hydra on?`
     : engine === 'opencode'
@@ -238,7 +242,7 @@ export const NO_CHECK_CONSENT = 'The person has not agreed to let Hydra run chec
 export const NO_CONSENT = 'The person has not agreed to send code to this engine. They turn it on with /hydra engine=<name> (or engines=…), which asks them.'
 
 export const PROVIDER: Record<Engine, string> = {
-  commandcode: 'DeepSeek', codebuddy: 'DeepSeek', codex: 'OpenAI', agy: 'Google (Gemini)', workbuddy: 'DeepSeek (via WorkBuddy)', opencode: 'the model you pick in OpenCode',
+  commandcode: 'DeepSeek', codebuddy: 'DeepSeek', codex: 'OpenAI', agy: 'Google: Gemini, Claude, GPT-OSS', workbuddy: 'DeepSeek (via WorkBuddy)', opencode: 'the model you pick in OpenCode',
 }
 
 /** Said in the auto-mode consent question when OpenCode is in the pool. */
