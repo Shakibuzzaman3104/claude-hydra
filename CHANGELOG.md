@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-10-23
 **Highlights**
 - **Fallback: a Head the engine stops moves on instead of failing.** At a usage limit, a lost sign-in, a model the engine no longer serves or a setup it cannot run, Hydra tries the engine's models in other usage pools, then the next ready engine you have agreed to, and the report's `fallback:` line says where it ran. `headFallback` turns it off.
 - **Fixed: Hydra stuck to one engine.** A fixed engine is now the default, not a lock: Claude can send a Head to another ready engine, and in auto mode another engine joins the pool when Claude names it (unless you chose the pool with `engines=`). A bare `/hydra` plans again from your setting instead of reusing an engine left from earlier, unless you typed it.
@@ -9,10 +9,12 @@
 - **Per-model limits:** each CodeBuddy and WorkBuddy model has its own limit (CodeBuddy's 429 says to switch models), so one model's limit no longer blocks the account. Antigravity's quota is read from `agy /usage` before each Head: Gemini (Flash and Pro, weekly and 5-hour), Gemini 4 Argon (weekly, on Pro) and Claude + GPT-OSS (weekly and 5-hour).
 - **Antigravity Heads can run Gemini 4 Argon, Claude Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B**, not just Gemini 3.8 Flash. Flash stays the default; Claude passes `model` per Head and the policy says which model suits which work (Argon for research and search: agy Heads have web search).
 - **Fixed: Antigravity Heads failed whenever an effort level was set.** agy 1.4 refuses `--model gemini-3.8-flash --effort <level>`; Hydra now sends the level in the model id (`gemini-3.8-flash-low`).
-- **Usage limits per Antigravity pool.** Claude + GPT-OSS, Gemini Flash and Gemini 4 Argon draw on separate limits (the Gemini ones weekly only). With several Antigravity accounts a limit cools only that pool, and `/hydra accounts` shows which pool is cooling.
+- **Usage limits per Antigravity pool.** Gemini (Flash and Pro), Gemini 4 Argon and Claude + GPT-OSS draw on separate limits. With several Antigravity accounts a limit cools only that pool, and `/hydra accounts` shows which pool is cooling.
 - **Fixed: Antigravity said "not signed in" and its Heads could not start when agy keeps the sign-in in the macOS keychain.** agy 1.4.6 stores the token there (its log: `keyringAuth: loaded token`), so `antigravity-oauth-token` no longer exists. A Head's own `HOME` now links `Library/Keychains` to yours instead of copying the file, its rules deny the model that folder, and `/hydra` warns instead of refusing.
 - **Fixed: `git` failed inside Codex Heads on macOS** (`couldn't create cache file '/tmp/xcrun_db-…'`). Each Codex Head gets its own writable temp folder.
 - **Head reports say when work was lost.** A Head that puts back or overwrites uncommitted edits, including ones made while it ran, now gets a ⚠ line naming the files, and a report says when another Head ran in the same folder, since its edited list may then hold that Head's files.
+
+Upgrading: nothing to change. Fallback is on by default (`headFallback`), and account folders already on disk are picked up on their own.
 
 **Details**
 - `AGY_MODELS` (lib/engines.ts) lists each base model, its levels and its pool; `agyModelId` builds the id, `agyPoolOf` names the pool. A model Antigravity does not serve falls back to the session's, then to Flash.
