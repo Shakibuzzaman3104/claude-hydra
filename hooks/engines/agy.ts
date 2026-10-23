@@ -9,13 +9,13 @@ import { agyTokenOf } from '../lib/accounts'
 import { AGY_TOKEN, agyModelId } from '../lib/engines'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
+import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { NO_GUARD } from '../lib/protect'
 import type { Guarded } from '../lib/protect'
-import { homeOf } from '../lib/platform'
+import { homeOf, platformOf } from '../lib/platform'
 import { readMode } from '../lib/state'
 import { caseVariants } from './opencode'
 
@@ -144,12 +144,13 @@ export const agySpellings = (path: string, roots: readonly string[], caseless: b
 /**
  * The permission settings one Antigravity Head runs with: it writes only under the project and the folders it may write to
  * (`.git` denied), reads outside them only the `addDirs`, reads none of `envFiles` or the paths `.hydraignore` names (whose
- * `.hydraignore` stays read-only), reads no credential folder, and has a shell (inside the terminal sandbox, minus the dangerous
- * commands) only when asked. `tempDirs` are system temp folders the sandbox would leave writable. Rules name paths (a glob or a
- * regex makes the sandbox refuse every command) and match one spelling, so on a `caseless` disk each path inside a root is denied
- * in every letter case. A refused call ends the Head's turn.
+ * `.hydraignore` stays read-only), reads no credential folder (its own `Library` folder, which links to the keychain, included),
+ * and has a shell (inside the terminal sandbox, minus the dangerous commands) only when asked. `tempDirs` are system temp folders
+ * the sandbox would leave writable. Rules name paths (a glob or a regex makes the sandbox refuse every command) and match one
+ * spelling, so on a `caseless` disk each path inside a root is denied in every letter case. `headHome` is the Head's own `HOME`,
+ * whose `Library` folder links to the keychain: it is denied too. A refused call ends the Head's turn.
  */
-export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: readonly string[] = [], tempDirs: readonly string[] = [], caseless = false) => {
+export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: readonly string[] = [], tempDirs: readonly string[] = [], caseless = false, headHome = '') => {
   const own = [cwd, ...(head.writeDirs ?? [])].map(trimSlash)
   const extra = union(head.addDirs.map(trimSlash), (head.writeDirs ?? []).map(trimSlash))
   const roots = union(own, extra)
@@ -168,6 +169,8 @@ export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: r
         }),
         ...guarded.ignoreFiles.flatMap(file => rules('write_file', file)),
         ...(home ? AGY_SECRET_DIRS.map(dir => `read_file(${home.replace(/\/$/, '')}/${dir})`) : []),
+        // The Head's own Library holds the link to the keychain, so no tool of its reads or writes there, with a shell or without.
+        ...(headHome ? [`read_file(${trimSlash(headHome)}/Library)`, `write_file(${trimSlash(headHome)}/Library)`] : []),
         ...(head.shell ? AGY_SHELL_DENY : []),
       ],
     },
@@ -225,6 +228,18 @@ export const agyArgs = (a: RoundArgs & { home: string }) => {
 export const failureReason = (state: Pick<AgyState, 'status' | 'finalText'>) =>
   state.status && state.status !== 'SUCCESS' && state.finalText.length <= 400 ? state.finalText : ''
 
+/** What a Head's report says when Antigravity has no sign-in: the fix is one run of the CLI. */
+export const AGY_NOT_SIGNED_IN = 'Antigravity is not signed in. Run `agy` once in a terminal (choose Google OAuth), then run the Head again.'
+
+/** A round that stopped because the CLI has no sign-in: its result error, or its stderr. */
+const AGY_SIGNED_OUT = /authentication failed|not logged into Antigravity/i
+
+/** The error text a Head's report shows for a round: a lost sign-in said plainly, else what the CLI printed. */
+export const agyRoundErrors = (stderr: string, state: Pick<AgyState, 'status' | 'finalText'>) => {
+  const text = [stderr, failureReason(state)].filter(Boolean).join('\n').slice(-2000)
+  return AGY_SIGNED_OUT.test(text) ? AGY_NOT_SIGNED_IN : text
+}
+
 async function runRoundAgy(
   $: EngineInterface,
   argv: RoundArgs & { home: string; state: AgyState },
@@ -254,7 +269,7 @@ async function runRoundAgy(
     subtype: isCapped ? 'error_max_turns' : state.status === 'SUCCESS' ? 'success' : state.status ? 'error' : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    errors: [errors, failureReason(state)].filter(Boolean).join('\n').slice(-2000),
+    errors: agyRoundErrors(errors, state),
   }
 }
 
@@ -273,16 +288,24 @@ async function findEnvFiles($: EngineInterface, roots: readonly string[]): Promi
 }
 
 /**
- * Makes this Head's `HOME`: its own `settings.json` (the permission rules) and a copy of the sign-in token, under Hydra's folder
- * in `~/.claude`, owner-only. Removed when the Head ends. Returns the folder.
+ * Makes this Head's `HOME`: its own `settings.json` (the permission rules) and its sign-in, under Hydra's folder in `~/.claude`,
+ * owner-only. The sign-in is the account's token file, or the person's own; an agy that keeps it in the macOS keychain instead
+ * gets a link to the keychain (`Library/Keychains`), which the rules deny the model's tools. Removed when the Head ends.
+ * Returns the folder.
  */
-async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, tokenDir?: string): Promise<string> {
+export async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, tokenDir?: string): Promise<string> {
   const real = await homeOf($)
   const dir = `${real}/${AGY_HOME_DIR}/agy-${await $.session.id()}-${id}`
   const config = `${dir}/.gemini/antigravity-cli`
   await $.process.run(['/bin/mkdir', '-p', config])
   await $.process.run(['/bin/chmod', '700', dir, `${dir}/.gemini`, config])
-  await $.process.run(['/bin/cp', '-p', tokenDir ? agyTokenOf(tokenDir) : `${real}/${AGY_TOKEN}`, `${config}/antigravity-oauth-token`])
+  const token = `${real}/${AGY_TOKEN}`
+  if (tokenDir) await $.process.run(['/bin/cp', '-p', agyTokenOf(tokenDir), `${config}/antigravity-oauth-token`])
+  else if (await $.fs.exists(token).catch(() => false)) await $.process.run(['/bin/cp', '-p', token, `${config}/antigravity-oauth-token`])
+  else if ((await platformOf($)) === 'darwin') {
+    await $.process.run(['/bin/mkdir', '-p', `${dir}/Library`])
+    await $.process.run(['/bin/ln', '-s', `${real}/Library/Keychains`, `${dir}/Library/Keychains`])
+  } else throw new Error(AGY_NOT_SIGNED_IN)
   await writeAgySettings($, dir, cwd, needs)
   return dir
 }
@@ -294,7 +317,7 @@ async function writeAgySettings($: EngineInterface, dir: string, cwd: string, ne
   const envFiles = await findEnvFiles($, union(roots, needs.addDirs))
   const present: string[] = []
   for (const temp of AGY_TEMP_DIRS) if (await $.fs.exists(temp).catch(() => false)) present.push(temp)
-  const settings = agySettings(cwd, needs, real, envFiles, agyTempDeny(roots, present), await isCaseless($, cwd))
+  const settings = agySettings(cwd, needs, real, envFiles, agyTempDeny(roots, present), await isCaseless($, cwd), dir)
   await $.fs.write(`${dir}/.gemini/antigravity-cli/settings.json`, JSON.stringify(settings, null, 2) + '\n')
 }
 
@@ -367,6 +390,7 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
   const signal = controller.signal
 
   const startedAt = await $.clock.now()
+  await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
   const state = newAgyState()
   const labels = new Map<string, string>()
   const onEvent = async (event: StreamEvent) => {
@@ -396,12 +420,14 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
 
   timerStop.abort()
   const files = await changedFiles($, startedAt, [cwd, ...head.writeDirs])
+  const endedAt = await $.clock.now()
+  const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const tokens = tokensText(state.inputTokens, state.outputTokens)
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt: await $.clock.now(),
+    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
   })
@@ -411,6 +437,7 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns: state.turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'agy', tokens,
+    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

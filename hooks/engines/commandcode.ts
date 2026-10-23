@@ -7,7 +7,7 @@ import type { EngineInterface } from 'claude-code'
 import { effortModeOf, headEffort, nearestEffort, supportedEfforts } from '../lib/effort'
 import { applyEvent, formatReport, relativeTo } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isResumable, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
+import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, compareChangedFiles, continuePrompt, isFinished, isResumable, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
@@ -362,6 +362,7 @@ async function runLockedHead(
   }
 
   const startedAt = await $.clock.now()
+  await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
   let round = await roundAt({ prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs })
   for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
     await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
@@ -379,11 +380,13 @@ async function runLockedHead(
 
   timerStop.abort()
   const report = sessionId ? await sessionReport($, sessionId) : { usd: null, files: [], denied: [], toolCalls: 0 }
+  const endedAt = await $.clock.now()
+  const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt: await $.clock.now(),
+    state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt,
     files: report.files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? 'stopped before HEAD DONE',
   })
@@ -393,6 +396,7 @@ async function runLockedHead(
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     rulesNote, writeDirs: head.writeDirs,
+    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, isDone }
 }

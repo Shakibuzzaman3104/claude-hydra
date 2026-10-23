@@ -2,6 +2,7 @@
 @author Shakib
 @since 15/10/26
 """
+import hashlib
 import json
 import os
 import shutil
@@ -34,6 +35,23 @@ def write(path, text="x", mtime=None):
 
 def git(root, *args):
     subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.com", *args], check=True, capture_output=True)
+
+
+def snapshot(*roots):
+    result = run_script("changed-files.py", "--snapshot", *roots)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def compare(snapshot_file, since_seconds, *roots):
+    result = run_script("changed-files.py", "--compare", snapshot_file, int(since_seconds * 1000), *roots)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def snapshot_file(path, files):
+    path.write_text(json.dumps(files), encoding="utf-8")
+    return path
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -92,3 +110,81 @@ def test_a_time_in_the_future_lists_nothing(tmp_path):
 
 def test_a_missing_folder_lists_nothing(tmp_path):
     assert changed(time.time() - 60, tmp_path / "nope") == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_snapshot_lists_the_modified_and_new_files_with_their_sha1(tmp_path):
+    root = tmp_path / "repo"
+    write(root / "tracked.txt", "one", mtime=OLD)
+    write(root / "clean.txt", "one", mtime=OLD)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "init")
+    write(root / "tracked.txt", "changed text")
+    write(root / "new.txt", "brand new")
+    before = snapshot(root)
+    assert relative(before.keys(), root) == ["new.txt", "tracked.txt"]
+    assert before[str(root / "tracked.txt")] == hashlib.sha1(b"changed text").hexdigest()
+    assert before[str(root / "new.txt")] == hashlib.sha1(b"brand new").hexdigest()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_compare_reports_a_snapshot_file_the_head_changed_again(tmp_path):
+    root = tmp_path / "repo"
+    write(root / "tracked.txt", "one", mtime=OLD)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "init")
+    write(root / "tracked.txt", "the Lead's edit")
+    saved = snapshot_file(tmp_path / "snapshot.json", snapshot(root))
+    write(root / "tracked.txt", "the Head's edit")
+    result = compare(saved, time.time() - 60, root)
+    assert relative(result["overwritten"], root) == ["tracked.txt"]
+    assert result["reverted"] == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_compare_reports_a_snapshot_file_put_back_to_head(tmp_path):
+    root = tmp_path / "repo"
+    write(root / "tracked.txt", "one", mtime=OLD)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "init")
+    write(root / "tracked.txt", "the Lead's edit")
+    saved = snapshot_file(tmp_path / "snapshot.json", snapshot(root))
+    git(root, "checkout", "--", "tracked.txt")
+    result = compare(saved, time.time() - 60, root)
+    assert relative(result["reverted"], root) == ["tracked.txt"]
+    assert result["overwritten"] == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_compare_reports_a_tracked_file_edited_and_put_back_after_since(tmp_path):
+    root = tmp_path / "repo"
+    write(root / "clean.txt", "one", mtime=OLD)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "init")
+    saved = snapshot_file(tmp_path / "snapshot.json", snapshot(root))
+    since = time.time() - 1
+    write(root / "clean.txt", "the Head's edit")
+    git(root, "checkout", "--", "clean.txt")
+    result = compare(saved, since, root)
+    assert relative(result["restored"], root) == ["clean.txt"]
+    assert result["reverted"] == []
+    assert result["overwritten"] == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_compare_counts_a_deleted_snapshot_file_as_reverted(tmp_path):
+    root = tmp_path / "repo"
+    write(root / "tracked.txt", "one", mtime=OLD)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "init")
+    write(root / "tracked.txt", "the Lead's edit")
+    saved = snapshot_file(tmp_path / "snapshot.json", snapshot(root))
+    (root / "tracked.txt").unlink()
+    result = compare(saved, time.time() - 60, root)
+    assert relative(result["reverted"], root) == ["tracked.txt"]
+    assert result["overwritten"] == []

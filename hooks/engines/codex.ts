@@ -7,12 +7,12 @@ import type { EngineInterface } from 'claude-code'
 import { effortModeOf, headEffort } from '../lib/effort'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
+import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
 import { SECRET_PATHS, homeReadDirs, homeRelative, isSecretPath, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import type { Guarded } from '../lib/protect'
-import { homeOf } from '../lib/platform'
+import { homeOf, toSlashes } from '../lib/platform'
 import { readMode } from '../lib/state'
 
 /** Codex item types as the tool names Command Code's stream uses, so one live view reads every engine. */
@@ -113,12 +113,13 @@ const tomlString = (value: string) => JSON.stringify(value)
  * the project, the folders it was given (`addDirs`, `writeDirs`) and the toolchain folders in `homeRead` (git's config,
  * node, cargo, gradle…), which `homeReadDirs` filters to the ones that exist. The project and each writeDir are writable
  * (Codex keeps `.git` read-only inside them), `.env` files are unreadable under every folder the Head may touch, and the
- * credential folders stay unreadable even when a grant covers them. `/tmp` and sibling folders are not writable, and the
- * shell has no network. More specific paths win, so the order of the entries does not matter.
+ * credential folders stay unreadable even when a grant covers them. Among the system temp places only the Head's own temp
+ * folder (`tempDir`) is writable, and the shell has no network. More specific paths win, so the order of the entries does
+ * not matter.
  *
  * A project that is the home folder itself, or holds it, cannot have its home denied; `homeHeadRefusal` stops those first.
  */
-export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRead: readonly string[] = []) => {
+export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRead: readonly string[] = [], tempDir = '') => {
   const homeDir = home ? trimSlash(home) : ''
   const isSecret = (dir: string) => {
     const rel = homeDir ? homeRelative(dir, homeDir) : undefined
@@ -133,6 +134,7 @@ export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRea
     ...(isHomeClosed ? [[homeDir, 'none'] as [string, string], ...homeRead.map((dir): [string, string] => [`${homeDir}/${dir}`, 'read'])] : []),
     ...readable.map((dir): [string, string] => [dir, 'read']),
     ...writable.map((dir): [string, string] => [dir, 'write']),
+    ...(tempDir ? [[trimSlash(tempDir), 'write'] as [string, string]] : []),
     ...roots.flatMap((dir): [string, string][] => [[`${dir}/**/.env`, 'none'], [`${dir}/**/.env.*`, 'none']]),
     // Codex takes only `none` on a glob, so each `.hydraignore` is made read-only by its exact path.
     ...(head.guarded?.ignoreFiles ?? []).filter(file => writable.some(root => isWithin(file, root))).map((file): [string, string] => [file, 'read']),
@@ -237,6 +239,45 @@ const refusedOnPlan = new Set<string>()
 
 const planWarning = (model: string) => `${model} is not available on this ChatGPT plan, so the Head ran on ${CODEX_PLAN_MODEL}. Check its work as you would a lighter model's, or set head=${CODEX_PLAN_MODEL}.`
 
+/** The system temp folder (`TMPDIR`, as `os.tmpdir()` reads it), and `/tmp` where the host sets none. */
+async function codexTempRoot($: EngineInterface) {
+  return trimSlash(toSlashes((await $.env.get('TMPDIR')) || '/tmp'))
+}
+
+const CODEX_TEMP_PREFIX = 'hydra-codex-'
+
+/** Makes this Head's private temp folder, under the system temp folder and owner-only. Returns its path. */
+async function makeCodexTemp($: EngineInterface, id: string): Promise<string> {
+  const dir = `${await codexTempRoot($)}/${CODEX_TEMP_PREFIX}${await $.session.id()}-${id}`
+  await $.process.run(['/bin/mkdir', '-p', dir])
+  await $.process.run(['/bin/chmod', '700', dir])
+  return dir
+}
+
+/** Removes a Head's temp folder; refuses any path that is not one of Hydra's own. */
+export async function removeCodexTemp($: EngineInterface, dir: string) {
+  if (dir.includes(`/${CODEX_TEMP_PREFIX}`)) await $.process.run(['/bin/rm', '-rf', dir]).catch(() => undefined)
+}
+
+/** Temp folders a crashed session left behind: a Head never runs for a day. */
+export async function sweepCodexTemps($: EngineInterface) {
+  const root = await codexTempRoot($)
+  const now = await $.clock.now()
+  const entries = await $.fs.list(root).catch(() => [])
+  for (const entry of entries) {
+    if (entry.kind === 'dir' && entry.name.startsWith(CODEX_TEMP_PREFIX)) {
+      const stat = await $.fs.stat(`${root}/${entry.name}`).catch(() => undefined)
+      if (stat && now - stat.mtimeMs > 86_400_000) await removeCodexTemp($, `${root}/${entry.name}`)
+    }
+  }
+}
+
+/**
+ * A Codex Head's environment: the person's own for the engine, and `TMPDIR` at the Head's private folder. macOS's
+ * `/usr/bin/git` is an xcrun shim that needs a writable temp folder, and the sandbox writes nowhere else in `/tmp`.
+ */
+export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => ({ ...env, TMPDIR: `${tempDir}/` })
+
 /** A Head on Codex: a filesystem profile on the command line (no file to clean up), then rounds until it reports HEAD DONE. */
 export async function runCodexHead($: EngineInterface, head: CodexHead, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { cwd, model } = head
@@ -258,11 +299,16 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
   const repoDirs = await gitReadDirs($, realCwd!, realHome)
-  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead)
-  return runCodexRounds($, head, filesystem, outer, limits, id)
+  const tempDir = await makeCodexTemp($, id)
+  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead, tempDir)
+  try {
+    return await runCodexRounds($, head, filesystem, tempDir, outer, limits, id)
+  } finally {
+    await removeCodexTemp($, tempDir)
+  }
 }
 
-async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, outer: AbortSignal, limits: HeadLimits, id: string) {
+async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, tempDir: string, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { task, cwd, maxTurns, minutes } = head
   let model = refusedOnPlan.has(head.model) ? CODEX_PLAN_MODEL : head.model
   const warnings: string[] = model === head.model ? [] : [planWarning(head.model)]
@@ -283,6 +329,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   const signal = controller.signal
 
   const startedAt = await $.clock.now()
+  await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
   const mountPoints = await missingMountPoints($, [cwd, ...head.writeDirs])
   const state = newCodexState()
   const labels = new Map<string, string>()
@@ -292,7 +339,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundCodex($, { ...round, model, effort, cwd, addDirs: head.addDirs, filesystem, state, env: head.env }, signal, onEvent)
+    const ran = await runRoundCodex($, { ...round, model, effort, cwd, addDirs: head.addDirs, filesystem, state, env: codexEnv(tempDir, head.env) }, signal, onEvent)
     return { ...ran, effort }
   }
 
@@ -323,12 +370,14 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   // `rmdir` only removes an empty folder, so one the Head filled (or another Head is using) stays.
   if (mountPoints.length > 0) await $.process.run(['/bin/rmdir', ...mountPoints]).catch(() => undefined)
   const files = union([...state.files], await changedFiles($, startedAt, [cwd, ...head.writeDirs]))
+  const endedAt = await $.clock.now()
+  const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const tokens = tokensText(state.inputTokens, state.outputTokens)
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt: await $.clock.now(),
+    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
   })
@@ -338,6 +387,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
     id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns: state.turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'codex', tokens, warnings,
+    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

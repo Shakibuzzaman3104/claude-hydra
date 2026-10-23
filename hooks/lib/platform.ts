@@ -21,6 +21,11 @@ export async function platformOf($: EngineInterface): Promise<Platform> {
   return detected
 }
 
+/** Forgets the platform read for this process: a test runs the same code as macOS and as Linux. */
+export const resetPlatform = () => {
+  detected = undefined
+}
+
 /** The person's home folder: `HOME`, or `USERPROFILE` on Windows where `HOME` is usually unset. Always with forward slashes. */
 export async function homeOf($: EngineInterface): Promise<string> {
   const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
