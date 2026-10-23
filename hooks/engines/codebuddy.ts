@@ -8,7 +8,7 @@ import { isQuotaFailure } from '../lib/accounts'
 import { effortModeOf, headEffort } from '../lib/effort'
 import { EDIT_TOOLS, applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
+import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
@@ -331,6 +331,8 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
     return { ...ran, effort }
   }
 
+  const startedAt = await $.clock.now()
+  await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
   let round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
   for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
     await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
@@ -349,11 +351,13 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   timerStop.abort()
   const files = [...state.files]
   const tokens = tokensText(state.inputTokens, state.outputTokens)
+  const endedAt = await $.clock.now()
+  const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns, tokens, endedAt: await $.clock.now(),
+    state: isDone ? 'done' : 'failed', turns, tokens, endedAt,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
   })
@@ -364,6 +368,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
     writeDirs: head.writeDirs, engine: head.engine ?? 'codebuddy', tokens,
     rulesNote: searchBlock ? `search tool removed because ${relativeTo(cwd, searchBlock)} is in reach` : undefined,
+    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }
