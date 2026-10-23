@@ -287,7 +287,7 @@ export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: A
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, head.engine ?? 'codebuddy')
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, head.engine ?? 'codebuddy', 'unavailable')
   }
   try {
     return await runBuddyRounds($, head, settings, outer, limits, id)

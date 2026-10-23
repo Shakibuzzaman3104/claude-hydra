@@ -30,11 +30,11 @@ ${
       : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
   }`
 
-const AGY_MODEL_GUIDE = '`gemini-3.8-flash` for bulk, reading and mechanical edits (the cheap default); `gemini-4-argon` for research and search (investigating a codebase, reading docs, web research: agy Heads have `search_web` and `read_url_content`) and, with `claude-sonnet-5-5`, for normal implementation; `claude-opus-5-5` for hard, subtle or multi-file work; `gpt-oss-120b` for simple edits when the Gemini pools are used up.'
+const AGY_MODEL_GUIDE = '`gemini-3.8-flash` for bulk, reading and mechanical edits (the cheap default); `gemini-4-argon` for research and search (investigating a codebase, reading docs, web research: agy Heads have `search_web` and `read_url_content`) and, with `claude-sonnet-5-5`, for normal implementation; `claude-opus-5-5` for hard, subtle or multi-file work; `gpt-oss-120b` for simple edits when the Gemini pools are used up (Antigravity retires it on 2 November 2026).'
 
 const agyEffortRule = (effort: EffortMode) =>
   `- Antigravity Heads run \`${AGY_MODEL}\` unless you pass another \`model\`: ${AGY_MODEL_GUIDE}
-- Antigravity has three separate usage pools: Claude + GPT-OSS (shared), Gemini Flash, and Gemini 4 Argon. Gemini Flash and Argon have no 5-hour window, only a weekly limit each. A Head stopped at a usage limit leaves the other pools free: send the work to a model in another pool before another engine.
+- Antigravity has three usage pools, each with its own limits: Gemini (Flash and Pro share a weekly limit and a 5-hour one), Gemini 4 Argon (on Pro its own weekly limit only; on Ultra it draws on the Gemini pool) and Claude + GPT-OSS (shared: a weekly limit and a 5-hour one). Hydra reads them from Antigravity before each Head, and a pool at its limit leaves the others free.
 - Models take three levels: \`low\`, \`medium\` and \`high\` (\`xhigh\` and \`max\` run as \`high\`; \`gpt-oss-120b\` runs only at \`medium\`).
 ${
     effort === 'auto'
@@ -100,7 +100,7 @@ const LOCKDOWN_BRIEF: Record<Engine, string> = {
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
 export const ROUTES: Record<Engine, string> = {
   codex: `gpt-6.1-sol (pass \`model: "gpt-6-luna"\` for easy work): the strongest coder here. Send it hard, subtle or multi-file work, and anything where the Head should run the tests itself (its shell is sandboxed with no network, so nothing that downloads). Spends the person's ChatGPT plan.`,
-  agy: `gemini-3.8-flash by default: fast, large context, for reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. Pass \`model\` for more: \`gemini-4-argon\` for research and search (its Heads can search the web) and, with \`claude-sonnet-5-5\`, for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini Flash and Argon are separate usage pools (the Gemini ones weekly only). No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
+  agy: `gemini-3.8-flash by default: fast, large context, for reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. Pass \`model\` for more: \`gemini-4-argon\` for research and search (its Heads can search the web) and, with \`claude-sonnet-5-5\`, for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini and Argon are separate usage pools, which Hydra checks before each Head. No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
   codebuddy: `DeepSeek V4.1 Flash: the cheap default. Send it well-specified edits, renames, new tests and small features. Measured: 95% of 126 runs passed at \`low\` effort. Optional shell.`,
   workbuddy: `DeepSeek V4.1 Flash, the same DeepSeek model through your WorkBuddy subscription (credits). Send it what you would send CodeBuddy: well-specified edits, renames, new tests and small features. Optional shell.`,
   opencode: `BETA. Free or cheap models (default \`opencode/deepseek-v4.1-flash-free\`, no account needed). No shell and no search tool: name the exact files in the task. Good for well-specified small edits; send anything that needs a shell, tests or a search elsewhere.`,
@@ -117,8 +117,14 @@ const autoEffortRule = (effort: EffortMode) =>
     : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
 
 
-const autoPolicy = (effort: EffortMode, pool: readonly Engine[]) => `# Hydra mode (on, auto engines)
-You are the Lead. Implementation goes to Heads, called through the ${HEAD_TOOL} tool, and you choose the engine for each Head with its \`engine\` field (one of: ${pool.join(', ')}). A call without one is refused.
+/** What Hydra does when a Head's engine stops it, and what the Lead does about the report. */
+const fallbackRule = (fallback: boolean) =>
+  fallback
+    ? `- When a Head's engine stops it (every account at its usage limit, signed out, or a setup that engine cannot run here), Hydra moves it on its own: to the engine's other accounts, then (Antigravity, CodeBuddy, WorkBuddy) a model in another usage pool, then the next ready engine. Each move carries a note naming the files already changed. The report's \`fallback:\` line names every route and why: judge the work by the engine and model it ended on. "no other engine or model is free" means every option is at its limit: wait for the time given, or do the task yourself.`
+    : `- The person turned Hydra's fallback off: a Head whose engine stops it (a usage limit, a lost sign-in) fails with the reason, and a report starting with "all accounts of <engine> are at their usage limit" means that engine cannot take the task now. Route it to another engine yourself.`
+
+const autoPolicy = (effort: EffortMode, pool: readonly Engine[], fallback: boolean, pinned: boolean) => `# Hydra mode (on, auto engines)
+You are the Lead. Implementation goes to Heads, called through the ${HEAD_TOOL} tool, and you choose the engine for each Head with its \`engine\` field (one of: ${pool.join(', ')}${pinned ? ', the engines the person chose' : '; another engine set up on this machine joins the pool when you name it'}). A call without one is refused.
 - Split first, then route each task to the engine that suits it. Tasks on disjoint files can go to different engines in parallel (\`background: true\`).
 ${pool.map(engine => `  - \`${engine}\` (${ENGINE_LABEL[engine]}): ${ROUTES[engine]}`).join('\n')}
 - Routing rules: when unsure, take the cheapest engine in the pool that can do it (${pool.includes('codebuddy') ? 'codebuddy' : pool.includes('workbuddy') ? 'workbuddy' : pool.includes('commandcode') ? 'commandcode' : pool[0]}); put the hard 20% on the strongest (${pool.includes('codex') ? 'codex' : pool[0]}). A Head that fails its check goes back on the same engine one effort level up, then on a stronger engine. Do not switch engines for a vague brief: rewrite it. Say in your plan which engine each task goes to, and why in a few words.
@@ -135,12 +141,13 @@ ${IGNORE_RULE}
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the engine, the files the Head edited and every call that was denied.
 ${CHECK_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
-- A report starting with "all accounts of <engine> are at their usage limit" means that engine cannot take the task now: route it to another engine in the pool.
+${fallbackRule(fallback)}
 - End with what each Head did (and on which engine), what you verified, and the Heads' total cost.`
 
-export const HYDRA_POLICY = (headModel: string, effort: EffortMode, engine: Engine | typeof AUTO = DEFAULT_ENGINE, pool: readonly Engine[] = ENGINES) =>
-  engine === AUTO ? autoPolicy(effort, pool) : `# Hydra mode (on)
+export const HYDRA_POLICY = (headModel: string, effort: EffortMode, engine: Engine | typeof AUTO = DEFAULT_ENGINE, pool: readonly Engine[] = ENGINES, routing: { fallback?: boolean; pinned?: boolean } = {}) =>
+  engine === AUTO ? autoPolicy(effort, pool, routing.fallback ?? true, routing.pinned ?? false) : `# Hydra mode (on)
 You are the Lead. Implementation goes to Heads: ${ENGINE_LABEL[engine]} agents on ${headModel}, called through the ${HEAD_TOOL} tool.
+- ${ENGINE_LABEL[engine]} is the default: name another engine set up here in \`engine\` (${ENGINES.filter(other => other !== engine).join(', ')}) to send one Head there, when a task suits it better or ${ENGINE_LABEL[engine]} is at its limit.
 ${effortRule(effort, headModel, engine)}
 - Plan first: split the work into self-contained tasks. Each Head task states the goal, the exact files, the constraints and the acceptance check; a Head sees only the repo and your task text.
 ${lockdownRules(engine)}
@@ -153,6 +160,7 @@ ${IGNORE_RULE}
 - Never trust a Head's report. Read the diff and run the build/tests yourself, then fix it or send the Head back with precise feedback. A report lists the files the Head edited and every call that was denied.
 ${CHECK_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
+${fallbackRule(routing.fallback ?? true)}
 - End with what each Head did, what you verified, and the Heads' total cost.`
 
 const ACTIONS = ['off', 'status', 'help', 'statusline', 'engines', 'accounts'] as const
@@ -195,8 +203,9 @@ export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (${ENGINES.map(name =
   /hydra status          show what is set
   /hydra effort=<level>  auto (Claude picks per Head) or off, low, medium, high, xhigh, max
   /hydra head=<model>    the model Heads run on
-  /hydra engine=<name>   ${ENGINES.join(', ')}: the CLI Heads run on; auto lets Claude pick per Head
-  /hydra engines=a,b     the engines auto may use (implies engine=auto), e.g. engines=codex,agy,codebuddy
+  /hydra engine=<name>   ${ENGINES.join(', ')}: the CLI Heads run on by default (Claude may send one Head to another ready engine); auto lets Claude pick per Head
+  /hydra engines=a,b     the only engines auto may use (implies engine=auto), e.g. engines=codex,agy,codebuddy
+                         A Head whose engine is at its usage limit or signed out moves to another model or ready engine on its own (headFallback setting).
   /hydra engines         which engines are installed and signed in, and what each is for
   /hydra accounts        several accounts per engine, switched on a usage limit: list, add <engine> [name], remove <engine> <name>, reset
   /hydra statusline      show Hydra in your status line

@@ -859,7 +859,9 @@ test('tells the Lead which lockdown and model apply on Antigravity', async () =>
   expect(policy).toContain('Antigravity agents on gemini-3.8-flash')
   expect(policy).toContain('run `gemini-3.8-flash` unless you pass another `model`')
   expect(policy).toContain('claude-opus-5-5')
-  expect(policy).toContain('three separate usage pools')
+  expect(policy).toContain('three usage pools')
+  expect(policy).toContain('Gemini (Flash and Pro share a weekly limit and a 5-hour one)')
+  expect(policy).toContain('retires it on 2 November 2026')
   expect(policy).toContain('sandbox')
   expect(policy).not.toContain('--yolo')
   expect(policy).not.toContain('Measured over 126')
@@ -900,18 +902,22 @@ test('keeps the pool of an auto session in engine order and labels it', async ()
   expect(engineOf(auto, 'codebuddy')).toBe('codebuddy')
 })
 
-test('makes the Lead name an engine per Head in auto mode, and only the session engine otherwise', async () => {
+test('auto mode needs an engine per Head; other ready engines join unless the person chose the pool, and a fixed engine is only the default', async () => {
   const auto = { isOn: true, headModel: 'm', engine: 'auto', engines: ['codex', 'agy'] }
-  expect(resolveHeadEngine(auto, 'codex')).toEqual({ engine: 'codex' })
+  expect(resolveHeadEngine(auto, 'codex')).toEqual({ engine: 'codex', isNew: false })
   expect(resolveHeadEngine(auto, undefined)).toMatchObject({ deny: expect.stringContaining('name the engine') })
-  expect(resolveHeadEngine(auto, 'commandcode')).toMatchObject({ deny: expect.stringContaining('not in this session') })
-  expect(resolveHeadEngine(auto, 'gemini')).toMatchObject({ deny: expect.stringContaining('must be one of: codex, agy') })
+  expect(resolveHeadEngine(auto, 'commandcode')).toEqual({ engine: 'commandcode', isNew: true })
+  expect(resolveHeadEngine(auto, 'gemini')).toMatchObject({ deny: expect.stringContaining('must be one of: commandcode, codebuddy') })
+
+  const chosen = { ...auto, pinned: true }
+  expect(resolveHeadEngine(chosen, 'commandcode')).toMatchObject({ deny: expect.stringContaining('engines the person chose (codex, agy)') })
+  expect(resolveHeadEngine(chosen, 'gemini')).toMatchObject({ deny: expect.stringContaining('must be one of: codex, agy') })
 
   const fixed = { isOn: true, headModel: 'm', engine: 'codebuddy' }
-  expect(resolveHeadEngine(fixed, undefined)).toEqual({ engine: 'codebuddy' })
-  expect(resolveHeadEngine(fixed, 'codebuddy')).toEqual({ engine: 'codebuddy' })
-  expect(resolveHeadEngine(fixed, 'codex')).toMatchObject({ deny: expect.stringContaining('engine=auto') })
-  expect(resolveHeadEngine(null, undefined, 'commandcode')).toEqual({ engine: 'commandcode' })
+  expect(resolveHeadEngine(fixed, undefined)).toEqual({ engine: 'codebuddy', isNew: false })
+  expect(resolveHeadEngine(fixed, 'codebuddy')).toEqual({ engine: 'codebuddy', isNew: false })
+  expect(resolveHeadEngine(fixed, 'codex')).toEqual({ engine: 'codex', isNew: true })
+  expect(resolveHeadEngine(null, undefined, 'commandcode')).toEqual({ engine: 'commandcode', isNew: false })
 })
 
 test('gives the Lead a routing guide for exactly the engines in the pool', async () => {

@@ -398,5 +398,5 @@ async function runLockedHead(
     rulesNote, writeDirs: head.writeDirs,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone }
+  return { text, isDone, failure: isDone ? undefined : round.errors }
 }

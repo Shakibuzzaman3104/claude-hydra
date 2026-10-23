@@ -6,7 +6,8 @@ import type { EngineInterface } from 'claude-code'
 
 import type { HeadRun, HeadsUsage, LeadWindow } from '../../types'
 import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
-import type { Engine } from './engines'
+import type { Engine, Routing } from './engines'
+import type { EngineBound } from './accounts'
 import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
@@ -298,9 +299,11 @@ export type HeadResult = {
   failure?: string
   /** The files the Head edited, as the engine saw them. */
   files?: string[]
+  /** Set when the engine, not the task, stopped the Head (a usage limit, a lost sign-in, a setup this engine cannot run): another may run it. */
+  engineBound?: EngineBound
 }
 /** `reply` hands a foreground call its result; it answers false once that call is gone, and the report goes out as a message. */
-export type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; reply?: (result: HeadResult) => boolean }
+export type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; routing?: Routing; reply?: (result: HeadResult) => boolean }
 
 /**
  * The foreground call's end of a worker-run Head. An interrupted call (the person typed, opened a pane, pressed Esc)
@@ -453,12 +456,13 @@ export async function pump(
   return { errors, exit: { code: exit.code ?? null, signal: 'signal' in exit ? String(exit.signal ?? '') : undefined }, isStopped }
 }
 
-export const notStarted = (id: string, model: string, cwd: string, reason: string, engine: Engine = 'codebuddy') => ({
+export const notStarted = (id: string, model: string, cwd: string, reason: string, engine: Engine = 'codebuddy', engineBound?: EngineBound): HeadResult => ({
   text: formatReport({
     id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '',
     exit: 'not started', rulesNote: reason, engine,
   }),
   isDone: false,
+  ...(engineBound ? { engineBound } : {}),
 })
 
 /** Prints the real path of each argument as a JSON list; one Python call works on every platform, unlike `realpath`. */

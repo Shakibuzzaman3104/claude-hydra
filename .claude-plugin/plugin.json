@@ -28,6 +28,12 @@
         "auto"
       ]
     },
+    "headFallback": {
+      "type": "boolean",
+      "title": "Hydra head fallback",
+      "description": "When a Head's engine stops it (every account at its usage limit, signed out, or a setup it cannot run), move it to another model or ready engine instead of failing. Only engines you have already agreed to are used.",
+      "default": true
+    },
     "headEffort": {
       "type": "string",
       "title": "Hydra head effort",

@@ -285,7 +285,7 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
     const refusal = `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.`
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex')
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex', 'unavailable')
   }
   const [realCwd] = await realPaths($, [cwd])
   const writeDirs = await realPaths($, head.writeDirs)
@@ -295,7 +295,7 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
     const refusal = 'Hydra cannot find your home folder (HOME is empty), so it cannot close it to a Codex Head.'
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex')
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex', 'unavailable')
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
   const repoDirs = await gitReadDirs($, realCwd!, realHome)

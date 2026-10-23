@@ -10,7 +10,7 @@ import { sweepCodexTemps } from './engines/codex'
 import { writeRules } from './engines/commandcode'
 import { runHead } from './engines/index'
 import { sweepOpenCodeFiles } from './engines/opencode'
-import { isStrategy, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
+import { coolingLines, isStrategy, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
 import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
@@ -61,6 +61,8 @@ export const register: Register = (on, options) => {
   const defaultEngine: Engine = isEngine(options.headEngine) ? options.headEngine : DEFAULT_ENGINE
   // `auto` is a setting, not an engine: until the person picks one, /hydra uses whichever engines are ready here.
   const isAutoDefault = options.headEngine === AUTO
+  // On unless the person turned it off: a Head the engine stops moves to another model or engine instead of failing.
+  const isFallbackOn = options.headFallback !== false
   setConfiguredEngine(defaultEngine)
   setAccountStrategy(isStrategy(options.accountStrategy) ? options.accountStrategy : 'fill')
   setExtraHomeRead([String(options.headReadDirs ?? '')])
@@ -80,7 +82,7 @@ export const register: Register = (on, options) => {
           const job = await backgroundJobs.next()
           const controller = new AbortController()
           controllers.set(job.id, controller)
-          void runHead($, job.input, job.headModel, controller.signal, limits, job.id, job.engine)
+          void runHead($, job.input, job.headModel, controller.signal, limits, job.id, job.engine, job.routing)
             .catch(async error => {
               const reason = `failed before it reported: ${String(error).slice(0, 300)}`
               const now = await $.clock.now()
@@ -110,8 +112,8 @@ export const register: Register = (on, options) => {
         properties: {
           task: { type: 'string', description: 'Self-contained spec: goal, exact files, constraints, acceptance check' },
           cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
-          engine: { type: 'string', enum: [...ENGINES], description: 'Auto mode only (the person ran /hydra engine=auto): the engine this Head runs on, required there. Pick by the task: see the routing guide in the Hydra policy. In a fixed-engine session it must be omitted or match.' },
-          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-sol for hard or multi-file work, gpt-6-luna for mechanical or small tasks. On Antigravity: gemini-3.8-flash (default, bulk), gemini-4-argon or claude-sonnet-5-5 (normal work), claude-opus-5-5 (hard work), gpt-oss-120b (simple edits); Claude + GPT-OSS, Gemini Flash and Argon draw on separate usage limits. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
+          engine: { type: 'string', enum: [...ENGINES], description: 'The engine this Head runs on. Required in auto mode; in a fixed-engine session it defaults to that engine, and naming another ready one sends just this Head there. Pick by the task: see the routing guide in the Hydra policy. If the engine is at its usage limit or signed out, Hydra moves the Head to another model or engine on its own, and the report says where it ran.' },
+          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-sol for hard or multi-file work, gpt-6-luna for mechanical or small tasks. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-3.8-flash (default, bulk), gemini-4-argon (research and search) or claude-sonnet-5-5 (normal work), claude-opus-5-5 (hard work), gpt-oss-120b (simple edits, retiring 2 November 2026); Claude + GPT-OSS, Gemini and Argon draw on separate usage limits. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
@@ -208,9 +210,11 @@ export const register: Register = (on, options) => {
     if (unknown) return { text: `Unknown option "${unknown}". A task needs a few words; /hydra help lists the options.` }
     if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks low to max per Head) or one of: ${EFFORTS.join(', ')}.` }
     if (engine !== undefined && !isEngine(engine) && engine !== AUTO) return { text: `Unknown engine "${engine}". Use ${[...ENGINES, AUTO].join(', ')}.` }
-    const keepsAuto = isAuto(stored) && engine === undefined && engines === undefined
+    // A running session, or an engine the person chose, carries on; anything else is planned again, so engines set up since join.
+    const keepsStored = !!stored && (stored.isOn || stored.pinned === true) && engine === undefined && engines === undefined
+    const keepsAuto = isAuto(stored) && keepsStored
     // No engine named: use the configured one if it is ready, else whichever are (see onboardingPlan).
-    const planned = engine === undefined && engines === undefined && !keepsAuto ? await planOnboarding($, stored ? engineOf(stored, defaultEngine) : isAutoDefault ? AUTO : defaultEngine) : undefined
+    const planned = engine === undefined && engines === undefined && !keepsAuto ? await planOnboarding($, keepsStored ? engineOf(stored, defaultEngine) : isAutoDefault ? AUTO : defaultEngine) : undefined
     if (planned?.plan.kind === 'setup') return { text: setupCard(planned.skipped) }
     const plannedPool = planned?.plan.kind === 'auto' ? planned.plan.pool : undefined
     const plannedEngine = planned?.plan.kind === 'fixed' ? planned.plan.engine : undefined
@@ -221,7 +225,7 @@ export const register: Register = (on, options) => {
       const ready = await readyEngines($, parsed.engines)
       if (ready.pool.length === 0) return { text: ['🐉 Hydra can\'t start yet: none of those engines is ready.', ...ready.skipped.map(item => `  • ${ENGINE_LABEL[item.engine]}: ${item.problem}`), 'Then run /hydra again.'].join('\n') }
       if (!(await hasConsentAll($, ready.pool, true))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
-      const nextAuto = { isOn: true, headModel: headModel ?? (isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead), effort: effort ?? currentEffort, engine: AUTO, engines: ready.pool }
+      const nextAuto = { isOn: true, headModel: headModel ?? (isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead), effort: effort ?? currentEffort, engine: AUTO, engines: ready.pool, pinned: engines !== undefined || (keepsAuto && stored?.pinned === true) }
       await updateMode($, () => nextAuto)
       $.ui.invalidate('tool.describe')
       await refreshStatus($, limits)
@@ -237,7 +241,7 @@ export const register: Register = (on, options) => {
       return { text: autoText }
     }
     const nextEngine = (engine ?? plannedEngine ?? currentEngine) as Engine
-    const next = { isOn: true, headModel: headModelFor(nextEngine, headModel, current.headModel, defaultHead), effort: effort ?? currentEffort, engine: nextEngine }
+    const next = { isOn: true, headModel: headModelFor(nextEngine, headModel, current.headModel, defaultHead), effort: effort ?? currentEffort, engine: nextEngine, pinned: engine !== undefined || (keepsStored && stored?.pinned === true && nextEngine === currentEngine) }
     const check = planned ? { problems: [] as string[], warnings: planned.warnings } : await preflight($, next.engine as Engine)
     if (check.problems.length > 0) return { text: preflightText(check) }
     if (!(await hasConsent($, next.headModel, true, next.engine as Engine))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
@@ -274,7 +278,11 @@ export const register: Register = (on, options) => {
     const hydra = await readMode($)
     if (!hydra?.isOn) return composed
 
-    return { sections: [...composed.sections, { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, effortModeOf(hydra), isAuto(hydra) ? AUTO : engineOf(hydra, defaultEngine), poolOf(hydra)), scope: 'session' as const }] }
+    const policy = { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, effortModeOf(hydra), isAuto(hydra) ? AUTO : engineOf(hydra, defaultEngine), poolOf(hydra), { fallback: isFallbackOn, pinned: hydra.pinned === true }), scope: 'session' as const }
+    const cooling = await coolingLines($, isAuto(hydra) && hydra.pinned ? poolOf(hydra) : ENGINES).catch(() => [])
+    const limited = cooling.length > 0 ? [{ id: 'hydra:limits', text: `- Usage limits in force now (Hydra moves a Head off these on its own; route new work elsewhere): ${cooling.join('; ')}.`, scope: 'session' as const }] : []
+
+    return { sections: [...composed.sections, policy, ...limited] }
   })
 
   on('tool.describe', { tool: HEAD_TOOL }, async ($, e, next) => {
@@ -294,30 +302,36 @@ export const register: Register = (on, options) => {
     const routed = resolveHeadEngine(hydra, e.engine, defaultEngine)
     if ('deny' in routed) return { deny: routed.deny }
     const engine = routed.engine
+    if (routed.isNew) {
+      const ready = await preflight($, engine)
+      if (ready.problems.length > 0) return { deny: `${ENGINE_LABEL[engine]} is not ready here: ${ready.problems[0]} Pick another engine.` }
+    }
     if (!(await hasConsent($, hydra.headModel, false, engine))) return { deny: NO_CONSENT }
+    if (routed.isNew && isAuto(hydra)) await updateMode($, mode => (mode ? { ...mode, engines: [...poolOf(mode), engine] } : mode))
     const check = typeof e.check === 'string' ? e.check.trim() : ''
     if (check && !(await hasCheckConsent($, check))) return { deny: NO_CHECK_CONSENT }
     const headModel = headModelFor(engine, undefined, hydra.headModel, defaultHead)
     const asked = typeof e.model === 'string' && e.model ? e.model : undefined
     const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}) }
+    const routing = { headModel: hydra.headModel, configured: defaultHead, model: asked, pool: isAuto(hydra) && hydra.pinned ? poolOf(hydra) : undefined, fallback: isFallbackOn }
     const taken = new Set([...usedNames, ...(await readRuns($)).map(run => run.id)])
     const id = headName(e.name, String(e.task ?? ''), taken)
     usedNames.add(id)
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment, or run this Head without background.' }
-      backgroundJobs.push({ input, headModel, id, engine })
+      backgroundJobs.push({ input, headModel, id, engine, routing })
 
       return { result: `Head ${id} started in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
-      const { text } = await runHead($, input, headModel, next.signal, limits, id, engine)
+      const { text } = await runHead($, input, headModel, next.signal, limits, id, engine, routing)
 
       return { result: text }
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
     // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
     const { box, reply } = createReplyBox<HeadResult>(next.signal)
-    backgroundJobs.push({ input, headModel, id, engine, reply })
+    backgroundJobs.push({ input, headModel, id, engine, routing, reply })
     const result = await waitForResult(box, next.signal, () => $.process.run(['/bin/sleep', '1'], { timeoutMs: 5_000 }).then(() => undefined))
 
     return { result: result?.text ?? `Head ${id} keeps running in the background after the call was interrupted; its report arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} if it is no longer wanted.` }
@@ -352,7 +366,7 @@ export const register: Register = (on, options) => {
     const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
     if (action === 'off') {
       await updateMode($, () => ({ ...current, isOn: false }))
-    } else if ((action === 'on' || action === 'effort') && (String(e.engine) === AUTO || Array.isArray(e.engines) || (isAuto(stored) && e.engine === undefined) || (!stored && isAutoDefault && e.engine === undefined))) {
+    } else if ((action === 'on' || action === 'effort') && (String(e.engine) === AUTO || Array.isArray(e.engines) || (isAuto(stored) && e.engine === undefined) || (action === 'on' && !stored?.isOn && !stored?.pinned && isAutoDefault && e.engine === undefined))) {
       const listed = Array.isArray(e.engines) ? parseEngineList(e.engines.map(String).join(',')) : undefined
       if (listed && (listed.bad.length > 0 || listed.engines.length === 0)) return { deny: `engines must be some of: ${ENGINES.join(', ')}.` }
       const wanted = listed ? listed.engines : isAuto(stored) ? poolOf(stored) : [...ENGINES]
@@ -366,7 +380,7 @@ export const register: Register = (on, options) => {
         pool = ready.pool
       }
       const headModel = typeof e.headModel === 'string' && e.headModel ? e.headModel : isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead
-      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine: AUTO, engines: pool }))
+      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine: AUTO, engines: pool, pinned: listed === undefined && stored?.pinned === true }))
     } else if (action === 'on' || action === 'effort') {
       if (e.engine !== undefined && !isEngine(e.engine)) return { deny: `engine must be one of: ${[...ENGINES, AUTO].join(', ')}.` }
       const engine = isEngine(e.engine) ? e.engine : engineOf(stored, defaultEngine)
@@ -378,7 +392,7 @@ export const register: Register = (on, options) => {
       const effort = typeof e.effort === 'string' ? e.effort : undefined
       if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
       const headModel = headModelFor(engine, typeof e.headModel === 'string' && e.headModel ? e.headModel : undefined, current.headModel, defaultHead)
-      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine }))
+      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine, pinned: e.engine === undefined && stored?.pinned === true }))
     } else {
       return { deny: `Unknown action "${action}". Use list, stop, clear, on, off or effort.` }
     }
