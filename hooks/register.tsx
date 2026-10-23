@@ -6,6 +6,7 @@ import type { Register } from 'claude-code'
 
 import { sweepAgyHomes } from './engines/agy'
 import { sweepBuddySettings } from './engines/codebuddy'
+import { sweepCodexTemps } from './engines/codex'
 import { writeRules } from './engines/commandcode'
 import { runHead } from './engines/index'
 import { sweepOpenCodeFiles } from './engines/opencode'
@@ -149,6 +150,7 @@ export const register: Register = (on, options) => {
     void sweepStatusFiles($)
     void sweepBuddySettings($)
     void sweepAgyHomes($)
+    void sweepCodexTemps($)
     void sweepOpenCodeFiles($)
     const usage = await $.session.usage()
     await storeLead($, usage.rateLimits, limits)

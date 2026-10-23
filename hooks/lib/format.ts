@@ -363,10 +363,28 @@ export const resumeCommand = (engine: Engine) => (engine === 'opencode' ? 'openc
 /** Whether a path is a `.hydraignore` file, in any letter case: a Head that changed one changes what the next Head is kept from. */
 export const isIgnoreFile = (path: string) => /(^|\/)\.hydraignore$/i.test(path)
 
+/** Other Heads that ran in `cwd`, or a folder inside or holding it, while this Head ran. */
+export const overlappingHeads = (runs: readonly HeadRun[], head: { id: string; cwd?: string; startedAt?: number; endedAt?: number }): string[] => {
+  const { id, cwd, startedAt } = head
+  if (startedAt === undefined || cwd === undefined) return []
+  const end = head.endedAt ?? startedAt
+  return runs
+    .filter((run): run is HeadRun & { cwd: string; startedAt: number } => run.id !== id && run.cwd !== undefined && run.startedAt !== undefined)
+    .filter(run => isWithin(run.cwd, cwd) || isWithin(cwd, run.cwd))
+    .filter(run => run.startedAt <= end && (run.endedAt ?? end) >= startedAt)
+    .map(run => run.id)
+}
+
 export const formatReport = (head: {
   id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
   writeDirs?: readonly string[]; engine?: Engine; tokens?: string; /** Things the Lead must check by hand, each shown as a ⚠ line. */ warnings?: readonly string[]
+  /** Files the Head put back to the committed version, or changed though they were already uncommitted before it started. */
+  reverted?: readonly string[]; overwritten?: readonly string[]
+  /** Tracked files rewritten during the Head that match the committed version again. */
+  restored?: readonly string[]
+  /** Other Heads that ran in the same folder, or one inside or holding it, during this Head. */
+  alsoRan?: readonly string[]
 }) => {
   const lines = [
     `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}`,
@@ -380,6 +398,10 @@ export const formatReport = (head: {
   const ignoreEdits = head.files.filter(isIgnoreFile)
   if (ignoreEdits.length > 0) lines.push(`⚠ CHANGED .hydraignore (${ignoreEdits.map(file => relativeTo(head.cwd, file)).join(', ')}): check it before the next Head runs`)
   lines.push(head.files.length > 0 ? `edited (${head.files.length}): ${head.files.map(file => relativeTo(head.cwd, file)).join(', ')}` : 'edited: nothing')
+  if (head.reverted && head.reverted.length > 0) lines.push(`⚠ put back to the committed version during this Head (uncommitted edits there are gone): ${head.reverted.map(file => relativeTo(head.cwd, file)).join(', ')}`)
+  if (head.restored && head.restored.length > 0) lines.push(`⚠ rewritten during this Head and now identical to the committed version (if anyone edited them while it ran, those edits are gone): ${head.restored.map(file => relativeTo(head.cwd, file)).join(', ')}`)
+  if (head.overwritten && head.overwritten.length > 0) lines.push(`⚠ changed files that already had uncommitted edits before this Head started: ${head.overwritten.map(file => relativeTo(head.cwd, file)).join(', ')}`)
+  if (head.alsoRan && head.alsoRan.length > 0) lines.push(`⚠ ${head.alsoRan.join(', ')} also ran in this folder during this Head; the edited list may include their files`)
   if (head.denied.length > 0) {
     lines.push(`denied (${head.denied.length}):`, ...head.denied.map(d => `  - ${d.tool} ${relativeTo(head.cwd, d.target)}: ${d.text.slice(0, 140)}`))
   }

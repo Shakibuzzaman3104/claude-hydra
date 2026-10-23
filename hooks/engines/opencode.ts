@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { applyEvent, formatReport, outsideFiles, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, stopReason, summaryOf } from '../lib/runtime'
+import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { IdleLimits, Round } from '../lib/runtime'
 import { SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
@@ -606,6 +606,7 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
   const signal = controller.signal
 
   const startedAt = await $.clock.now()
+  await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
   const state = newOpenCodeState(cwd)
   const labels = new Map<string, string>()
   const onEvent = async (event: StreamEvent) => {
@@ -645,13 +646,15 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
 
   timerStop.abort()
   const files = union([...state.files], await changedFiles($, startedAt, [cwd, ...head.writeDirs]))
+  const endedAt = await $.clock.now()
+  const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const tokens = tokensText(state.inputTokens, state.outputTokens)
   const finished = isFinished(round.finalText)
   const isDone = round.code === 0 && round.subtype === 'success' && finished
   const stopped = outer.aborted ? stopReason(outer) : undefined
   const hung = round.signal === 'idle'
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt: await $.clock.now(),
+    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (hung ? 'OpenCode hung (no output)' : round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
   })
@@ -663,6 +666,7 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
     id, model, cwd, sessionId, finished, rounds, turns: state.turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? (hung ? 'hung' : String(round.code ?? round.signal)), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'opencode', tokens: state.usd > 0 ? `${tokens} · $${state.usd.toFixed(4)}` : tokens, warnings,
+    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, isDone, failure: isDone ? undefined : round.errors, files }
 }

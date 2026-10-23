@@ -7,13 +7,13 @@ import type { EngineInterface } from 'claude-code'
 import type { HeadRun, HeadsUsage, LeadWindow } from '../../types'
 import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
 import type { Engine } from './engines'
-import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, resetsIn, statusLine, stopRuns } from './format'
+import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
 import { AUTO_CONSENT_QUESTION, CHECK_CONSENT_QUESTION, CHECK_CONSENT_YES, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, secretDirRefusal, union } from './safety'
 import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
-import { readHeads, readMode, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
+import { readHeads, readMode, readRuns, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
 
 const STATUS_KEEP_MS = 7 * 86_400_000
 const CONSENT_KEY = 'consent-v1'
@@ -99,14 +99,17 @@ export async function preflight($: EngineInterface, engine: Engine = DEFAULT_ENG
   }
   if (!(await works(['git', '--version']))) problems.push('git is missing. Install it (on macOS: `xcode-select --install`).')
   const home = await homeOf($)
+  const warnings: string[] = []
   if (engine === 'codex' && problems.length === 0 && !(await canRun($, 'codex', ['login', 'status']))) {
     problems.push('Codex is not signed in. Run `codex login` in a terminal (`codex login --device-auth` on a remote machine), then try again.')
   }
   if (engine === 'agy' && problems.length === 0 && !(home && (await $.fs.exists(`${home}/${AGY_TOKEN}`).catch(() => false)))) {
-    problems.push('Antigravity is not signed in. Run `agy` once in a terminal (choose Google OAuth), then try again.')
+    // A newer agy keeps the sign-in in the macOS keychain, where nothing on disk says whether it is there: a Head may still start.
+    if ((await platformOf($)) === 'darwin') warnings.push('Antigravity keeps its sign-in in the macOS keychain here, so Hydra cannot check it before a Head starts. If a Head stops with "not signed in", run `agy` once in a terminal.')
+    else problems.push('Antigravity is not signed in. Run `agy` once in a terminal (choose Google OAuth), then try again.')
   }
   const isSignedIn = engine !== 'commandcode' || (home ? await $.fs.exists(`${home}/.commandcode/auth.json`).catch(() => false) : false)
-  const warnings = isSignedIn || problems.length > 0 ? [] : ['Command Code looks signed out: run `commandcode` once in a terminal to sign in, or Heads will fail.']
+  if (!isSignedIn && problems.length === 0) warnings.push('Command Code looks signed out: run `commandcode` once in a terminal to sign in, or Heads will fail.')
   if (problems.length === 0) {
     const extra = await engineChecks($, engine, home)
     problems.push(...extra.problems)
@@ -480,4 +483,62 @@ export async function changedFiles($: EngineInterface, since: number, dirs: read
   } catch {
     return []
   }
+}
+
+/** Each Head's uncommitted files and their sha1 when it started, by id: what its report must not call its own edits. */
+const editsBefore = new Map<string, Record<string, string>>()
+
+/** The uncommitted files under `dirs` and their sha1, kept for `id`; the first call wins, so a resumed Head keeps its start. */
+export async function snapshotChangedFiles($: EngineInterface, id: string, dirs: readonly string[]): Promise<Record<string, string>> {
+  const kept = editsBefore.get(id)
+  if (kept) return kept
+  try {
+    const ran = await runScript($, 'changed-files.py', ['--snapshot', ...dirs])
+    const snapshot = JSON.parse(ran.stdout) as Record<string, string>
+    editsBefore.set(id, snapshot)
+    return snapshot
+  } catch {
+    editsBefore.set(id, {})
+    return {}
+  }
+}
+
+export type EditConflicts = {
+  /** Snapshot files the Head changed that still differ from git. */
+  overwritten: string[]
+  /** Snapshot files now back to the committed version, or deleted: edits made before the Head started are gone. */
+  reverted: string[]
+  /** Tracked files rewritten during the Head that match the committed version: an edit made there while it ran is gone. */
+  restored: string[]
+  /** Other Heads that ran in this folder, or one inside or holding it, during this Head. */
+  alsoRan: string[]
+}
+
+/** Writes the snapshot where Python can read it: `runScript` passes no stdin. */
+async function snapshotFile($: EngineInterface, id: string, snapshot: Record<string, string>) {
+  const temp = (await $.env.get('TMPDIR')) || (await $.env.get('TEMP')) || '/tmp'
+  const file = `${temp.replace(/\/$/, '')}/hydra-edits-${id}.json`
+  await $.fs.write(file, JSON.stringify(snapshot))
+  return file
+}
+
+/** What the Head did to edits that were uncommitted before it started, and the Heads that ran beside it. */
+export async function compareChangedFiles($: EngineInterface, id: string, head: { cwd: string; startedAt?: number; endedAt?: number }, dirs: readonly string[]): Promise<EditConflicts> {
+  const snapshot = editsBefore.get(id) ?? {}
+  let edits = { overwritten: [] as string[], reverted: [] as string[], restored: [] as string[] }
+  // Runs with an empty snapshot too: a clean tree at the start can still lose an edit made while the Head ran.
+  let file: string | undefined
+  try {
+    file = await snapshotFile($, id, snapshot)
+    const since = head.startedAt ?? (await $.clock.now())
+    const ran = await runScript($, 'changed-files.py', ['--compare', file, String(since), ...dirs])
+    const parsed = JSON.parse(ran.stdout) as Partial<typeof edits>
+    edits = { overwritten: parsed.overwritten ?? [], reverted: parsed.reverted ?? [], restored: parsed.restored ?? [] }
+  } catch {
+    // No report line beats a wrong one.
+  } finally {
+    if (file) await $.process.run(['/bin/rm', '-f', file]).catch(() => undefined)
+  }
+  editsBefore.delete(id)
+  return { ...edits, alsoRan: overlappingHeads(await readRuns($), { id, ...head }) }
 }
