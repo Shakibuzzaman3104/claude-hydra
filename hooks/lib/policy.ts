@@ -30,7 +30,7 @@ ${
       : `- The person fixed every Head's effort at ${effort} with /hydra effort=${effort}; your \`effort\` field is ignored until they set /hydra effort=auto.`
   }`
 
-const AGY_MODEL_GUIDE = '`gemini-3.8-flash` for bulk, reading and mechanical edits (the cheap default); `gemini-4-argon` or `claude-sonnet-5-5` for normal implementation; `claude-opus-5-5` for hard, subtle or multi-file work; `gpt-oss-120b` for simple edits when the Gemini pools are used up.'
+const AGY_MODEL_GUIDE = '`gemini-3.8-flash` for bulk, reading and mechanical edits (the cheap default); `gemini-4-argon` for research and search (investigating a codebase, reading docs, web research: agy Heads have `search_web` and `read_url_content`) and, with `claude-sonnet-5-5`, for normal implementation; `claude-opus-5-5` for hard, subtle or multi-file work; `gpt-oss-120b` for simple edits when the Gemini pools are used up.'
 
 const agyEffortRule = (effort: EffortMode) =>
   `- Antigravity Heads run \`${AGY_MODEL}\` unless you pass another \`model\`: ${AGY_MODEL_GUIDE}
@@ -100,7 +100,7 @@ const LOCKDOWN_BRIEF: Record<Engine, string> = {
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
 export const ROUTES: Record<Engine, string> = {
   codex: `gpt-6.1-sol (pass \`model: "gpt-6-luna"\` for easy work): the strongest coder here. Send it hard, subtle or multi-file work, and anything where the Head should run the tests itself (its shell is sandboxed with no network, so nothing that downloads). Spends the person's ChatGPT plan.`,
-  agy: `gemini-3.8-flash by default: fast, large context, for reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. Pass \`model\` for more: \`gemini-4-argon\` or \`claude-sonnet-5-5\` for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini Flash and Argon are separate usage pools (the Gemini ones weekly only). No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
+  agy: `gemini-3.8-flash by default: fast, large context, for reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. Pass \`model\` for more: \`gemini-4-argon\` for research and search (its Heads can search the web) and, with \`claude-sonnet-5-5\`, for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini Flash and Argon are separate usage pools (the Gemini ones weekly only). No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
   codebuddy: `DeepSeek V4.1 Flash: the cheap default. Send it well-specified edits, renames, new tests and small features. Measured: 95% of 126 runs passed at \`low\` effort. Optional shell.`,
   workbuddy: `DeepSeek V4.1 Flash, the same DeepSeek model through your WorkBuddy subscription (credits). Send it what you would send CodeBuddy: well-specified edits, renames, new tests and small features. Optional shell.`,
   opencode: `BETA. Free or cheap models (default \`opencode/deepseek-v4.1-flash-free\`, no account needed). No shell and no search tool: name the exact files in the task. Good for well-specified small edits; send anything that needs a shell, tests or a search elsewhere.`,

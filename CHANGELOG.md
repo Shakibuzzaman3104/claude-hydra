@@ -2,7 +2,7 @@
 
 ## Unreleased
 **Highlights**
-- **Antigravity Heads can run Gemini 4 Argon, Claude Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B**, not just Gemini 3.8 Flash. Flash stays the default; Claude passes `model` per Head and the policy says which model suits which work.
+- **Antigravity Heads can run Gemini 4 Argon, Claude Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B**, not just Gemini 3.8 Flash. Flash stays the default; Claude passes `model` per Head and the policy says which model suits which work (Argon for research and search: agy Heads have web search).
 - **Fixed: Antigravity Heads failed whenever an effort level was set.** agy 1.4 refuses `--model gemini-3.8-flash --effort <level>`; Hydra now sends the level in the model id (`gemini-3.8-flash-low`).
 - **Usage limits per Antigravity pool.** Claude + GPT-OSS, Gemini Flash and Gemini 4 Argon draw on separate limits (the Gemini ones weekly only). With several Antigravity accounts a limit cools only that pool, and `/hydra accounts` shows which pool is cooling.
 - **Fixed: Antigravity said "not signed in" and its Heads could not start when agy keeps the sign-in in the macOS keychain.** agy 1.4.6 stores the token there (its log: `keyringAuth: loaded token`), so `antigravity-oauth-token` no longer exists. A Head's own `HOME` now links `Library/Keychains` to yours instead of copying the file, its rules deny the model that folder, and `/hydra` warns instead of refusing.
