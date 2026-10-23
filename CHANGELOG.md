@@ -2,7 +2,7 @@
 
 ## Unreleased
 **Highlights**
-- **Antigravity Heads can run Gemini 4 Argon, Claude Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B**, not just Gemini 3.8 Flash. Flash stays the default; Claude passes `model` per Head and the policy says which model suits which work.
+- **Antigravity Heads can run Gemini 4 Argon, Claude Opus 5.5, Claude Sonnet 5.5 and GPT-OSS 120B**, not just Gemini 3.8 Flash. Flash stays the default; Claude passes `model` per Head and the policy says which model suits which work (Argon for research and search: agy Heads have web search).
 - **Fixed: Antigravity Heads failed whenever an effort level was set.** agy 1.4 refuses `--model gemini-3.8-flash --effort <level>`; Hydra now sends the level in the model id (`gemini-3.8-flash-low`).
 - **Usage limits per Antigravity pool.** Claude + GPT-OSS, Gemini Flash and Gemini 4 Argon draw on separate limits (the Gemini ones weekly only). With several Antigravity accounts a limit cools only that pool, and `/hydra accounts` shows which pool is cooling.
 
