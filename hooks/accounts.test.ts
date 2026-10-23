@@ -134,7 +134,9 @@ test('says when the earliest account frees up when all are cooling', async () =>
   const text = allCoolingText('codex', NOW + 20 * MIN)
   expect(text.startsWith('all accounts of codex are at their usage limit')).toBe(true)
   expect(text).toContain(timeOf(NOW + 20 * MIN))
-  expect(HYDRA_POLICY('m', 'auto', 'auto', ['codex', 'agy'])).toContain('all accounts of <engine> are at their usage limit')
+  expect(HYDRA_POLICY('m', 'auto', 'auto', ['codex', 'agy'])).toContain('Hydra moves it on its own')
+  expect(HYDRA_POLICY('m', 'auto', 'codex', ['codex'])).toContain('`fallback:` line')
+  expect(HYDRA_POLICY('m', 'auto', 'auto', ['codex', 'agy'], { fallback: false })).toContain('all accounts of <engine> are at their usage limit')
 })
 
 test('the report line names the accounts used and the switch', async () => {
@@ -242,7 +244,7 @@ test('keeps Antigravity limits per usage pool: one pool cooling leaves the other
   expect(pickAccount('agy', AGY, { 'agy/default': NOW + MIN }, NOW, 'fill', {}, [], 'argon')).toEqual({ account: AGY[1] })
   expect(pickAccount('agy', AGY, { ...claudeOut, 'agy/work#claude': NOW + 10 * MIN }, NOW, 'fill', {}, [], 'claude')).toEqual({ account: null, until: NOW + 10 * MIN })
   expect(allCoolingText('agy', null, 'claude')).toContain('Claude + GPT-OSS usage limit')
-  expect(allCoolingText('agy', null, 'claude')).toContain('another pool')
+  expect(allCoolingText('agy', null, 'claude')).toContain('another model')
 
   const { $, kept } = withHome({ 'accounts-v1': { agy: ['work'] }, 'cooldowns-v1': { 'agy/work#argon': 1_000_000 + 30 * MIN, 'agy/default#claude': 1_000_000 + 20 * MIN } })
   const [agy] = await accountOverview($, ['agy'])

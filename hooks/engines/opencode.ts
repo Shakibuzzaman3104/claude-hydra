@@ -571,7 +571,7 @@ export async function runOpenCodeHead($: EngineInterface, head: OpenCodeHead, ou
   if ('refusal' in setup) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: setup.refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${setup.refusal} A Head never starts without Hydra's rules.`, 'opencode')
+    return notStarted(id, model, cwd, `${setup.refusal} A Head never starts without Hydra's rules.`, 'opencode', 'unavailable')
   }
   try {
     const real = { ...head, cwd: setup.cwd, addDirs: setup.addDirs, writeDirs: setup.writeDirs }

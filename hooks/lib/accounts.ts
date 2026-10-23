@@ -21,11 +21,15 @@ export type Account = { engine: Engine; name: string; dir?: string }
 
 export const DEFAULT_ACCOUNT = 'default'
 const ACCOUNTS_KEY = 'accounts-v1'
+/** Account folders the person removed: a folder left on disk is not found again. */
+const REMOVED_KEY = 'accountsRemoved-v1'
 const COOLDOWNS_KEY = 'cooldowns-v1'
 const LAST_USED_KEY = 'lastUsed-v1'
 const ACCOUNTS_DIR = '.claude/hydra/accounts'
 
 export const COOLDOWN_DEFAULT_MS = 60 * 60_000
+/** How long a signed-out account is passed over: the person may sign it in again any time. */
+export const SIGNED_OUT_COOLDOWN_MS = 10 * 60_000
 export const COOLDOWN_MAX_MS = 7 * 86_400_000
 
 export const STRATEGIES = ['fill', 'spread'] as const
@@ -73,11 +77,15 @@ async function codexSignedIn($: EngineInterface, dir?: string): Promise<boolean>
   return $.process.run(argv, { timeoutMs: 15_000, ...(dir ? { env: { CODEX_HOME: dir } } : {}) }).then(ran => ran.exitCode === 0, () => false)
 }
 
-/** CodeBuddy keeps its sign-in in its own config folder; Hydra can only see that the folder holds more than its `.keep`. The default account is not checked. */
+/**
+ * CodeBuddy keeps its sign-in in `.credentials.json` in its config folder. A folder that holds only `.keep` was never signed in;
+ * one that ran without that file Hydra cannot judge. The default account is not checked.
+ */
 async function buddySignedIn($: EngineInterface, dir?: string): Promise<boolean | undefined> {
   if (!dir) return undefined
   const entries = await $.fs.list(dir).catch(() => [])
-  return entries.some(entry => entry.name !== '.keep')
+  if (entries.some(entry => entry.name === '.credentials.json')) return true
+  return entries.some(entry => entry.name !== '.keep') ? undefined : false
 }
 
 /**
@@ -175,6 +183,25 @@ const QUOTA_WORDING = [
  */
 export const isQuotaFailure = (text: string | undefined) => !!text && QUOTA_WORDING.some(pattern => pattern.test(text))
 
+const SIGNED_OUT_WORDING = [
+  /not (?:signed|logged) in/i, /authentication (?:failed|required)/i, /\bunauthori[sz]ed\b/i, /\b401\b/, /please (?:log ?in|sign in)/i,
+  /login required/i, /invalid (?:api[\s_-]?key|token|credentials?)/i, /(?:token|session|credentials?) (?:has )?expired/i,
+]
+
+/** Whether a CLI's failure output says the account has no valid sign-in. Like `isQuotaFailure`, it reads only the CLI's own failure text. */
+export const isSignedOutFailure = (text: string | undefined) => !!text && !isQuotaFailure(text) && SIGNED_OUT_WORDING.some(pattern => pattern.test(text))
+
+const MODEL_GONE_WORDING = [
+  /unknown model/i, /invalid model(?: selection| id| name)?/i, /model[^\n]{0,60}(?:not (?:found|available|supported)|unsupported|does not exist|deprecated|retired)/i,
+  /(?:no|unsupported) such model/i,
+]
+
+/** Whether a CLI's failure output says the model itself cannot run (unknown, retired, not on this plan): another model may. */
+export const isModelUnavailable = (text: string | undefined) => !!text && !isQuotaFailure(text) && MODEL_GONE_WORDING.some(pattern => pattern.test(text))
+
+/** Why a Head's engine, not its task, stopped it: another account, model or engine may run it. */
+export type EngineBound = 'quota' | 'signed out' | 'unavailable'
+
 const UNIT_MS: Record<string, number> = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1_000 }
 const unitOf = (word: string) => (/^(ms|millis)/i.test(word) ? 1 : UNIT_MS[word.toLowerCase()[0] ?? 's'] ?? 1_000)
 const DURATION = /(\d+(?:\.\d+)?)\s*(days?|d|hours?|hrs?|h|milliseconds?|ms|minutes?|mins?|m|seconds?|secs?|s)\b/gi
@@ -221,7 +248,7 @@ const stampOf = (text: string) => {
  */
 export const cooldownFrom = (text: string, now: number) => {
   const clamp = (until: number) => Math.min(now + COOLDOWN_MAX_MS, Math.max(now + 1_000, until))
-  const wait = /(?:try again in|retry(?:ing)? (?:again )?in|retry[\s_-]?after:?|resets? in)\s*((?:[^\n.;]|\.(?=\d))*)/i.exec(text)
+  const wait = /(?:try again in|retry(?:ing)? (?:again )?in|retry[\s_-]?after:?|resets? in|(?:fully )?refresh(?:es)? in)\s*((?:[^\n.;]|\.(?=\d))*)/i.exec(text)
   if (wait) {
     let total = 0
     for (const part of wait[1]!.matchAll(DURATION)) total += Number(part[1]) * unitOf(part[2]!)
@@ -290,31 +317,66 @@ export const pickAccount = (
 
 // --- The report line and messages ------------------------------------------------------------------------------------
 
-export type Attempt = { id: string; until?: number }
+export type Attempt = { id: string; until?: number; /** Passed over because its sign-in failed, not its limit. */ signedOut?: boolean }
 
 /** `accounts: codex/default (usage limit, cooling until 14:05) → codex/work`; one account and no switch reads `accounts: codex/work`. */
 export const accountsLine = (trail: readonly Attempt[]) =>
-  `accounts: ${trail.map(step => (step.until !== undefined ? `${step.id} (usage limit, cooling until ${timeOf(step.until)})` : step.id)).join(' → ')}`
+  `accounts: ${trail.map(step => (step.signedOut ? `${step.id} (not signed in)` : step.until !== undefined ? `${step.id} (usage limit, cooling until ${timeOf(step.until)})` : step.id)).join(' → ')}`
 
 /** The not-started report's reason when every account of an engine is at its limit. */
 export const allCoolingText = (engine: Engine, until: number | null, pool?: string) =>
-  `all accounts of ${engine} are at their ${pool ? `${poolLabel(pool)} ` : ''}usage limit${until !== null ? `; the earliest frees up at ${timeOf(until)}` : ''}. Route this task to ${pool ? `an Antigravity model in another pool or ` : ''}another engine, or run /hydra accounts reset if the limits have lifted.`
+  `all accounts of ${engine} are at their ${pool ? `${poolLabel(pool)} ` : ''}usage limit${until !== null ? `; the earliest frees up at ${timeOf(until)}` : ''}. Route this task to ${pool ? 'another model or ' : ''}another engine, or run /hydra accounts reset if the limits have lifted.`
 
-/** The note a Head gets when it continues another account's work. */
-export const switchNote = (files: readonly string[]) =>
-  `A previous attempt on another account stopped at a usage limit. Files it already changed: ${files.length > 0 ? files.join(', ') : 'none recorded'}. Check them and continue from the current state.`
+/** The note a Head gets when it continues another account's, model's or engine's work. */
+export const switchNote = (files: readonly string[], where = 'another account', why = 'at a usage limit') =>
+  `A previous attempt on ${where} stopped ${why}. Files it already changed: ${files.length > 0 ? files.join(', ') : 'none recorded'}. Check them and continue from the current state.`
 
 // --- The store ------------------------------------------------------------------------------------------------------
 
-/** The extra account names per engine; entries for unknown engines, engines without support and bad names are dropped. */
-export async function readAccountNames($: EngineInterface): Promise<Partial<Record<Engine, string[]>>> {
-  const stored = await $.store.get(ACCOUNTS_KEY).catch(() => undefined)
+/** Valid account names per supported engine in a stored map; entries for unknown engines, engines without support and bad names are dropped. */
+const namesIn = (stored: unknown): Partial<Record<Engine, string[]>> => {
   const names: Partial<Record<Engine, string[]>> = {}
   if (!stored || typeof stored !== 'object') return names
   for (const [engine, list] of Object.entries(stored as Record<string, unknown>)) {
     if (!isEngine(engine) || !supportsAccounts(engine) || !Array.isArray(list)) continue
     const valid = [...new Set(list.filter((name): name is string => typeof name === 'string' && isAccountName(name)))]
     if (valid.length > 0) names[engine] = valid
+  }
+  return names
+}
+
+/** The account names saved with `/hydra accounts add`. */
+async function savedAccountNames($: EngineInterface) {
+  return namesIn(await $.store.get(ACCOUNTS_KEY).catch(() => undefined))
+}
+
+async function removedAccountNames($: EngineInterface) {
+  return namesIn(await $.store.get(REMOVED_KEY).catch(() => undefined))
+}
+
+/** Account folders on disk, per engine: one signed in by hand, or saved by another install of Hydra, still counts. */
+async function accountFolders($: EngineInterface, home: string): Promise<Partial<Record<Engine, string[]>>> {
+  const found: Partial<Record<Engine, string[]>> = {}
+  if (!home) return found
+  for (const engine of ENGINES) {
+    if (!supportsAccounts(engine)) continue
+    const entries = await $.fs.list(`${home}/${ACCOUNTS_DIR}/${engine}`).catch(() => [])
+    const names = entries.filter(entry => entry.kind === 'dir' && isAccountName(entry.name)).map(entry => entry.name).sort()
+    if (names.length > 0) found[engine] = names
+  }
+  return found
+}
+
+/** The extra account names per engine: the saved ones in order, then folders found on disk, minus the ones the person removed. */
+export async function readAccountNames($: EngineInterface): Promise<Partial<Record<Engine, string[]>>> {
+  const saved = await savedAccountNames($)
+  const removed = await removedAccountNames($)
+  const folders = await accountFolders($, await homeOf($).catch(() => ''))
+  const names: Partial<Record<Engine, string[]>> = {}
+  for (const engine of ENGINES) {
+    const gone = removed[engine] ?? []
+    const list = [...new Set([...(saved[engine] ?? []), ...(folders[engine] ?? [])])].filter(name => !gone.includes(name))
+    if (list.length > 0) names[engine] = list
   }
   return names
 }
@@ -332,9 +394,11 @@ export async function accountsOf($: EngineInterface, engine: Engine): Promise<Ac
 export async function addAccount($: EngineInterface, engine: Engine, name: string): Promise<{ account: Account } | { error: string }> {
   if (!supportsAccounts(engine)) return { error: `${ENGINE_LABEL[engine]} has no way to switch accounts, so it keeps one.` }
   if (!isAccountName(name)) return { error: `"${name}" is not a usable name: lowercase letters, digits and dashes, up to 20 characters, and not "${DEFAULT_ACCOUNT}".` }
-  const names = await readAccountNames($)
+  const names = await savedAccountNames($)
+  const removed = await removedAccountNames($)
   const home = await homeOf($)
   const dir = accountDir(home, engine, name)
+  if ((removed[engine] ?? []).includes(name)) await $.store.set(REMOVED_KEY, { ...removed, [engine]: (removed[engine] ?? []).filter(item => item !== name) })
   if ((names[engine] ?? []).includes(name)) return { account: { engine, name, dir } }
   await $.fs.write(`${dir}/.keep`, '')
   await $.store.set(ACCOUNTS_KEY, { ...names, [engine]: [...(names[engine] ?? []), name] })
@@ -342,10 +406,11 @@ export async function addAccount($: EngineInterface, engine: Engine, name: strin
 }
 
 export async function removeAccount($: EngineInterface, engine: Engine, name: string): Promise<{ dir: string } | { error: string }> {
-  const names = await readAccountNames($)
-  if (!(names[engine] ?? []).includes(name)) return { error: `There is no ${engine} account named "${name}". /hydra accounts lists them.` }
-  const left = (names[engine] ?? []).filter(item => item !== name)
-  await $.store.set(ACCOUNTS_KEY, { ...names, [engine]: left })
+  if (!((await readAccountNames($))[engine] ?? []).includes(name)) return { error: `There is no ${engine} account named "${name}". /hydra accounts lists them.` }
+  const names = await savedAccountNames($)
+  await $.store.set(ACCOUNTS_KEY, { ...names, [engine]: (names[engine] ?? []).filter(item => item !== name) })
+  const removed = await removedAccountNames($)
+  await $.store.set(REMOVED_KEY, { ...removed, [engine]: [...(removed[engine] ?? []), name] })
   const id = `${engine}/${name}`
   const cooldowns = Object.fromEntries(Object.entries(await readCooldowns($)).filter(([key]) => key !== id && !key.startsWith(`${id}#`)))
   await $.store.set(COOLDOWNS_KEY, cooldowns)
@@ -436,7 +501,9 @@ export async function pickUsable($: EngineInterface, engine: Engine, accounts: r
 // --- Rotation --------------------------------------------------------------------------------------------------------
 
 /** The steps `rotateAccounts` takes, wired by the caller to the store, the run record and the engine. */
-export type Rotation<R extends { text: string; isDone: boolean; failure?: string; files?: string[] }> = {
+type Ran = { text: string; isDone: boolean; failure?: string; files?: string[]; engineBound?: EngineBound }
+
+export type Rotation<R extends Ran> = {
   /** How many accounts the engine has: one run per account at most. */
   count: number
   /** The Head's time limit; each run after a switch gets what is left. */
@@ -454,6 +521,8 @@ export type Rotation<R extends { text: string; isDone: boolean; failure?: string
   run: (account: Account, note: string, minutes: number) => Promise<R>
   /** `name` (with the pool, when there is one) stopped at a usage limit until `until`. */
   cooled: (name: string, until: number) => Promise<void>
+  /** `name`'s sign-in failed: it is passed over for a while, and the next account runs. */
+  signedOut?: (name: string) => Promise<void>
   /** The Head cannot start: every account is cooling down. */
   refuse: (reason: string) => Promise<R>
 }
@@ -461,21 +530,28 @@ export type Rotation<R extends { text: string; isDone: boolean; failure?: string
 /**
  * Runs a Head on the strategy's account. When it stops at a usage limit (the engine's `failure`, never the model's report) the
  * account's cooldown is recorded and the Head runs again on the next free one, with the original task plus a note naming the files
- * already changed: one switch per other account at most. A Head that is done, stopped on purpose or failed for another reason ends there.
- * The report starts with the accounts used. With every account cooling down the Head does not start.
+ * already changed: one switch per other account at most. An account whose sign-in failed is passed over the same way. A Head that is
+ * done, stopped on purpose or failed for another reason ends there. With several accounts the report starts with the ones used.
+ * With every account cooling down the Head does not start. A result the engine, not the task, stopped carries `engineBound`.
  */
-export async function rotateAccounts<R extends { text: string; isDone: boolean; failure?: string; files?: string[] }>(steps: Rotation<R>): Promise<R> {
+export async function rotateAccounts<R extends Ran>(steps: Rotation<R>): Promise<R> {
   const trail: Attempt[] = []
   const tried: string[] = []
   const edited: string[] = []
   const startedAt = await steps.now()
-  const withTrail = (result: R, stopped?: string): R => ({ ...result, text: `${accountsLine(trail)}${stopped ? ` (${stopped})` : ''}\n${result.text}` })
+  // One account and nothing to report: no line. Any switch or limit is worth naming.
+  const withTrail = (result: R, stopped?: string, bound?: EngineBound): R => {
+    const quiet = steps.count <= 1 && !stopped && trail.every(step => step.until === undefined && !step.signedOut)
+    const engineBound = bound ?? result.engineBound
+    return { ...result, ...(engineBound ? { engineBound } : {}), text: quiet ? result.text : `${accountsLine(trail)}${stopped ? ` (${stopped})` : ''}\n${result.text}` }
+  }
   let last: R | undefined
   for (let attempt = 0; attempt < steps.count; attempt++) {
     const picked = await steps.pick(tried)
     if (!picked.account) {
       const earliest = picked.until !== null ? `; the earliest frees up at ${timeOf(picked.until)}` : ''
-      return last ? withTrail(last, `no other account of ${steps.engine} is free${earliest}`) : steps.refuse(allCoolingText(steps.engine, picked.until, steps.pool))
+      if (last) return withTrail(last, `no other account of ${steps.engine} is free${earliest}`)
+      return { ...(await steps.refuse(allCoolingText(steps.engine, picked.until, steps.pool))), engineBound: 'quota' }
     }
     const name = accountId(picked.account)
     tried.push(name)
@@ -484,15 +560,53 @@ export async function rotateAccounts<R extends { text: string; isDone: boolean; 
     const note = attempt > 0 ? `\n\n${switchNote(edited.map(file => relativeTo(steps.cwd, file)))}` : ''
     last = await steps.run(picked.account, note, Math.max(1, steps.minutes - Math.floor((now - startedAt) / 60_000)))
     for (const file of last.files ?? []) if (!edited.includes(file)) edited.push(file)
-    if (last.isDone || steps.isAborted() || !isQuotaFailure(last.failure)) {
+    if (last.isDone || steps.isAborted()) {
       trail.push({ id: name })
       return withTrail(last)
+    }
+    if (isSignedOutFailure(last.failure)) {
+      await steps.signedOut?.(name)
+      trail.push({ id: name, signedOut: true })
+      last = { ...last, engineBound: 'signed out' }
+      continue
+    }
+    if (!isQuotaFailure(last.failure)) {
+      trail.push({ id: name })
+      return withTrail(last, undefined, isModelUnavailable(last.failure) ? 'unavailable' : undefined)
     }
     const until = cooldownFrom(last.failure ?? '', await steps.now())
     await steps.cooled(cooldownKey(name, steps.pool), until)
     trail.push({ id: name, until })
+    last = { ...last, engineBound: 'quota' }
   }
-  return withTrail(last!, 'every account hit its limit')
+  return withTrail(last!, steps.count > 1 ? 'every account hit its limit' : undefined)
+}
+
+/**
+ * The usage limits in force now, as lines for the Lead: an engine (and pool) every account of which is cooling, with when the
+ * first frees up. Engines with a free account are left out.
+ */
+export async function coolingLines($: EngineInterface, engines: readonly Engine[]): Promise<string[]> {
+  const now = await $.clock.now()
+  const cooldowns = activeCooldowns(await readCooldowns($), now)
+  if (Object.keys(cooldowns).length === 0) return []
+  const lines: string[] = []
+  for (const engine of engines) {
+    const accounts = await accountsOf($, engine)
+    const pools = new Set<string | undefined>([undefined])
+    for (const key of Object.keys(cooldowns)) if (key.startsWith(`${engine}/`) && key.includes('#')) pools.add(key.slice(key.indexOf('#') + 1))
+    for (const pool of pools) {
+      const picked = pickAccount(engine, accounts, cooldowns, now, 'fill', {}, [], pool)
+      if (!picked.account && picked.until !== null) lines.push(`${engine}${pool ? ` ${poolLabel(pool)}` : ''}: every account at its limit until ${timeOf(picked.until)}`)
+    }
+  }
+  return lines
+}
+
+/** Passes over a signed-out account for a while and forgets its cached sign-in, so the next pick asks again. */
+export async function recordSignedOut($: EngineInterface, id: string) {
+  signIns.set(id, { ok: false, at: await $.clock.now() })
+  await recordCooldown($, id, (await $.clock.now()) + SIGNED_OUT_COOLDOWN_MS)
 }
 
 // --- The overview (/hydra accounts, /hydra-usage) ---------------------------------------------------------------------

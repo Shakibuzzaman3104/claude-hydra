@@ -41,6 +41,14 @@ export const agyModelId = (model: string, effort?: string) => {
   return `${base}-${level}`
 }
 export const agyPoolOf = (model: string): AgyPool => AGY_MODELS[agyBaseOf(model) ?? AGY_MODEL].pool
+/** What an Antigravity Head moves to when its model's pool is at its limit: the nearest model in each other pool. */
+const AGY_ALTERNATES: Record<AgyModel, readonly AgyModel[]> = {
+  'gemini-3.8-flash': ['gemini-4-argon', 'claude-sonnet-5-5'],
+  'gemini-4-argon': ['claude-sonnet-5-5', 'gemini-3.8-flash'],
+  'claude-sonnet-5-5': ['gemini-4-argon', 'gemini-3.8-flash'],
+  'claude-opus-5-5': ['gemini-4-argon', 'gemini-3.8-flash'],
+  'gpt-oss-120b': ['gemini-3.8-flash', 'gemini-4-argon'],
+}
 /** Where Antigravity keeps the sign-in token, relative to the home folder. */
 export const AGY_TOKEN = '.gemini/antigravity-cli/antigravity-oauth-token'
 export const isEngine = (value: unknown): value is Engine => typeof value === 'string' && (ENGINES as readonly string[]).includes(value)
@@ -79,9 +87,18 @@ const MODEL_FAMILY: Partial<Record<Engine, RegExp>> = { codex: /^(openai\/)?(gpt
  */
 const OPENCODE_ID = /^(?!deepseek\/)[a-z0-9][\w.-]*\/\S+$/i
 const OPENCODE_ONLY = /^opencode\//i
+/** The models `codebuddy --model` lists (WorkBuddy runs the same CLI): some carry GPT or Gemini names that other engines' families claim. */
+export const BUDDY_MODELS = [
+  'deepseek-v4.1-flash', 'glm-5.3', 'kimi-k3', 'minimax-m3.1-flash', 'glm-5.3-flash', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4',
+  'gemini-3.5-flash', 'hy4-preview', 'hy3', 'glm-5.2', 'kimi-k2.6', 'kimi-k2.8-preview', 'default-model', 'fast-model', 'balanced-model', 'primary-model',
+] as const
+/** CodeBuddy's limits are per model ("switch to the other models to continue"): what a Head moves to when its model is cut off. */
+const BUDDY_ALTERNATES = ['glm-5.3', 'kimi-k3', 'deepseek-v4.1-flash', 'minimax-m3.1-flash'] as const
+const isBuddy = (engine: Engine) => engine === 'codebuddy' || engine === 'workbuddy'
 export const isModelFor = (engine: Engine, model: string) => {
   if (engine === 'opencode') return OPENCODE_ID.test(model)
   if (engine === 'agy') return agyBaseOf(model) !== undefined
+  if (isBuddy(engine) && (BUDDY_MODELS as readonly string[]).includes(modelFor(engine, model).toLowerCase())) return true
   const family = MODEL_FAMILY[engine]
   return family ? family.test(model) : !OPENCODE_ONLY.test(model) && agyBaseOf(model) === undefined && !Object.values(MODEL_FAMILY).some(other => other.test(model))
 }
@@ -110,20 +127,58 @@ export const parseEngineList = (text: string) => {
 }
 
 /**
- * The engine one Head runs on. A fixed session runs everything on its engine; an auto session needs the Lead to name one
- * from the pool, so the choice is deliberate.
+ * The engine one Head runs on. A fixed session's engine is the default; the Lead may name another, which must then pass its
+ * checks (`isNew`). An auto session needs the Lead to name one: from the pool, or (unless the person chose the pool with
+ * `engines=`) any other engine that passes its checks, which then joins the pool.
  */
-export const resolveHeadEngine = (hydra: HydraMode | null, requested: unknown, fallback: Engine = DEFAULT_ENGINE): { engine: Engine } | { deny: string } => {
+export const resolveHeadEngine = (hydra: HydraMode | null, requested: unknown, fallback: Engine = DEFAULT_ENGINE): { engine: Engine; isNew: boolean } | { deny: string } => {
+  const pool = poolOf(hydra)
+  const allowed = isAuto(hydra) && hydra?.pinned ? pool : [...ENGINES]
+  if (requested !== undefined && !isEngine(requested)) return { deny: `engine must be one of: ${allowed.join(', ')}.` }
   if (!isAuto(hydra)) {
     const engine = engineOf(hydra, fallback)
-    if (requested === undefined || requested === engine) return { engine }
-    return { deny: `Heads run on ${ENGINE_LABEL[engine]} in this session. Only /hydra engine=auto lets you choose an engine per Head.` }
+    return requested === undefined || requested === engine ? { engine, isNew: false } : { engine: requested as Engine, isNew: true }
   }
-  const pool = poolOf(hydra)
   if (requested === undefined) return { deny: `Auto mode: name the engine for this Head in \`engine\` (${pool.join(', ')}).` }
-  if (!isEngine(requested)) return { deny: `engine must be one of: ${pool.join(', ')}.` }
-  if (!pool.includes(requested)) return { deny: `${requested} is not in this session's pool (${pool.join(', ')}). The person adds it with /hydra engines=…` }
-  return { engine: requested }
+  if (pool.includes(requested as Engine)) return { engine: requested as Engine, isNew: false }
+  if (hydra?.pinned) return { deny: `${requested} is not in the engines the person chose (${pool.join(', ')}). They add it with /hydra engines=…` }
+  return { engine: requested as Engine, isNew: true }
+}
+
+/**
+ * Where a Head may go when its engine stops it: the session's Head model and the configured one (to pick a model each engine
+ * runs), the Lead's own `model`, the pool it must stay in (none: any ready engine), and whether falling back is on.
+ */
+export type Routing = { headModel: string; configured: string; model?: string; pool?: readonly Engine[]; fallback: boolean }
+
+/** The model a Head runs on `engine`: the Lead's `requested` one when the engine runs it, else the session's Head model for that engine, written as the engine takes it. */
+export const modelOn = (engine: Engine, requested: string | undefined, headModel: string, configured: string) => {
+  const model = requested && isModelFor(engine, requested) ? requested : headModelFor(engine, undefined, headModel, configured)
+  return engine === 'agy' ? (agyBaseOf(model) ?? AGY_MODEL) : modelFor(engine, model)
+}
+
+/**
+ * The usage pool a model draws on, where an engine limits models apart: Antigravity's three pools, and each CodeBuddy or
+ * WorkBuddy model on its own. A limit then cools that pool on the account, not the whole account.
+ */
+export const usagePoolOf = (engine: Engine, model: string): string | undefined =>
+  engine === 'agy' ? agyPoolOf(model) : isBuddy(engine) ? modelFor(engine, model).toLowerCase() : undefined
+
+/** Other models on the same engine that draw on other pools, nearest first: where a Head goes before another engine. */
+export const modelAlternates = (engine: Engine, model: string): string[] => {
+  if (engine === 'agy') return [...AGY_ALTERNATES[agyBaseOf(model) ?? AGY_MODEL]]
+  if (isBuddy(engine)) return BUDDY_ALTERNATES.filter(other => other !== modelFor(engine, model).toLowerCase())
+  return []
+}
+
+/** The engines a Head falls back to, nearest first: CodeBuddy and WorkBuddy share a CLI, Codex and Antigravity run frontier models, OpenCode is the free last resort. */
+export const FALLBACK_ORDER: Record<Engine, readonly Engine[]> = {
+  commandcode: ['codebuddy', 'workbuddy', 'agy', 'codex', 'opencode'],
+  codebuddy: ['workbuddy', 'commandcode', 'agy', 'codex', 'opencode'],
+  workbuddy: ['codebuddy', 'commandcode', 'agy', 'codex', 'opencode'],
+  codex: ['agy', 'codebuddy', 'commandcode', 'workbuddy', 'opencode'],
+  agy: ['codex', 'codebuddy', 'commandcode', 'workbuddy', 'opencode'],
+  opencode: ['commandcode', 'codebuddy', 'workbuddy', 'agy', 'codex'],
 }
 
 /** CodeBuddy, WorkBuddy, Codex and Antigravity model ids carry no provider prefix: `deepseek/deepseek-v4.1-flash` is `deepseek-v4.1-flash` there. Command Code and OpenCode keep it. */

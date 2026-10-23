@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { effortModeOf, headEffort } from '../lib/effort'
 import { agyTokenOf } from '../lib/accounts'
-import { AGY_TOKEN, agyModelId } from '../lib/engines'
+import { AGY_TOKEN, agyModelId, agyPoolOf } from '../lib/engines'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
@@ -228,6 +228,79 @@ export const agyArgs = (a: RoundArgs & { home: string }) => {
 export const failureReason = (state: Pick<AgyState, 'status' | 'finalText'>) =>
   state.status && state.status !== 'SUCCESS' && state.finalText.length <= 400 ? state.finalText : ''
 
+/** One of Antigravity's quota buckets as `agy -p /usage` reports it, under Hydra's pool name. */
+export type AgyBucket = { pool: string; window: string; remaining: number; resetAt: number }
+
+/** Hydra's pool for an `agy /usage` group: its Argon group, its Claude and GPT group, or the Gemini one. */
+const agyGroupPool = (name: string) => (/argon/i.test(name) ? 'argon' : /claude|gpt/i.test(name) ? 'claude' : /gemini/i.test(name) ? 'gemini' : undefined)
+
+/** The buckets in `agy -p /usage --output-format stream-json`; none when the output is not that. */
+export const parseAgyUsage = (stdout: string): AgyBucket[] => {
+  for (const line of stdout.split('\n')) {
+    let row: { event?: string; command?: { name?: string; data?: { groups?: { name?: string; buckets?: { window?: string; remaining_fraction?: number; reset_time?: string }[] }[] } } }
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (row.event !== 'command_result' || row.command?.name !== 'usage') continue
+    return (row.command.data?.groups ?? []).flatMap(group => {
+      const pool = agyGroupPool(group.name ?? '')
+      return pool ? (group.buckets ?? []).map(bucket => ({ pool, window: bucket.window ?? '', remaining: Number(bucket.remaining_fraction ?? 1), resetAt: Date.parse(bucket.reset_time ?? '') })) : []
+    }).filter(bucket => Number.isFinite(bucket.remaining) && Number.isFinite(bucket.resetAt))
+  }
+  return []
+}
+
+/** Below this fraction a bucket counts as spent: a Head would stop within a turn or two. */
+const AGY_SPENT = 0.01
+
+/**
+ * When `model` can run again, if one of its pool's buckets is spent: the latest reset among the spent ones. On plans with no
+ * Argon group (Ultra: Argon is part of the Gemini bucket) Argon reads the Gemini buckets. Undefined while it can run.
+ */
+export const agyBlockedUntil = (buckets: readonly AgyBucket[], model: string): number | undefined => {
+  const pool = agyPoolOf(model)
+  const own = buckets.filter(bucket => bucket.pool === pool)
+  const mine = own.length > 0 || pool !== 'argon' ? own : buckets.filter(bucket => bucket.pool === 'gemini')
+  const spent = mine.filter(bucket => bucket.remaining < AGY_SPENT)
+  return spent.length > 0 ? Math.max(...spent.map(bucket => bucket.resetAt)) : undefined
+}
+
+const AGY_USAGE_KEEP_MS = 120_000
+const agyUsage = new Map<string, { at: number; buckets: Promise<AgyBucket[]> }>()
+
+/**
+ * The account's quota buckets from `agy -p /usage`, which spends no quota and starts no turn (it takes several seconds, so
+ * a read is kept two minutes and shared by Heads that start together). `dir` is an extra account's folder. None when agy cannot say.
+ */
+export async function readAgyUsage($: EngineInterface, dir?: string, fresh = false): Promise<AgyBucket[]> {
+  const key = dir ?? ''
+  const now = await $.clock.now()
+  const kept = agyUsage.get(key)
+  if (!fresh && kept && now - kept.at < AGY_USAGE_KEEP_MS) return kept.buckets
+  const buckets = runAgyUsage($, dir ?? (await homeOf($)), dir ? { HOME: dir } : undefined).catch(() => [])
+  agyUsage.set(key, { at: now, buckets })
+  return buckets
+}
+
+/** One `agy -p /usage` run with stdin closed (as every agy run is), stopped after 30 seconds. */
+async function runAgyUsage($: EngineInterface, cwd: string, env?: Record<string, string>): Promise<AgyBucket[]> {
+  const timer = new AbortController()
+  const deadline = new AbortController()
+  void $.clock.sleep(30_000, { signal: deadline.signal }).then(() => timer.abort(), () => undefined)
+  const lines: string[] = []
+  try {
+    const ran = await pump($, ['agy', '-p', '/usage', '--output-format', 'stream-json'], cwd, timer.signal, async line => {
+      lines.push(line)
+      return false
+    }, env)
+    return ran.exit.code === 0 ? parseAgyUsage(lines.join('\n')) : []
+  } finally {
+    deadline.abort()
+  }
+}
+
 /** What a Head's report says when Antigravity has no sign-in: the fix is one run of the CLI. */
 export const AGY_NOT_SIGNED_IN = 'Antigravity is not signed in. Run `agy` once in a terminal (choose Google OAuth), then run the Head again.'
 
@@ -361,7 +434,7 @@ export async function runAgyHead($: EngineInterface, head: AgyHead, outer: Abort
     await removeAgyHome($, home)
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
     await refreshStatus($, limits)
-    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'agy')
+    return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'agy', 'unavailable')
   }
   try {
     return await runAgyRounds($, head, home, outer, limits, id)
