@@ -6,6 +6,7 @@ import type { HeadRun, HeadStep, HeadsUsage, HydraMode } from '../../types'
 import { effortModeOf } from './effort'
 import { DEFAULT_ENGINE, ENGINES, ENGINE_BIN, ENGINE_LABEL, isAuto, isEngine, poolOf } from './engines'
 import type { Engine } from './engines'
+import { isWindowsPath, toSlashes } from './platform'
 import { isWithin } from './safety'
 
 export const LIVE_AFTER_END_MS = 60_000
@@ -348,14 +349,17 @@ export const tokensText = (inputTokens: number, outputTokens: number) => {
 
 export const strings = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [])
 
+/** A path as compared: a drive or UNC path with forward slashes and in lower case, as Windows matches it. */
+const comparable = (path: string) => (isWindowsPath(path) ? toSlashes(path).toLowerCase() : path)
+
 export const relativeTo = (cwd: string, path: string) => {
-  const root = cwd.replace(/\/$/, '') + '/'
-  return path.startsWith(root) ? path.slice(root.length) : path
+  const root = comparable(cwd).replace(/\/$/, '') + '/'
+  return comparable(path).startsWith(root) ? toSlashes(path).slice(root.length) : path
 }
 
 /** Files written outside the project and outside every folder the Head was let write to. */
 export const outsideFiles = (cwd: string, files: readonly string[], writeDirs: readonly string[] = []) =>
-  files.filter(file => file.startsWith('/') && ![cwd, ...writeDirs].some(root => isWithin(file, root)))
+  files.filter(file => (file.startsWith('/') || isWindowsPath(file)) && ![cwd, ...writeDirs].some(root => isWithin(comparable(file), comparable(root))))
 
 /** How the person resumes a Head's session by hand: `opencode run -s <id>` for OpenCode, `<cli> --resume <id>` for the rest. */
 export const resumeCommand = (engine: Engine) => (engine === 'opencode' ? 'opencode run -s' : `${ENGINE_BIN[engine]} --resume`)
