@@ -76,11 +76,12 @@ export const INSTALL_HINT: Record<Engine, string> = {
 }
 
 /**
- * Engines whose lockdown has been verified on native Windows. An engine left out refuses to start there instead of
- * running a Head unlocked: Command Code's path rules do not match drive paths (see DEVELOPING.md), and the others have
- * not been smoke-tested on Windows yet. Under WSL Hydra is on Linux and every engine runs.
+ * Engines with a lockdown on native Windows. An engine left out refuses to start there instead of running a Head
+ * unlocked; the others have not been smoke-tested on Windows yet. Command Code's path rules do not match drive paths
+ * (see DEVELOPING.md), so there its write guard runs before every tool call and is the lockdown, with no shell and no
+ * search (`guardPolicy`). Under WSL Hydra is on Linux and every engine runs.
  */
-export const WINDOWS_ENGINES: ReadonlySet<Engine> = new Set<Engine>()
+export const WINDOWS_ENGINES: ReadonlySet<Engine> = new Set<Engine>(['commandcode'])
 
 export const windowsRefusal = (engine: Engine) =>
   `${ENGINE_LABEL[engine]} Heads are not locked down on native Windows yet, so Hydra will not start them there. Run Claude Code under WSL (every engine works there)${WINDOWS_ENGINES.size > 0 ? `, or use ${[...WINDOWS_ENGINES].map(name => ENGINE_LABEL[name]).join(' or ')}` : ''}.`

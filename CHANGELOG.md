@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.0 — 2026-10-27
+- **Hydra runs on native Windows, with Command Code Heads.** Until now every engine was refused there. Command Code's path rules can't name a drive (`D:/…`), so on Windows Hydra's write guard becomes the whole lockdown: it runs before every tool call and fails closed. Heads can read and edit only inside the project and `writeDirs`, read `addDirs`, and never touch `.env` files (in any letter case, `.env.` and `.env ` included), credential folders, `.hydraignore` matches, device paths or alternate data streams. Links out of the project are denied, junctions and 8.3 short names included.
+- **What a Command Code Head can't do on Windows:** it has no shell (`shell: true` is ignored) and no search tool, so give it the exact files to work on. It needs Python 3 (`py -3` or `python`). The other engines still need WSL.
+- **Fixed: a foreground Head on Windows spun in a tight loop while it waited,** because `/bin/sleep` doesn't exist there. It now waits with `ping`.
+
+**Details**
+- `head-guard.py --policy <file>` is the strict mode. The policy is `.commandcode/hydra-guard.json`, written by `guardPolicy`, added to `info/exclude`, and removed with the rules file.
+- It allows `read_file`, `read_directory`, `glob`, `write_file`, `edit_file`, `todo_write` and the tool-search tools, and denies every other tool. Every path alias in a tool's input is checked, both as written and as its real path. `.git`, `.commandcode` and `.hydraignore` stay read-only.
+- `headSettings(..., strict)` adds the hook with no matcher and `failClosed: true`, and denies `Shell` and `Grep`. Off Windows, everything works as before.
+- POSIX-only steps are skipped on Windows: the `find` for `.env`, the deny list built by listing `/`, and `/bin/rm`. `removeFile` and `pauseOneSecond` (in lib/platform.ts) do those jobs there.
+- **Verified live on macOS** with Command Code 1.88:
+  - A hook with no matcher ran before every tool of a `-p --yolo` Head, with the internal tool names.
+  - With an empty deny list, the strict guard alone kept the Head from:
+    - reading `.env`
+    - reading or writing outside the project
+    - running a shell command
+    - using grep
+  - A guard that hung past its timeout, and one that crashed, each blocked the call.
+- **Run on Windows 10:** the guard's own tests, including junctions, 8.3 short names, drive, UNC and device paths, and alternate data streams.
+- **Not yet verified:** a live Head on a Windows machine. If a Windows Head misbehaves, please open an issue with its report.
+
 ## 1.2.1 — 2026-10-27
 - **Codex Heads default to `gpt-6.1-terra`,** OpenAI's new Codex coding model, instead of `gpt-6.1-sol`. The Lead's policy sends code to Terra (including hard and multi-file work), `gpt-6.1-sol` only to work that is not code, and `gpt-6-luna` to mechanical edits. A plan that refuses Terra still falls back to `gpt-6-luna` with a ⚠ line. Verified live: `codex exec -m gpt-6.1-terra` (codex-cli 0.163.0) answered on a ChatGPT plan.
 - The README names the oldest Claude Code that loads Hydra (2.1.308); older builds reject the hooks module, so `/hydra` never appears.
