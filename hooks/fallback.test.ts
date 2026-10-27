@@ -59,7 +59,7 @@ test('CodeBuddy takes its own GPT and Gemini model names, which no longer get dr
 })
 
 test('picks the model each engine runs when a Head moves to it', async () => {
-  expect(modelOn('codex', undefined, 'deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash')).toBe('gpt-6.1-sol')
+  expect(modelOn('codex', undefined, 'deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash')).toBe('gpt-6.1-terra')
   expect(modelOn('codebuddy', undefined, 'deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
   expect(modelOn('agy', 'gemini-4-argon-high', 'gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash')).toBe('gemini-4-argon')
   expect(modelOn('agy', 'kimi-k3', 'gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash')).toBe('gemini-3.8-flash')

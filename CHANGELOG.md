@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1 — 2026-10-27
+- **Codex Heads default to `gpt-6.1-terra`,** OpenAI's new Codex coding model, instead of `gpt-6.1-sol`. The Lead's policy sends code to Terra (including hard and multi-file work), `gpt-6.1-sol` only to work that is not code, and `gpt-6-luna` to mechanical edits. A plan that refuses Terra still falls back to `gpt-6-luna` with a ⚠ line. Verified live: `codex exec -m gpt-6.1-terra` (codex-cli 0.163.0) answered on a ChatGPT plan.
+- The README names the oldest Claude Code that loads Hydra (2.1.308); older builds reject the hooks module, so `/hydra` never appears.
+
 ## 1.2.0 — 2026-10-23
 **Highlights**
 - **Fallback: a Head the engine stops moves on instead of failing.** At a usage limit, a lost sign-in, a model the engine no longer serves or a setup it cannot run, Hydra tries the engine's models in other usage pools, then the next ready engine you have agreed to, and the report's `fallback:` line says where it ran. `headFallback` turns it off.

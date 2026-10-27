@@ -663,7 +663,7 @@ test('drops the provider prefix for Codex too, and picks a model the engine can 
   expect(isModelFor('codex', 'deepseek/deepseek-v4.1-flash')).toBe(false)
   expect(isModelFor('codebuddy', 'gpt-6.1-sol')).toBe(false)
   const deepseek = 'deepseek/deepseek-v4.1-flash'
-  expect(headModelFor('codex', undefined, deepseek, deepseek)).toBe('gpt-6.1-sol')
+  expect(headModelFor('codex', undefined, deepseek, deepseek)).toBe('gpt-6.1-terra')
   expect(headModelFor('codex', undefined, 'gpt-6-luna', deepseek)).toBe('gpt-6-luna')
   expect(headModelFor('codex', 'gpt-6-astra', deepseek, deepseek)).toBe('gpt-6-astra')
   expect(headModelFor('codebuddy', undefined, 'gpt-6.1-sol', deepseek)).toBe(deepseek)
@@ -743,8 +743,9 @@ test('builds the Codex command: stdin closed, the profile on the command line, n
 })
 
 test('tells the Lead which lockdown and models apply on Codex, and shows the engine in the status line', async () => {
-  const policy = HYDRA_POLICY('gpt-6.1-sol', 'auto', 'codex')
-  expect(policy).toContain('Codex agents on gpt-6.1-sol')
+  const policy = HYDRA_POLICY('gpt-6.1-terra', 'auto', 'codex')
+  expect(policy).toContain('Codex agents on gpt-6.1-terra')
+  expect(policy).toContain('gpt-6.1-sol')
   expect(policy).toContain('gpt-6-luna')
   expect(policy).toContain('no network')
   expect(policy).not.toContain('--yolo')
@@ -766,14 +767,14 @@ test('picks Antigravity models for Antigravity and keeps them out of the other e
   expect(isModelFor('codex', 'gpt-oss-120b')).toBe(false)
   expect(isModelFor('codex', 'gpt-6-luna')).toBe(true)
   expect(isModelFor('codebuddy', 'claude-sonnet-5-5-medium')).toBe(false)
-  expect(headModelFor('codex', undefined, 'gpt-oss-120b', 'deepseek/deepseek-v4.1-flash')).toBe('gpt-6.1-sol')
+  expect(headModelFor('codex', undefined, 'gpt-oss-120b', 'deepseek/deepseek-v4.1-flash')).toBe('gpt-6.1-terra')
   expect(isModelFor('codex', 'gemini-3.8-flash')).toBe(false)
   expect(isModelFor('codebuddy', 'gemini-3.8-flash')).toBe(false)
   expect(isModelFor('commandcode', 'deepseek/deepseek-v4.1-flash')).toBe(true)
   expect(modelFor('agy', 'google/gemini-3.8-flash')).toBe('gemini-3.8-flash')
   const deepseek = 'deepseek/deepseek-v4.1-flash'
   expect(headModelFor('agy', undefined, deepseek, deepseek)).toBe('gemini-3.8-flash')
-  expect(headModelFor('codex', undefined, 'gemini-3.8-flash', deepseek)).toBe('gpt-6.1-sol')
+  expect(headModelFor('codex', undefined, 'gemini-3.8-flash', deepseek)).toBe('gpt-6.1-terra')
   expect(headModelFor('codebuddy', undefined, 'gemini-3.8-flash', deepseek)).toBe(deepseek)
 })
 

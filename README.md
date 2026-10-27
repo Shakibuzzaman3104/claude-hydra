@@ -12,7 +12,7 @@ Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin
 The engine shows on each row when Claude picks one per Head (auto mode). `/heads` adds the totals and a timeline of the session:
 
 ```
-🐉 Hydra · Auto (Command Code + Codex + Antigravity) · gpt-6.1-sol · effort auto
+🐉 Hydra · Auto (Command Code + Codex + Antigravity) · gpt-6.1-terra · effort auto
 1 running · 1 queued · 2 done · 1 failed · 4:00 wall
 12 edits · 1 denied · 105k tok · $0.0336
 codex 2 · agy 2 · commandcode 1
@@ -39,7 +39,7 @@ Hydra asks once before anything is sent to an engine. The first time it turns on
 
 ## Requirements
 - macOS or Linux (on Windows, use WSL), with `git` and `python3`
-- Claude Code
+- Claude Code 2.1.308 or newer (older builds reject the hooks module, so `/hydra` never appears; run `claude update`)
 - One Head engine, signed in:
   - the [Command Code](https://commandcode.ai) CLI:
     ```
@@ -58,7 +58,7 @@ Hydra asks once before anything is sent to an engine. The first time it turns on
     codex login        # once, to sign in (codex login --device-auth on a remote machine)
     ```
 
-  Codex Heads default to `gpt-6.1-sol`; the Lead passes `model: "gpt-6-luna"` for mechanical or small tasks. If your ChatGPT plan does not offer `gpt-6.1-sol`, Heads fall back to `gpt-6-luna` and their reports say so. Codex has no per-tool rules, so a Head runs in Codex's OS sandbox with a filesystem profile Hydra writes: writes only in the project (and `writeDirs`), no `.git` writes, no `.env` reads, nothing in your home folder except the project, `addDirs` and toolchain folders, no credential folders, no network.
+  Codex Heads default to `gpt-6.1-terra`, OpenAI's Codex coding model; the Lead passes `model: "gpt-6-luna"` for mechanical or small tasks and `gpt-6.1-sol` for work that is not code. If your ChatGPT plan does not offer the model, Heads fall back to `gpt-6-luna` and their reports say so. Codex has no per-tool rules, so a Head runs in Codex's OS sandbox with a filesystem profile Hydra writes: writes only in the project (and `writeDirs`), no `.git` writes, no `.env` reads, nothing in your home folder except the project, `addDirs` and toolchain folders, no credential folders, no network.
 
   - or the Antigravity CLI (Google): `curl -fsSL https://antigravity.google/cli/install.sh | bash`, then `agy` once to sign in (Google OAuth). Antigravity Heads run `gemini-3.8-flash` by default, and Claude can pick `gemini-4-argon` (good at research and search, including the web), `claude-sonnet-5-5`, `claude-opus-5-5` or `gpt-oss-120b` per Head. Claude + GPT-OSS (weekly and 5-hour limits), Gemini (weekly and 5-hour) and Gemini 4 Argon (weekly, on Pro) are separate usage pools, which Hydra reads from `agy /usage` before each Head, so a limit in one leaves the others free. `agy` has one global settings file, so each Head gets its own `HOME` with permission rules; its sandbox keeps a shell inside the project with no network.
 

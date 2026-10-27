@@ -77,7 +77,7 @@ export const workbuddyEnv = (home: string, configDir?: string): Record<string, s
   CODEBUDDY_DISABLE_BROWSER_MCP: '1',
 })
 /** The Head model a session gets when it switches to an engine whose models differ from the one it had. */
-export const ENGINE_MODEL: Partial<Record<Engine, string>> = { codex: 'gpt-6.1-sol', agy: AGY_MODEL, workbuddy: 'deepseek-v4.1-flash', opencode: OPENCODE_MODEL }
+export const ENGINE_MODEL: Partial<Record<Engine, string>> = { codex: 'gpt-6.1-terra', agy: AGY_MODEL, workbuddy: 'deepseek-v4.1-flash', opencode: OPENCODE_MODEL }
 /** Codex Heads run OpenAI's models (not Antigravity's GPT-OSS) and Antigravity Heads `AGY_MODELS`; every other engine runs the person's configured Head model (DeepSeek by default). */
 const MODEL_FAMILY: Partial<Record<Engine, RegExp>> = { codex: /^(openai\/)?(gpt(?!-oss)|o\d|codex)/i, agy: /^(google\/)?gemini/i }
 /**

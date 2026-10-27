@@ -19,7 +19,7 @@ const headLevelsNote = (headModel: string) =>
   /deepseek-v4\.1/i.test(headModel) ? ` ${shortModel(headModel)} takes low, high and max: medium runs as high, xhigh as max.` : ''
 
 const codexEffortRule = (effort: EffortMode, headModel: string) =>
-  `- Codex Heads run OpenAI models on the person's ChatGPT plan: \`${headModel}\` by default. Pass \`model\` per Head: \`gpt-6.1-sol\` for multi-file, algorithmic or subtle work, \`gpt-6-luna\` (faster, cheaper) for mechanical edits, renames, boilerplate and small, fully specified tasks. Some ChatGPT plans offer only \`gpt-6-luna\`: Hydra then runs the Head on it and its report says so in a ⚠ line.
+  `- Codex Heads run OpenAI models on the person's ChatGPT plan: \`${headModel}\` by default. Pass \`model\` per Head: \`gpt-6.1-terra\` (the Codex coding model) for code, including multi-file, algorithmic or subtle work, \`gpt-6.1-sol\` for work that is not code (writing, analysis), \`gpt-6-luna\` (faster, cheaper) for mechanical edits, renames, boilerplate and small, fully specified tasks. Some ChatGPT plans offer only \`gpt-6-luna\`: Hydra then runs the Head on it and its report says so in a ⚠ line.
 ${
     effort === 'auto'
       ? `- You pick each Head's reasoning \`effort\` (low, medium, high, xhigh or max):
@@ -99,7 +99,7 @@ const LOCKDOWN_BRIEF: Record<Engine, string> = {
 
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
 export const ROUTES: Record<Engine, string> = {
-  codex: `gpt-6.1-sol (pass \`model: "gpt-6-luna"\` for easy work): the strongest coder here. Send it hard, subtle or multi-file work, and anything where the Head should run the tests itself (its shell is sandboxed with no network, so nothing that downloads). Spends the person's ChatGPT plan.`,
+  codex: `gpt-6.1-terra, the Codex coding model (pass \`model: "gpt-6-luna"\` for easy work, \`gpt-6.1-sol\` for work that is not code): the strongest coder here. Send it hard, subtle or multi-file work, and anything where the Head should run the tests itself (its shell is sandboxed with no network, so nothing that downloads). Spends the person's ChatGPT plan.`,
   agy: `gemini-3.8-flash by default: fast, large context, for reading and summarising big areas, docs, boilerplate and bulk, mechanical or simple well-specified edits across many files. Pass \`model\` for more: \`gemini-4-argon\` for research and search (its Heads can search the web) and, with \`claude-sonnet-5-5\`, for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini and Argon are separate usage pools, which Hydra checks before each Head. No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
   codebuddy: `DeepSeek V4.1 Flash: the cheap default. Send it well-specified edits, renames, new tests and small features. Measured: 95% of 126 runs passed at \`low\` effort. Optional shell.`,
   workbuddy: `DeepSeek V4.1 Flash, the same DeepSeek model through your WorkBuddy subscription (credits). Send it what you would send CodeBuddy: well-specified edits, renames, new tests and small features. Optional shell.`,
