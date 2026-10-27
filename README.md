@@ -38,7 +38,7 @@ Install the plugin, then run `/hydra`. With the default `headEngine` of `auto`, 
 Hydra asks once before anything is sent to an engine. The first time it turns on, it adds three lines on what happens next (Claude splits the work, `/heads` to watch, `/hydra off` to stop). Set `headEngine` to one engine to keep it fixed.
 
 ## Requirements
-- macOS or Linux (on Windows, use WSL), with `git` and `python3`
+- macOS or Linux, with `git` and `python3`. On native Windows only Command Code Heads run (Python 3 required; no shell or search tool for Heads there); use WSL for every engine
 - Claude Code 2.1.308 or newer (older builds reject the hooks module, so `/hydra` never appears; run `claude update`)
 - One Head engine, signed in:
   - the [Command Code](https://commandcode.ai) CLI:

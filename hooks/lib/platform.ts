@@ -95,6 +95,22 @@ export async function pythonOf($: EngineInterface): Promise<readonly string[] | 
   return undefined
 }
 
+const REMOVE = 'import os,sys\n(os.rmdir if sys.argv[2] == "dir" else os.remove)(sys.argv[1])'
+
+/** Removes a file (or an empty folder): `/bin/rm -f` and `/bin/rmdir` on macOS and Linux, Python on Windows, which has neither. */
+export async function removeFile($: EngineInterface, path: string, isDir = false) {
+  if ((await platformOf($)) !== 'windows') return $.process.run(isDir ? ['/bin/rmdir', path] : ['/bin/rm', '-f', path])
+  const python = await pythonOf($)
+  if (!python) throw new Error('Python 3 is missing')
+  return $.process.run([...python, '-I', '-c', REMOVE, path, isDir ? 'dir' : 'file'], { timeoutMs: 10_000 })
+}
+
+/** Waits about a second through a host process, which a hook's 10 s budget does not count: `sleep`, or `ping` on Windows. */
+export async function pauseOneSecond($: EngineInterface) {
+  const argv = (await platformOf($)) === 'windows' ? ['ping.exe', '-n', '2', '127.0.0.1'] : ['/bin/sleep', '1']
+  await $.process.run(argv, { timeoutMs: 5_000 })
+}
+
 /** Runs one of Hydra's own Python scripts (`bin/<script>`) isolated (`-I`); rejects when Python 3 is missing. */
 export async function runScript($: EngineInterface, script: string, args: readonly string[], timeoutMs = 30_000) {
   const python = await pythonOf($)

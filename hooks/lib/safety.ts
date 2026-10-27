@@ -121,5 +121,12 @@ export const guardCommand = (pluginRoot: string, cwd: string, writeDirs: readonl
     ? [`py -3 -I ${windowsQuote(`${pluginRoot}/bin/head-guard.py`)}`, ...[cwd, ...writeDirs].map(windowsQuote)].join(' ')
     : [`/usr/bin/env python3 -I ${shellQuote(`${pluginRoot}/bin/head-guard.py`)}`, ...[cwd, ...writeDirs].map(shellQuote)].join(' ')
 
+/**
+ * The strict write guard on native Windows: Command Code runs it through `cmd.exe` before every tool call, with the
+ * policy file `guardPolicy` wrote. `python` is the launcher Hydra found (`py -3`, `python`), plain words left unquoted.
+ */
+export const strictGuardCommand = (pluginRoot: string, policyFile: string, python: readonly string[]) =>
+  [...python, '-I', windowsQuote(`${pluginRoot}/bin/head-guard.py`), '--policy', windowsQuote(policyFile)].join(' ')
+
 /** Quotes one argument for a Windows command line (CreateProcess rules): wrapped in double quotes, inner quotes doubled. */
 export const windowsQuote = (text: string) => `"${text.replace(/"/g, '""')}"`

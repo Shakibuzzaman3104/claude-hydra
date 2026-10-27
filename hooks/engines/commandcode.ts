@@ -9,14 +9,16 @@ import { applyEvent, formatReport, relativeTo } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
 import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, compareChangedFiles, continuePrompt, isFinished, isResumable, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
-import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
+import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, strictGuardCommand, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
-import { homeOf, runScript } from '../lib/platform'
+import { homeOf, isWindowsPath, platformOf, pythonOf, removeFile, runScript } from '../lib/platform'
 import { baseName } from '../lib/protect'
 import type { Guarded } from '../lib/protect'
 import { readMode } from '../lib/state'
 
 const RULES_FILE = '.commandcode/settings.local.json'
+/** The write guard's policy on native Windows, where the guard is the whole lockdown (see `guardPolicy`). */
+const POLICY_FILE = '.commandcode/hydra-guard.json'
 const OWNER = 'hydra'
 
 const WATCHED = new Set(['turn_end', 'thinking_start', 'tool_queued', 'tool_running', 'tool_completed', 'tool_denied'])
@@ -53,7 +55,7 @@ export const PROJECT_DENY = [
 export const SEARCH_DENY = 'Grep'
 
 type Permissions = { allow?: string[]; deny?: string[]; additionalDirectories?: string[] }
-type GuardHook = { matcher: string; hooks: { type: 'command'; command: string; timeout: number }[] }
+type GuardHook = { matcher?: string; hooks: { type: 'command'; command: string; timeout: number; failClosed?: boolean }[] }
 
 /** A running Head the rules file is kept for: `key` is `<session id>/<head id>`, `until` when it must have ended. */
 export type HeadEntry = HeadNeeds & { key: string; until: number }
@@ -96,8 +98,8 @@ export const guardedDeny = (paths: readonly string[]) => [
 /** Every running Head's `.hydraignore` matches. */
 export const guardedOf = (heads: readonly HeadNeeds[]) => heads.reduce<string[]>((paths, head) => union(paths, head.guarded?.paths ?? []), [])
 
-export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string, home = ''): HeadSettings => {
-  const shell = heads.some(head => head.shell)
+export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly string[], hasEnvFile = false, guard?: string, home = '', strict = false): HeadSettings => {
+  const shell = !strict && heads.some(head => head.shell)
   const writeDirs = writeDirsOf(heads)
   const guarded = guardedOf(heads)
   return {
@@ -105,13 +107,37 @@ export const headSettings = (heads: readonly HeadNeeds[], outsideDeny: readonly 
     permissions: {
       deny: [
         ...outsideDeny, ...PROJECT_DENY, ...writeDirs.flatMap(writeDirDeny), ...secretReadDeny(home), ...guardedDeny(guarded),
-        ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(hasEnvFile || guarded.length > 0 ? [SEARCH_DENY] : []),
+        ...(shell ? DANGEROUS_SHELL : ['Shell']), ...(strict || hasEnvFile || guarded.length > 0 ? [SEARCH_DENY] : []),
       ],
       additionalDirectories: heads.reduce<string[]>((dirs, head) => union(dirs, [...head.addDirs, ...(head.writeDirs ?? [])]), []),
     },
-    ...(guard ? { hooks: { PreToolUse: [{ matcher: 'write|edit', hooks: [{ type: 'command' as const, command: guard, timeout: 10 }] }] } } : {}),
+    ...(guard
+      ? {
+          hooks: {
+            PreToolUse: [
+              strict
+                ? { hooks: [{ type: 'command' as const, command: guard, timeout: 10, failClosed: true }] }
+                : { matcher: 'write|edit', hooks: [{ type: 'command' as const, command: guard, timeout: 10 }] },
+            ],
+          },
+        }
+      : {}),
   }
 }
+
+/**
+ * The write guard's policy on native Windows, where Command Code's path rules cannot name a drive and so cannot keep a
+ * --yolo Head in: the guard runs before every tool call (no matcher, fail-closed), allows only the file tools it knows,
+ * and keeps them inside `write` (the project and `writeDirs`) and `read` (plus `addDirs`), away from credential folders
+ * under `home` and `.hydraignore` matches. Shell and search stay denied by rule as well.
+ */
+export const guardPolicy = (cwd: string, heads: readonly HeadNeeds[], home: string) => ({
+  write: [cwd, ...writeDirsOf(heads)],
+  read: heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []),
+  guarded: guardedOf(heads),
+  home,
+  secrets: SECRET_PATHS,
+})
 
 /** Each folder above one of `roots` (and not inside any), with the names that lead down to a root from it. */
 export const waysDown = (roots: readonly string[]) => {
@@ -173,6 +199,10 @@ async function findEnvFile($: EngineInterface, dirs: readonly string[]): Promise
 }
 
 const rulesPath = (cwd: string) => `${cwd.replace(/\/$/, '')}/${RULES_FILE}`
+const policyPath = (cwd: string) => `${cwd.replace(/\/$/, '')}/${POLICY_FILE}`
+
+/** Why a Command Code Head has no search tool on native Windows, in place of the `.env` file that turns it off elsewhere. */
+export const WINDOWS_SEARCH_OFF = 'windows'
 
 export const RULES_INVALID = `${RULES_FILE} is not valid JSON. Fix or delete it, then run the Head again.`
 export const RULES_TAKEN = `${RULES_FILE} holds your own Command Code rules, and Hydra needs that file to lock Heads down. Move your rules to .commandcode/settings.json (Command Code reads both), then run the Head again.`
@@ -183,6 +213,7 @@ export const RULES_TAKEN = `${RULES_FILE} holds your own Command Code rules, and
  */
 export async function writeRules($: EngineInterface, cwd: string): Promise<string | undefined> {
   const path = rulesPath(cwd)
+  const strict = (await platformOf($)) === 'windows'
   let inFile: HeadEntry[] = []
   if (await $.fs.exists(path)) {
     let existing: HeadSettings
@@ -197,23 +228,36 @@ export async function writeRules($: EngineInterface, cwd: string): Promise<strin
   const heads = mergeHeads(inFile, [...(projects.get(cwd)?.values() ?? [])], await $.session.id(), await $.clock.now())
   if (heads.length === 0) {
     searchOff.delete(cwd)
-    if (await $.fs.exists(path)) await $.process.run(['/bin/rm', '-f', path])
-    await $.process.run(['/bin/rmdir', `${cwd.replace(/\/$/, '')}/.commandcode`]).catch(() => undefined)
+    if (await $.fs.exists(path)) await removeFile($, path)
+    if (strict) await removeFile($, policyPath(cwd)).catch(() => undefined)
+    await removeFile($, `${cwd.replace(/\/$/, '')}/.commandcode`, true).catch(() => undefined)
     return undefined
   }
   const writeDirs = writeDirsOf(heads)
-  const envFile = (await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []), ...writeDirs])) ?? guardedOf(heads)[0]
-  if (envFile) searchOff.set(cwd, envFile)
-  else searchOff.delete(cwd)
-  const outsideDeny = await outsideDenyRules($, [cwd, ...writeDirs])
-  const settings = { ...headSettings(heads, outsideDeny, Boolean(envFile), guardCommand($.plugin.root, cwd, writeDirs), await homeOf($)), hydraHeads: heads }
-  await $.fs.write(path, JSON.stringify(settings, null, 2) + '\n')
+  const home = await homeOf($)
+  let settings: HeadSettings
+  if (strict) {
+    // Search is always off here (the guard cannot filter what grep reads), and the guard replaces the outside deny list.
+    const python = await pythonOf($)
+    if (!python) return 'Python 3 is missing, and on Windows the write guard (a Python script) is the whole lockdown. Install it from python.org, then run the Head again.'
+    searchOff.set(cwd, WINDOWS_SEARCH_OFF)
+    await $.fs.write(policyPath(cwd), JSON.stringify(guardPolicy(cwd, heads, home), null, 2) + '\n')
+    settings = headSettings(heads, [], true, strictGuardCommand($.plugin.root, policyPath(cwd), python), home, true)
+  } else {
+    const envFile = (await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []), ...writeDirs])) ?? guardedOf(heads)[0]
+    if (envFile) searchOff.set(cwd, envFile)
+    else searchOff.delete(cwd)
+    const outsideDeny = await outsideDenyRules($, [cwd, ...writeDirs])
+    settings = headSettings(heads, outsideDeny, Boolean(envFile), guardCommand($.plugin.root, cwd, writeDirs), home)
+  }
+  await $.fs.write(path, JSON.stringify({ ...settings, hydraHeads: heads }, null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
-    const file = exclude.stdout.trim()
-    const excludePath = file.startsWith('/') ? file : `${cwd.replace(/\/$/, '')}/${file}`
+    const file = exclude.stdout.trim().replace(/\\/g, '/')
+    const excludePath = file.startsWith('/') || isWindowsPath(file) ? file : `${cwd.replace(/\/$/, '')}/${file}`
     const current = (await $.fs.exists(excludePath)) ? await $.fs.read(excludePath) : ''
-    if (!current.split('\n').includes(RULES_FILE)) await $.fs.write(excludePath, `${current.replace(/\n?$/, '\n')}${RULES_FILE}\n`)
+    const missing = [RULES_FILE, ...(strict ? [POLICY_FILE] : [])].filter(entry => !current.split(/\r?\n/).includes(entry))
+    if (missing.length > 0) await $.fs.write(excludePath, `${current.replace(/\n?$/, '\n')}${missing.join('\n')}\n`)
   }
   return undefined
 }
@@ -221,6 +265,7 @@ export async function writeRules($: EngineInterface, cwd: string): Promise<strin
 /**
  * Command Code 1.65 anchors a path rule at `/` or the project, so no rule can name `D:/…`: on a Windows path the
  * outside-the-project deny list cannot be written and a --yolo Head could write anywhere (verified with a live Head).
+ * On native Windows the strict write guard takes over (`guardPolicy`); a Windows path anywhere else is still refused.
  */
 export const windowsPathRefusal = (cwd: string) =>
   /^[A-Za-z]:|^\\\\|\\/.test(cwd)
@@ -228,7 +273,7 @@ export const windowsPathRefusal = (cwd: string) =>
     : undefined
 
 async function joinProject($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, minutes: number) {
-  const unsupported = windowsPathRefusal(cwd)
+  const unsupported = (await platformOf($)) === 'windows' ? undefined : windowsPathRefusal(cwd)
   if (unsupported) return unsupported
   const heads = projects.get(cwd) ?? new Map<string, HeadEntry>()
   const until = (await $.clock.now()) + minutes * 60_000 + UNTIL_SLACK_MS
@@ -301,7 +346,9 @@ export async function runCommandCodeHead(
   limits: HeadLimits,
   id: string,
 ) {
-  const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, guarded } = head
+  const { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, effort, guarded } = head
+  const strict = (await platformOf($)) === 'windows'
+  const shell = head.shell && !strict
   const refusal = await joinProject($, cwd, id, { addDirs, writeDirs, shell, guarded }, minutes)
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
@@ -315,7 +362,9 @@ export async function runCommandCodeHead(
     }
   }
   const envFile = searchOff.get(cwd)
-  const rulesNote = envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
+  const rulesNote = strict
+    ? `native Windows: the write guard checks every call; no shell${head.shell ? ' (shell: true ignored)' : ''}, no search tool`
+    : envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
     return await runLockedHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, rulesNote, effort }, outer, limits, id)
   } finally {
