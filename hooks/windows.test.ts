@@ -6,6 +6,7 @@ import { expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 
 import { PROJECT_DENY, SEARCH_DENY, guardPolicy, headSettings, windowsPathRefusal, writeRules } from './engines/commandcode'
+import { outsideFiles, relativeTo } from './lib/format'
 import { HYDRA_POLICY } from './lib/policy'
 import { pauseOneSecond, resetPlatform } from './lib/platform'
 import { WINDOWS_ENGINES, preflight, windowsRefusal } from './lib/runtime'
@@ -141,4 +142,12 @@ test('a foreground Head waits on Windows with ping, not /bin/sleep, which does n
   await pauseOneSecond($)
   expect(runs).toEqual([['ping.exe', '-n', '2', '127.0.0.1']])
   resetPlatform()
+})
+
+test('a report on Windows flags a write outside the project and shows edits inside it relative to the project', async () => {
+  const files = ['C:\\Users\\me\\app\\src\\a.kt', 'c:/users/ME/APP/b.kt', 'C:\\Users\\me\\x.txt', 'D:/shared/c.kt', 'C:/Users/me/app-evil/d.kt']
+  expect(outsideFiles('C:\\Users\\me\\app', files, ['D:\\shared'])).toEqual(['C:\\Users\\me\\x.txt', 'C:/Users/me/app-evil/d.kt'])
+  expect(relativeTo('C:\\Users\\me\\app', 'C:\\Users\\me\\app\\src\\a.kt')).toBe('src/a.kt')
+  expect(relativeTo('C:/Users/me/app/', 'c:/users/me/app/B.kt')).toBe('B.kt')
+  expect(relativeTo('/repo', '/repo/a/b.swift')).toBe('a/b.swift')
 })

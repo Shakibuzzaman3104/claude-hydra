@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.3.1 — 2026-10-27
+- **Fixed: on Windows a Head's report never flagged a write outside the project.** `⚠ WROTE OUTSIDE THE PROJECT` only looked at paths starting with `/`, so a `C:\…` path slipped past it. The guard still blocked such writes; only the audit missed them. Drive and UNC paths are now compared with either slash style, ignoring letter case, and edits inside the project are listed relative to it (`src/a.kt`).
+
 ## 1.3.0 — 2026-10-27
 - **Hydra runs on native Windows, with Command Code Heads.** Until now every engine was refused there. Command Code's path rules can't name a drive (`D:/…`), so on Windows Hydra's write guard becomes the whole lockdown: it runs before every tool call and fails closed. Heads can read and edit only inside the project and `writeDirs`, read `addDirs`, and never touch `.env` files (in any letter case, `.env.` and `.env ` included), credential folders, `.hydraignore` matches, device paths or alternate data streams. Links out of the project are denied, junctions and 8.3 short names included.
 - **What a Command Code Head can't do on Windows:** it has no shell (`shell: true` is ignored) and no search tool, so give it the exact files to work on. It needs Python 3 (`py -3` or `python`). The other engines still need WSL.
