@@ -7,7 +7,7 @@ import { expect, test } from 'claude-code/testing'
 import {
   ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
-  ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexEffort, SECRET_PATHS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
+  ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexBaseUrl, codexEffort, SECRET_PATHS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
   foldAgyRow, newAgyState, agySettings, agyArgs, agyModelId, agyBaseOf, agyPoolOf, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
   AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
 } from './register'
@@ -740,6 +740,18 @@ test('builds the Codex command: stdin closed, the profile on the command line, n
   expect(codexArgs({ ...base, effort: undefined }).join(' ')).not.toContain('model_reasoning_effort')
   expect(codexEffort('off')).toBe('low')
   expect(codexEffort('max')).toBe('max')
+})
+
+test('carries an API-key gateway from the Codex config past --ignore-user-config', async () => {
+  const base = { prompt: 'do it', model: 'gpt-6.1-terra', maxTurns: 10, cwd: '/p', addDirs: [], filesystem: '{"/"="read"}' }
+  expect(codexArgs(base).join(' ')).not.toContain('openai_base_url')
+  const args = codexArgs({ ...base, baseUrl: 'https://gw.example/v1' })
+  expect(args).toContain('openai_base_url="https://gw.example/v1"')
+  expect(args.indexOf('openai_base_url="https://gw.example/v1"')).toBeLessThan(args.indexOf('--'))
+  expect(codexBaseUrl('model = "x"\nopenai_base_url = "https://gw.example/v1"\n\n[tui]\n')).toBe('https://gw.example/v1')
+  expect(codexBaseUrl('model = "x"\n[model_providers.gw]\nopenai_base_url = "https://other/v1"\n')).toBeUndefined()
+  expect(codexBaseUrl('# openai_base_url = "https://off/v1"\n')).toBeUndefined()
+  expect(codexBaseUrl('')).toBeUndefined()
 })
 
 test('tells the Lead which lockdown and models apply on Codex, and shows the engine in the status line', async () => {

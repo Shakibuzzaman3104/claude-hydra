@@ -156,18 +156,19 @@ export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRea
  * `--ignore-user-config` keeps the person's own Codex settings out of a Head, and `approval_policy="never"` means a refused
  * command simply fails. The first round starts a thread; later rounds `resume` it under the same profile.
  */
-export const codexArgs = (a: RoundArgs & { filesystem: string }) => {
+export const codexArgs = (a: RoundArgs & { filesystem: string; baseUrl?: string }) => {
   const args = ['codex', 'exec', ...(a.resume ? ['resume'] : []),
     '--json', '-m', a.model, '--skip-git-repo-check', '--ignore-user-config',
     '-c', 'default_permissions="hydra"', '-c', `permissions.hydra.filesystem=${a.filesystem}`, '-c', 'approval_policy="never"']
   if (a.effort) args.push('-c', `model_reasoning_effort=${tomlString(codexEffort(a.effort))}`)
+  if (a.baseUrl) args.push('-c', `openai_base_url=${tomlString(a.baseUrl)}`)
   args.push('--', ...(a.resume ? [a.resume] : []), a.prompt)
   return args
 }
 
 async function runRoundCodex(
   $: EngineInterface,
-  argv: RoundArgs & { filesystem: string; state: CodexState },
+  argv: RoundArgs & { filesystem: string; baseUrl?: string; state: CodexState },
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => Promise<void>,
 ): Promise<Round> {
@@ -278,6 +279,9 @@ export async function sweepCodexTemps($: EngineInterface) {
  */
 export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => ({ ...env, TMPDIR: `${tempDir}/` })
 
+/** The top-level `openai_base_url` of a Codex config (an API-key gateway), which `--ignore-user-config` would drop. */
+export const codexBaseUrl = (config: string) => /^[ \t]*openai_base_url[ \t]*=[ \t]*"([^"]+)"/m.exec(config.split(/^[ \t]*\[/m)[0] ?? '')?.[1]
+
 /** A Head on Codex: a filesystem profile on the command line (no file to clean up), then rounds until it reports HEAD DONE. */
 export async function runCodexHead($: EngineInterface, head: CodexHead, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { cwd, model } = head
@@ -301,14 +305,15 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   const repoDirs = await gitReadDirs($, realCwd!, realHome)
   const tempDir = await makeCodexTemp($, id)
   const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead, tempDir)
+  const baseUrl = codexBaseUrl(await $.fs.read(`${head.env?.CODEX_HOME ?? `${realHome}/.codex`}/config.toml`).catch(() => ''))
   try {
-    return await runCodexRounds($, head, filesystem, tempDir, outer, limits, id)
+    return await runCodexRounds($, head, filesystem, baseUrl, tempDir, outer, limits, id)
   } finally {
     await removeCodexTemp($, tempDir)
   }
 }
 
-async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, tempDir: string, outer: AbortSignal, limits: HeadLimits, id: string) {
+async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, baseUrl: string | undefined, tempDir: string, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { task, cwd, maxTurns, minutes } = head
   let model = refusedOnPlan.has(head.model) ? CODEX_PLAN_MODEL : head.model
   const warnings: string[] = model === head.model ? [] : [planWarning(head.model)]
@@ -339,7 +344,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
   const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundCodex($, { ...round, model, effort, cwd, addDirs: head.addDirs, filesystem, state, env: codexEnv(tempDir, head.env) }, signal, onEvent)
+    const ran = await runRoundCodex($, { ...round, model, effort, cwd, addDirs: head.addDirs, filesystem, baseUrl, state, env: codexEnv(tempDir, head.env) }, signal, onEvent)
     return { ...ran, effort }
   }
 
