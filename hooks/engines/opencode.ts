@@ -5,7 +5,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import { applyEvent, formatReport, outsideFiles, relativeTo, tokensText } from '../lib/format'
-import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
+import type { SessionReport, StreamEvent } from '../lib/format'
 import { changedFiles, compareChangedFiles, continuePrompt, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { IdleLimits, Round } from '../lib/runtime'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
@@ -563,7 +563,7 @@ export async function sweepOpenCodeFiles($: EngineInterface) {
 }
 
 /** A Head on OpenCode (beta): its own config and config home, then rounds until it reports HEAD DONE. */
-export async function runOpenCodeHead($: EngineInterface, head: OpenCodeHead, outer: AbortSignal, limits: HeadLimits, id: string) {
+export async function runOpenCodeHead($: EngineInterface, head: OpenCodeHead, outer: AbortSignal, id: string) {
   const { cwd, model } = head
   const setup: OpenCodeSetup | { refusal: string } = /^[A-Za-z]:|^\\\\|\\/.test(cwd)
     ? { refusal: `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.` }
@@ -572,12 +572,12 @@ export async function runOpenCodeHead($: EngineInterface, head: OpenCodeHead, ou
       }))
   if ('refusal' in setup) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: setup.refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, `${setup.refusal} A Head never starts without Hydra's rules.`, 'opencode', 'unavailable')
   }
   try {
     const real = { ...head, cwd: setup.cwd, addDirs: setup.addDirs, writeDirs: setup.writeDirs }
-    return await runOpenCodeRounds($, real, opencodeEnv(setup.cwd, setup.configFile, setup.configHome, setup.config, head.env), outer, limits, id)
+    return await runOpenCodeRounds($, real, opencodeEnv(setup.cwd, setup.configFile, setup.configHome, setup.config, head.env), outer, id)
   } finally {
     await removeOpenCodeFiles($, setup.configHome)
   }
@@ -591,7 +591,7 @@ export async function runOpenCodeHead($: EngineInterface, head: OpenCodeHead, ou
 export const idleRetryRound = (round: { prompt: string; maxTurns: number; resume?: string }, sessionId: string | undefined, denied: string[], turnsUsed: number) =>
   sessionId ? { prompt: continuePrompt(denied), maxTurns: Math.max(1, round.maxTurns - turnsUsed), resume: sessionId } : round
 
-async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Record<string, string>, outer: AbortSignal, limits: HeadLimits, id: string) {
+async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Record<string, string>, outer: AbortSignal, id: string) {
   const { task, cwd, model, maxTurns, minutes } = head
 
   const startedAt = await $.clock.now()
@@ -646,7 +646,7 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: hung && !isDone ? 'OpenCode hung (no output)' : endActivity(ended, { maxTurns, minutes, stopped }),
   })
-  void refreshHeads($, limits)
+  void refreshHeads($)
 
   const warnings = [...new Set(state.flagged), ...changeWarnings(cwd, head.writeDirs, files, await realPaths($, files))]
   if (hangs > 0 && !hung) warnings.push(`OpenCode went silent ${hangs} time(s) and was restarted by Hydra's watchdog; check the files it edited.`)

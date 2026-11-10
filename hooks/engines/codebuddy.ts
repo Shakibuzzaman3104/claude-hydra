@@ -7,7 +7,7 @@ import type { EngineInterface } from 'claude-code'
 import { isQuotaFailure } from '../lib/accounts'
 import { effortModeOf, headEffort } from '../lib/effort'
 import { EDIT_TOOLS, applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
-import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
+import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
 import { compareChangedFiles, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
@@ -273,7 +273,7 @@ export async function sweepBuddySettings($: EngineInterface) {
 }
 
 /** A Head on CodeBuddy: its own permission settings (no shared rules file), then rounds until it reports HEAD DONE. */
-export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: AbortSignal, limits: HeadLimits, id: string) {
+export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: AbortSignal, id: string) {
   const { cwd, model } = head
   const unsupported = /^[A-Za-z]:|^\\\\|\\/.test(cwd) ? `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.` : undefined
   let settings = ''
@@ -288,17 +288,17 @@ export async function runBuddyHead($: EngineInterface, head: BuddyHead, outer: A
     ))
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, head.engine ?? 'codebuddy', 'unavailable')
   }
   try {
-    return await runBuddyRounds($, head, settings, outer, limits, id)
+    return await runBuddyRounds($, head, settings, outer, id)
   } finally {
     await $.process.run(['/bin/rm', '-f', settings]).catch(() => undefined)
   }
 }
 
-async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: string, outer: AbortSignal, limits: HeadLimits, id: string) {
+async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: string, outer: AbortSignal, id: string) {
   const { task, cwd, model, maxTurns, addDirs, shell, minutes } = head
   // Grep checks Read rules only against the path it is given, not the files it walks into, so it goes when a `.hydraignore` match is in reach.
   const searchBlock = head.guarded?.paths[0]
@@ -346,7 +346,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: endActivity(ended, { maxTurns, minutes, stopped }),
   })
-  void refreshHeads($, limits)
+  void refreshHeads($)
 
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns, usd: null, files, denied: state.denied,

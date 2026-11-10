@@ -2,9 +2,8 @@
  * @author Shakib
  * @since 15/10/26
  */
-import type { Ending, HeadRun, HeadStep, HeadsUsage, HydraMode } from '../../types'
-import { effortModeOf } from './effort'
-import { DEFAULT_ENGINE, ENGINES, ENGINE_BIN, ENGINE_LABEL, isAuto, isEngine, poolOf } from './engines'
+import type { Ending, HeadRun, HeadStep, HydraMode } from '../../types'
+import { DEFAULT_ENGINE, ENGINES, ENGINE_BIN, ENGINE_LABEL, isEngine } from './engines'
 import type { Engine } from './engines'
 import { isWindowsPath, toSlashes } from './platform'
 import { isWithin } from './safety'
@@ -213,8 +212,6 @@ export const bandLayout = (columns: number, isRouted: boolean) => {
 export const nowLine = (run: HeadRun) =>
   run.state === 'done' ? `done${run.costUsd !== undefined ? ` · $${run.costUsd.toFixed(4)}` : run.tokens ? ` · ${run.tokens}` : ''}` : run.activity ?? run.state
 
-export type HeadLimits = { fiveHourUsd: number; weeklyUsd: number }
-
 export const CODEBUDDY_NO_SPEND = 'CodeBuddy counts credits, not dollars, so Hydra shows tokens per Head instead of spend.'
 export const CODEX_NO_SPEND = 'Codex runs on your ChatGPT plan, not dollars, so Hydra shows tokens per Head instead of spend.'
 export const AGY_NO_SPEND = 'Antigravity runs on your Google account quota, not dollars, so Hydra shows tokens per Head instead of spend.'
@@ -224,20 +221,9 @@ export const OPENCODE_NO_SPEND = 'OpenCode runs the models you set up in it (the
 export const isNoSpend = (error: string | undefined) =>
   [CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, AGY_NO_SPEND, AUTO_NO_SPEND, WORKBUDDY_NO_SPEND, OPENCODE_NO_SPEND].includes(error ?? '')
 
-/** Shown only while Hydra is on: the Head model and effort, and what Heads spent against their 5-hour and weekly limits. */
-export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, limits: HeadLimits) => {
-  if (!hydra?.isOn) return undefined
-  const parts = [isAuto(hydra)
-    ? `🐉 Auto ${poolOf(hydra).join('+')} · ${effortModeOf(hydra)}`
-    : `🐉 ${isEngine(hydra.engine) && hydra.engine !== 'commandcode' ? `${ENGINE_LABEL[hydra.engine]} ` : ''}${shortModel(hydra.headModel)} · ${effortModeOf(hydra)}`]
-  if (usage && !usage.error) {
-    parts.push(`Heads 5h ${spentOf(usage.fiveHour.usd, limits.fiveHourUsd)}`, `7d ${spentOf(usage.weekly.usd, limits.weeklyUsd)}`)
-  }
-  return parts.join(' | ')
-}
-
-/** Spend against a limit, or the spend alone while the person has set no limit (0). */
-export const spentOf = (usd: number, limit: number) => (limit > 0 ? `$${usd.toFixed(2)}/$${limit}` : `$${usd.toFixed(2)}`)
+/** Hydra's mark in the person's status line, only while it is on: which engines and what they spend is in the band, `/heads` and `/hydra-usage`. */
+export const HYDRA_MARK = '🐉'
+export const statusMark = (hydra: HydraMode | null) => (hydra?.isOn ? HYDRA_MARK : undefined)
 
 /** The events of Command Code's JSON stream the live view reads. */
 export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown>; isError?: boolean; /** Every file one call wrote, when it wrote more than the one its input names. */ files?: readonly string[] }

@@ -5,8 +5,8 @@
 import { expect, test } from 'claude-code/testing'
 
 import {
-  ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, spentOf, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
-  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusLine, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
+  ancestorDenyRules, guardCommand, waysDown, writeDirDeny, applyEvent, barOf, HYDRA_HELP, mergeHeads, preflightText, summaryOf, clockOf, continuePrompt, describeTool, elapsedOf, glyphOf, headsSummary, isLive, nowLine, effortModeOf, headEffort, HYDRA_POLICY, isEffort, isEffortMode, isHeadEffort, nearestEffort, supportedEfforts, DANGEROUS_SHELL, DONE_MARK, formatReport, headSettings, outsideFiles, windowsPathRefusal, PROJECT_DENY, isFinished, isResumable, leadLabel, parseHydraArgs,
+  relativeTo, resetsIn, SEARCH_DENY, statusFile, statusMark, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
   ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexBaseUrl, codexEffort, SECRET_PATHS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
   foldAgyRow, newAgyState, agySettings, agyArgs, agyModelId, agyBaseOf, agyPoolOf, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
   AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
@@ -34,16 +34,11 @@ test('draws a bar proportional to the percent', async () => {
   expect(barOf(150, 4)).toBe('████')
 })
 
-test('writes the Head model, effort and Heads usage for the status line only while Hydra is on', async () => {
-  const usage = { fiveHour: { usd: 0.06, resetsAt: null }, weekly: { usd: 1.41, resetsAt: null }, measuredAt: 0 }
-  const limits = { fiveHourUsd: 14, weeklyUsd: 35 }
-  const on = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash', effort: 'high' }
-  expect(statusLine(on, usage, limits)).toBe('🐉 deepseek-v4.1-flash · high | Heads 5h $0.06/$14 | 7d $1.41/$35')
-  expect(statusLine(on, null, limits)).toBe('🐉 deepseek-v4.1-flash · high')
-  expect(statusLine(on, { ...usage, error: 'offline' }, limits)).toBe('🐉 deepseek-v4.1-flash · high')
-  expect(statusLine({ isOn: true, headModel: 'm' }, null, limits)).toBe('🐉 m · auto')
-  expect(statusLine({ ...on, isOn: false }, usage, limits)).toBeUndefined()
-  expect(statusLine(null, usage, limits)).toBeUndefined()
+test('writes a small mark for the status line only while Hydra is on, whatever the engine', async () => {
+  expect(statusMark({ isOn: true, headModel: 'deepseek/deepseek-v4.1-flash', effort: 'high' })).toBe('🐉')
+  expect(statusMark({ isOn: true, headModel: 'm', effort: 'low', engine: 'auto', engines: ['codex', 'agy'] })).toBe('🐉')
+  expect(statusMark({ isOn: false, headModel: 'm' })).toBeUndefined()
+  expect(statusMark(null)).toBeUndefined()
   expect(statusFile('/Users/x', 'abc-123')).toBe('/Users/x/.claude/hydra/status/abc-123.txt')
 })
 
@@ -467,13 +462,6 @@ test('never turns a typo into a task, and knows help and statusline', async () =
   expect(HYDRA_HELP).toContain('/hydra-usage')
 })
 
-test('shows spend without a limit until the person sets one', async () => {
-  expect(spentOf(1.5, 0)).toBe('$1.50')
-  expect(spentOf(1.5, 35)).toBe('$1.50/$35')
-  const usage = { fiveHour: { usd: 0.06, resetsAt: null }, weekly: { usd: 1.41, resetsAt: null }, measuredAt: 0 }
-  expect(statusLine({ isOn: true, headModel: 'a/m', effort: 'auto' }, usage, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 m · auto | Heads 5h $0.06 | 7d $1.41')
-})
-
 test('keeps the rules file for other sessions\' live Heads only, and this session\'s from memory', async () => {
   const entry = (key: string, until: number) => ({ key, until, addDirs: [], shell: false })
   const inFile = [entry('me/a', 100), entry('other/b', 100), entry('other/old', 5)]
@@ -564,9 +552,8 @@ test('reads engine= and --engine from /hydra, only before the task', async () =>
   expect(HYDRA_HELP).toContain('/hydra engine=<name>')
 })
 
-test('shows the engine in the status line only for CodeBuddy, and tells the Lead which lockdown applies', async () => {
+test('tells the Lead which lockdown applies on CodeBuddy', async () => {
   const on = { isOn: true, headModel: 'deepseek-v4.1-flash', effort: 'low', engine: 'codebuddy' }
-  expect(statusLine(on, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 CodeBuddy deepseek-v4.1-flash · low')
   const policy = HYDRA_POLICY('deepseek-v4.1-flash', 'auto', 'codebuddy')
   expect(policy).toContain('CodeBuddy agents on deepseek-v4.1-flash')
   expect(policy).toContain("CodeBuddy's headless mode")
@@ -777,7 +764,6 @@ test('tells the Lead which lockdown and models apply on Codex, and shows the eng
   expect(policy).not.toContain('--yolo')
   expect(policy).not.toContain('Measured over 126')
   expect(HYDRA_POLICY('gpt-6.1-sol', 'high', 'codex')).toContain('fixed every Head')
-  expect(statusLine({ isOn: true, headModel: 'gpt-6.1-sol', effort: 'auto', engine: 'codex' }, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 Codex gpt-6.1-sol · auto')
   expect(formatReport({ id: 'h', model: 'gpt-6-luna', cwd: '/p', sessionId: 't-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [], finalText: 'ok', exit: '0', engine: 'codex', tokens: '1.2k in / 80 out' })).toContain('(codex --resume t-1)')
 })
 
@@ -892,7 +878,6 @@ test('tells the Lead which lockdown and model apply on Antigravity', async () =>
   expect(policy).toContain('sandbox')
   expect(policy).not.toContain('--yolo')
   expect(policy).not.toContain('Measured over 126')
-  expect(statusLine({ isOn: true, headModel: 'gemini-3.8-flash', effort: 'low', engine: 'agy' }, null, { fiveHourUsd: 0, weeklyUsd: 0 })).toBe('🐉 Antigravity gemini-3.8-flash · low')
   expect(formatReport({ id: 'h', model: 'gemini-3.8-flash', cwd: '/p', sessionId: 'c-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [], finalText: 'ok', exit: '0', engine: 'agy', tokens: '1k in / 80 out' })).toContain('(agy --resume c-1)')
 })
 
@@ -965,9 +950,7 @@ test('gives the Lead a routing guide for exactly the engines in the pool', async
   expect(HYDRA_POLICY('m', 'auto', 'codex')).not.toContain('auto engines')
 })
 
-test('shows auto sessions in the status line and asks consent for every engine in the pool', async () => {
-  const limits = { fiveHourUsd: 0, weeklyUsd: 0 }
-  expect(statusLine({ isOn: true, headModel: 'm', effort: 'low', engine: 'auto', engines: ['codex', 'agy'] }, null, limits)).toBe('🐉 Auto codex+agy · low')
+test('asks consent for every engine in the pool of an auto session', async () => {
   const question = AUTO_CONSENT_QUESTION(['codex', 'agy', 'codebuddy'])
   expect(question).toContain('Codex (OpenAI)')
   expect(question).toContain('Antigravity (Google: Gemini, Claude, GPT-OSS)')

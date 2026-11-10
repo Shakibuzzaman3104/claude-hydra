@@ -235,19 +235,15 @@ export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (${ENGINES.map(name =
   /heads                 watch the Heads work, live: totals, a timeline and each Head's steps
   /${USAGE_COMMAND}           Claude and Head usage, and what this session's Heads used per engine`
 
-export const STATUSLINE_HELP = `Hydra writes its line to ~/.claude/hydra/status/<session id>.txt while it is on. To show it, add this before the final printf of your status line script, where $input is the JSON Claude Code passes and $out your line:
+export const STATUSLINE_HELP = `Hydra writes a small mark (🐉) to ~/.claude/hydra/status/<session id>.txt while it is on. To show it inside your own status line, add this before the final printf of your status line script, where $input is the JSON Claude Code passes and $out your line:
 
 session_id=$(printf '%s' "$input" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"' | head -1 | sed -E 's/.*"([A-Za-z0-9-]*)"$/\\1/')
 hydra_file="$HOME/.claude/hydra/status/$session_id.txt"
-if [ -n "$session_id" ] && [ -s "$hydra_file" ]; then
-  printf '%s\\n%s' "$out" "$(head -1 "$hydra_file")"
-else
-  printf '%s' "$out"
-fi
+[ -n "$session_id" ] && [ -s "$hydra_file" ] && out="$out $(head -1 "$hydra_file")"
 
-Then add "refreshInterval": 2 to the statusLine block of ~/.claude/settings.json, so the line appears and clears within 2 seconds of /hydra and /hydra off instead of at your next message.
+Then add "refreshInterval": 2 to the statusLine block of ~/.claude/settings.json, so the mark appears and clears within 2 seconds of /hydra and /hydra off instead of at your next message.
 
-A full script is in the repo's examples/statusline.sh. Without it, the band above the prompt and /heads show the same.`
+A full script is in the repo's examples/statusline.sh. Which engines the Heads run on and what they used is in the band above the prompt, /heads and /hydra-usage.`
 
 export const CONSENT_QUESTION = (headModel: string, engine: Engine = DEFAULT_ENGINE) =>
   engine === 'agy'

@@ -183,7 +183,7 @@ const main = async () => {
   const targetEngine = resumeSession?.engine ?? values.engine
   const headModel = resumeSession?.model ?? hydra.modelOn(targetEngine, values.model, HEAD_MODEL, HEAD_MODEL)
   const startedAt = Date.now()
-  const result = await hydra.runHead(engine, { ...input, model: headModel }, headModel, stop.signal, { fiveHourUsd: 0, weeklyUsd: 0 }, values.name, targetEngine)
+  const result = await hydra.runHead(engine, { ...input, model: headModel }, headModel, stop.signal, values.name, targetEngine)
   const run = (await hydra.readRuns(engine)).find(entry => entry.id === values.name)
   if (result.session) writeFileSync(sessionPath(values.name), JSON.stringify(result.session, null, 2))
   console.log(result.text)

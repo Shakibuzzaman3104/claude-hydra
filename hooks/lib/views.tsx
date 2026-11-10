@@ -10,7 +10,6 @@ import { effortModeOf } from './effort'
 import { ENGINE_LABEL, engineLabel, isAuto, isEngine } from './engines'
 import type { Engine } from './engines'
 import { COUNT_WIDTH, bandLayout, barOf, clockOf, colorOf, compactNumber, elapsedOf, engineMixOf, engineMixText, fitText, isLive, isNearCap, isNoSpend, leadLabel, percentOf, progressBar, progressText, resetsIn, shortModel, spendText, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf, turnsOf } from './format'
-import type { HeadLimits } from './format'
 import { CHECK_TRIES, endingWord, headsSummaryOf, lookOf, needsLead, rowLine } from './look'
 import { stopHeadsNow } from './runtime'
 import { readHeads, readLead, readMode, readRuns, readSelected, readTick, updateSelected } from './state'
@@ -58,7 +57,7 @@ export async function bandView($: EngineInterface, e: RenderInput<'AbovePrompt'>
 }
 
 /** The `/heads` pane: every Head in this session and the chosen one's progress, steps and report. */
-export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, defaultEngine: Engine, limits: HeadLimits) {
+export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, defaultEngine: Engine) {
   const { Box, Text, Button } = $.ui.resolve(e)
   const now = await readTick($)
   const frame = Math.floor(now / 1000)
@@ -162,7 +161,7 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
           <Text dimColor wrap="wrap">{chosen.task}</Text>
           {(chosen.state === 'running' || chosen.state === 'queued') && (
             <Box marginTop={1}>
-              <Button key="stop-head" hotkey="s" label={`Stop ${chosen.id}`} onPress={() => stopHeadsNow($, [chosen.id], 'stopped from /heads', limits)} />
+              <Button key="stop-head" hotkey="s" label={`Stop ${chosen.id}`} onPress={() => stopHeadsNow($, [chosen.id], 'stopped from /heads')} />
             </Box>
           )}
           <Box marginTop={1}>
