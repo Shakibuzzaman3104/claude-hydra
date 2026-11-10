@@ -17,6 +17,13 @@ export type HydraMode = { isOn: boolean; headModel: string; effort?: string; /**
 
 export type HeadStep = { isOk: boolean; text: string }
 
+/**
+ * How a Head's run ended: `done` (it reported HEAD DONE), `blocked` (it reported HEAD BLOCKED), `stalled` (it kept replying
+ * without acting or finishing), `capped` (out of turns or rounds), `timeout`, `stopped` (by the Lead or the person) or
+ * `error` (the CLI or the engine failed).
+ */
+export type Ending = 'done' | 'blocked' | 'stalled' | 'capped' | 'timeout' | 'stopped' | 'error'
+
 export type HeadRun = {
   id: string
   task: string
@@ -38,7 +45,26 @@ export type HeadRun = {
   /** The engine account the Head runs on, as `<engine>/<name>`; set only for engines with extra accounts. */
   account?: string
   files?: string[]
+  /** The files the Lead named for this Head to create or change, relative to `cwd`: what its progress is measured against. */
+  expected?: string[]
+  /** The files it has written so far, relative to `cwd`, as its tool calls complete. */
+  touched?: string[]
+  /** Turns of this Head's earlier runs (before a fix round, or a move to another account or route); `turns` counts the run under way. */
+  earlierTurns?: number
+  /** Each edited file's size of change (`+3 −1`, `new`), by its path relative to `cwd`. */
+  stats?: Record<string, string>
   summary?: string
+  ending?: Ending
+  /** Its acceptance check: the try Hydra is on (from 1) and how it stands. */
+  check?: { tries: number; state: 'running' | 'fixing' | 'passed' | 'failed' | 'unknown' }
+  /** When each run of the check and each fix round began, for the timeline. */
+  marks?: { at: number; kind: 'check' | 'fix' }[]
+  /** The engine's session id, kept so the Lead can continue this Head with `resume`. */
+  sessionId?: string
+  /** What the Head was granted, reused when it is resumed. */
+  addDirs?: string[]
+  writeDirs?: string[]
+  shell?: boolean
 }
 
 declare module 'claude-code' {

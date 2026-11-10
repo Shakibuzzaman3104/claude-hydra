@@ -14,6 +14,7 @@ import {
 import type { On } from 'claude-code'
 
 import type { HeadRun } from '../types'
+import { endingWord } from './lib/look'
 
 test('labels Claude windows like the Droppy panel', async () => {
   expect(leadLabel('five_hour')).toBe('5-hour limit')
@@ -256,7 +257,7 @@ const NOW = 1_000_000
 const LIVE_RUNS: HeadRun[] = [
   {
     id: 'hA', task: 'Make 12 edits to c.txt', model: 'deepseek/deepseek-v4.1-flash', state: 'running', turns: 7, maxTurns: 40, effort: 'high', startedAt: NOW - 134_000,
-    activity: 'edit c.txt', edits: 5, denials: 1, steps: [{ isOk: true, text: 'search "TODO"' }, { isOk: false, text: '$ wc -l c.txt' }],
+    activity: 'edit c.txt', files: ['c.txt'], edits: 5, denials: 1, steps: [{ isOk: true, text: 'search "TODO"' }, { isOk: false, text: '$ wc -l c.txt' }],
   },
   { id: 'hB', task: 'Smoke test the rules', model: 'deepseek/deepseek-v4.1-flash', state: 'done', turns: 14, maxTurns: 40, effort: 'max', costUsd: 0.0336,
     startedAt: NOW - 90_000, endedAt: NOW - 10_000 },
@@ -285,35 +286,47 @@ for (const surface of ['terminal', 'desktop'] as const) {
     serveRuns(on, LIVE_RUNS)
     const band = await $.ui.mount({
       plugin: 'hydra', surface, component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 100, scroll, view: {} },
+      props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 12, bodyColumns: 100, scroll, view: {} },
     })
     const text = textOf(await band.drawn())
-    for (const part of ['1 running · 1 done', 'hA', 'high', ' 7/40', '2:14', 'edit c.txt', 'hB', 'max', '14/40', 'done · $0.0336']) expect(text).toContain(part)
+    for (const part of ['1 running · 1 done', 'hA', 'high', '7 turns', '2:14', 'edit c.txt', 'hB', 'max', '14 turns', 'done · $0.0336']) expect(text).toContain(part)
   })
 
   test(`lists Heads in the /heads pane and shows the one picked (${surface})`, async ($, on) => {
-    serveRuns(on, LIVE_RUNS)
+    const cappedRun: HeadRun = {
+      id: 'hC', task: 'Review cap', model: 'deepseek/deepseek-v4.1-flash', state: 'failed', ending: 'capped',
+      turns: 40, maxTurns: 40, sessionId: 's1', engine: 'codex',
+    }
+    serveRuns(on, [...LIVE_RUNS, cappedRun])
     const pane = await $.ui.mount({
       plugin: 'hydra', surface, component: 'Pane', requestId: 'hydra-heads',
       props: { title: 'Heads', isFocused: true, bodyColumns: 80, placement: 'dock', scroll, view: {} },
     })
     const first = textOf(await pane.drawn())
     for (const part of ['Make 12 edits to c.txt', '5 edits · 1 denied', '$ wc -l c.txt', '(denied)']) expect(first).toContain(part)
+    expect(first).toContain('✓ c.txt')
     await $.ui.press({ plugin: 'hydra', key: 'pick-hB', surface })
     const picked = textOf(await pane.drawn())
     expect(picked).toContain('effort max')
     expect(picked).toContain('$0.0336')
+    expect(picked).toContain('done')
+    expect(picked).toContain(endingWord(LIVE_RUNS[1]!))
+    await $.ui.press({ plugin: 'hydra', key: 'pick-hC', surface })
+    const pickedC = textOf(await pane.drawn())
+    expect(pickedC).toContain('resume: "')
+    expect(pickedC).toContain(endingWord(cappedRun))
   })
 }
 
 test('leaves the band to the engine when no Head is live', async ($, on) => {
   serveRuns(on, [])
-  // Nothing stands for the engine's own band here, so a pass ends in the kit's "no implementation".
-  const passed = await $.ui.mount({
+  // Nothing stands for the engine's own band here: an older kit rejects the pass ("no implementation"), a newer one draws nothing of Hydra's.
+  const drawn = await $.ui.mount({
     plugin: 'hydra', surface: 'terminal', component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll, view: {} },
-  }).then(() => 'drew', (error: unknown) => String(error))
-  expect(passed).toContain('no implementation for ui.render')
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll, view: {} },
+  }).then(async band => textOf(await band.drawn()), (error: unknown) => String(error)).catch((error: unknown) => String(error))
+  expect(drawn).not.toContain('Hydra')
+  expect(drawn).not.toContain('running')
 })
 
 test('marks only running or queued Heads as stopped, by id or all', async () => {
@@ -332,7 +345,7 @@ test('flags a running Head with no live process behind it as stale', async () =>
   const live: HeadRun = { id: 'h1', task: 'convert file', model: 'm', state: 'running', turns: 3, maxTurns: 60, startedAt: 1_000 }
   const ghost: HeadRun = { ...live, id: 'h2' }
   const text = listRuns([live, ghost], 66_000, id => id === 'h1')
-  expect(text.split('\n')[0]).toBe('h1 · running · 3/60 turns · 1:05 · running · convert file')
+  expect(text.split('\n')[0]).toBe('h1 · running · 3 turns · 1:05 · running · convert file')
   expect(text.split('\n')[1]).toContain('h2 · running · NO LIVE PROCESS')
   expect(listRuns([], 0, () => false)).toBe('No Heads in this session.')
 })
@@ -491,7 +504,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(textOf(await pane.drawn())).toContain('j/k')
     await $.ui.press({ plugin: 'hydra', key: 'prev-head', surface })
     const picked = textOf(await pane.drawn())
-    expect(picked).toContain('edited (2): a.kt, b.kt')
+    expect(picked).toContain('✓ a.kt')
+    expect(picked).toContain('✓ b.kt')
     expect(picked).toContain('Converted both files.')
   })
 }

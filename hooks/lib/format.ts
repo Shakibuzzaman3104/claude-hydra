@@ -2,7 +2,7 @@
  * @author Shakib
  * @since 15/10/26
  */
-import type { HeadRun, HeadStep, HeadsUsage, HydraMode } from '../../types'
+import type { Ending, HeadRun, HeadStep, HeadsUsage, HydraMode } from '../../types'
 import { effortModeOf } from './effort'
 import { DEFAULT_ENGINE, ENGINES, ENGINE_BIN, ENGINE_LABEL, isAuto, isEngine, poolOf } from './engines'
 import type { Engine } from './engines'
@@ -192,6 +192,9 @@ export const timelineRowCount = (bodyRows: number, total: number) => Math.min(to
 /** Cuts `text` to `width` cells with an ellipsis, then pads it to exactly that. */
 export const fitText = (text: string, width: number) => (text.length > width ? `${text.slice(0, Math.max(0, width - 1))}…` : text).padEnd(width)
 
+/** The cells a band row keeps for a Head's count (`12/14 files`, `34 turns`). */
+export const COUNT_WIDTH = 11
+
 /**
  * Which columns a band row (one line per Head) keeps at a width: the effort and the bar go first, then the turn count, so
  * the fixed part leaves the activity the rest. `fixed` is what the kept columns take, the glyph and the elapsed time included.
@@ -200,9 +203,9 @@ export const bandLayout = (columns: number, isRouted: boolean) => {
   const idWidth = columns < 60 ? 10 : columns < 80 ? 12 : 16
   const engineWidth = isRouted ? (columns < 60 ? 6 : columns < 80 ? 8 : 11) : 0
   const showEffort = columns >= 70
-  const showBar = columns >= 60
+  const showBar = columns >= 64
   const showTurns = columns >= 50
-  const fixed = 2 + idWidth + 1 + (isRouted ? engineWidth + 1 : 0) + (showEffort ? 6 : 0) + (showBar ? 9 : 0) + (showTurns ? 6 : 0) + 6
+  const fixed = 2 + idWidth + 1 + (isRouted ? engineWidth + 1 : 0) + (showEffort ? 6 : 0) + (showBar ? 9 : 0) + (showTurns ? COUNT_WIDTH + 1 : 0) + 6
   return { idWidth, engineWidth, showEffort, showBar, showTurns, fixed }
 }
 
@@ -237,10 +240,11 @@ export const statusLine = (hydra: HydraMode | null, usage: HeadsUsage | null, li
 export const spentOf = (usd: number, limit: number) => (limit > 0 ? `$${usd.toFixed(2)}/$${limit}` : `$${usd.toFixed(2)}`)
 
 /** The events of Command Code's JSON stream the live view reads. */
-export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown>; isError?: boolean }
+export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown>; isError?: boolean; /** Every file one call wrote, when it wrote more than the one its input names. */ files?: readonly string[] }
 
 export const EDIT_TOOLS = new Set(['edit_file', 'write_file'])
 const MAX_STEPS = 8
+const MAX_TOUCHED = 200
 
 /** A short line for a tool call: `edit c.txt`, `search "TODO"`, `$ ls`. */
 export const describeTool = (name: string, input: Record<string, unknown> = {}, cwd = '') => {
@@ -269,10 +273,14 @@ export const applyEvent = (run: HeadRun, event: StreamEvent, labels: Map<string,
     case 'tool_denied': {
       const isOk = event.type === 'tool_completed'
       const step: HeadStep = { isOk, text: label() }
+      const isEdit = isOk && !event.isError && EDIT_TOOLS.has(event.toolName ?? '')
+      const written = !isEdit ? [] : event.files ? event.files.map(file => relativeTo(cwd, file)) : [step.text.replace(/^(?:edit|write) /, '')]
+      const fresh = written.filter(file => file && file !== '.' && !(run.touched ?? []).includes(file))
       return {
         steps: [...(run.steps ?? []), step].slice(-MAX_STEPS),
-        edits: (run.edits ?? 0) + (isOk && !event.isError && EDIT_TOOLS.has(event.toolName ?? '') ? 1 : 0),
+        edits: (run.edits ?? 0) + (isEdit ? 1 : 0),
         denials: (run.denials ?? 0) + (isOk ? 0 : 1),
+        ...(fresh.length > 0 ? { touched: [...(run.touched ?? []), ...new Set(fresh)].slice(-MAX_TOUCHED) } : {}),
       }
     }
     case 'turn_end':
@@ -280,6 +288,66 @@ export const applyEvent = (run: HeadRun, event: StreamEvent, labels: Map<string,
     default:
       return {}
   }
+}
+
+/** The share of its turn cap at which a Head's count becomes a warning: the cap stops a runaway Head, it does not size the task. */
+const NEAR_CAP = 0.8
+
+export const isNearCap = (run: Pick<HeadRun, 'turns' | 'maxTurns'>) => run.maxTurns !== undefined && run.turns >= run.maxTurns * NEAR_CAP
+
+/** Every turn a Head took: this run's, which the cap counts, and those of its earlier runs (a fix round, another account or route). */
+export const turnsOf = (run: Pick<HeadRun, 'turns' | 'earlierTurns'>) => (run.earlierTurns ?? 0) + run.turns
+
+/** The files the Lead named, relative to `cwd` and once each: what a Head's progress is measured against. */
+export const expectedFiles = (cwd: string, files: readonly string[]) => [...new Set(files.map(file => relativeTo(cwd, file.trim()).replace(/^\.\//, '')).filter(Boolean))]
+
+/** A Head's measured progress: how many of the files the Lead named it has written. Undefined when the Lead named none. */
+export const progressOf = (run: Pick<HeadRun, 'expected' | 'touched' | 'files'>) => {
+  const expected = run.expected ?? []
+  if (expected.length === 0) return undefined
+  const written = new Set([...(run.touched ?? []), ...(run.files ?? [])])
+  const done = expected.filter(file => written.has(file)).length
+  return { done, total: expected.length, percent: (done / expected.length) * 100 }
+}
+
+/** A Head's bar: the named files written, and blank when the Lead named none, since nothing else about a Head's progress can be measured. */
+export const progressBar = (run: Pick<HeadRun, 'expected' | 'touched' | 'files'>, width: number) => {
+  const progress = progressOf(run)
+  return progress ? barOf(progress.percent, width) : ' '.repeat(width)
+}
+
+/** A Head's count in the views: its turns against the cap once it nears it, else the named files written, else its turns so far. */
+export const progressText = (run: Pick<HeadRun, 'turns' | 'earlierTurns' | 'maxTurns' | 'expected' | 'touched' | 'files'>) => {
+  if (isNearCap(run)) return `${run.turns}/${run.maxTurns} turns`
+  const progress = progressOf(run)
+  return progress ? `${progress.done}/${progress.total} files` : `${turnsOf(run)} turns`
+}
+
+/** A Head's counts in one line, for a list: the named files written and its turns. */
+export const countsOf = (run: Pick<HeadRun, 'turns' | 'earlierTurns' | 'maxTurns' | 'expected' | 'touched' | 'files'>) => {
+  const progress = progressOf(run)
+  const turns = isNearCap(run) ? `${run.turns}/${run.maxTurns} turns` : `${turnsOf(run)} turns`
+  return progress ? `${progress.done}/${progress.total} files · ${turns}` : turns
+}
+
+/** The files the Lead named, each marked written (✓) or not yet (·). */
+export const expectedMarks = (run: Pick<HeadRun, 'expected' | 'touched' | 'files'>) => {
+  const written = new Set([...(run.touched ?? []), ...(run.files ?? [])])
+  return (run.expected ?? []).map(file => `${written.has(file) ? '✓' : '·'} ${file}`).join('  ')
+}
+
+/** Hydra's report lines on the files the Lead named: how many the Head changed, the ones it never touched and, when no Head in `beside` shared its folder, what it changed beyond them. */
+export const scopeLines = (cwd: string, expected: readonly string[], files: readonly string[], beside: readonly string[] = []) => {
+  if (expected.length === 0) return []
+  const changed = [...new Set(files.map(file => relativeTo(cwd, file)))]
+  const missed = expected.filter(file => !changed.includes(file))
+  const extra = changed.filter(file => !expected.includes(file))
+  return [
+    `named files: ${expected.length - missed.length}/${expected.length} changed`,
+    ...(missed.length > 0 ? [`⚠ named but not changed: ${missed.join(', ')}`] : []),
+    // Heads that shared the folder may have written those files: the line would blame this Head for their work.
+    ...(extra.length > 0 && beside.length === 0 ? [`also changed, not named: ${extra.join(', ')}`] : []),
+  ]
 }
 
 export type SessionReport = { usd: number | null; files: string[]; denied: { tool: string; target: string; text: string }[]; toolCalls: number }
@@ -337,7 +405,7 @@ export const listRuns = (list: readonly HeadRun[], now: number, isLiveProcess: (
     : list
         .map(run => {
           const ghost = (run.state === 'running' || run.state === 'queued') && !isLiveProcess(run.id) ? ' · NO LIVE PROCESS' : ''
-          return `${run.id} · ${run.state}${ghost} · ${run.turns}/${run.maxTurns ?? '?'} turns · ${elapsedOf(run, now)} · ${nowLine(run)} · ${run.task.slice(0, 80)}`
+          return `${run.id} · ${run.state}${ghost} · ${countsOf(run)} · ${elapsedOf(run, now)} · ${nowLine(run)} · ${run.task.slice(0, 80)}`
         })
         .join('\n')
 
@@ -379,7 +447,105 @@ export const overlappingHeads = (runs: readonly HeadRun[], head: { id: string; c
     .map(run => run.id)
 }
 
+const REPORT_HEAD_CHARS = 5_000
+const REPORT_TAIL_CHARS = 3_000
+
+/** A Head's own report, cut in the middle when it is long: a report leads with what matters and ends with what is left. */
+export const clipReport = (text: string) => {
+  const report = text.trim()
+  if (report.length <= REPORT_HEAD_CHARS + REPORT_TAIL_CHARS) return report
+  const cut = report.length - REPORT_HEAD_CHARS - REPORT_TAIL_CHARS
+  return `${report.slice(0, REPORT_HEAD_CHARS)}\n[… ${cut} characters cut by Hydra …]\n${report.slice(-REPORT_TAIL_CHARS)}`
+}
+
+/** Engines whose Heads the Lead can continue with `resume`. Antigravity keeps a conversation in the Head's own HOME, which is removed when it ends. */
+export const RESUMABLE: ReadonlySet<Engine> = new Set<Engine>(['commandcode', 'codebuddy', 'codex', 'workbuddy', 'opencode'])
+
+/** The report's `edited` line: each file relative to `cwd`, with its lines added and removed where `stats` has them. */
+export const editedLine = (cwd: string, files: readonly string[], stats: Readonly<Record<string, string>> = {}) => {
+  const edited = (file: string) => {
+    const relative = relativeTo(cwd, file)
+    return stats[relative] ? `${relative} (${stats[relative]})` : relative
+  }
+  return files.length > 0 ? `edited (${files.length}): ${files.map(edited).join(', ')}` : 'edited: nothing'
+}
+
+const REPORT_MARKER = '\n--- head report ---'
+
+/** A finished report with its `edited` line rewritten to carry `stats`. Only Hydra's own summary is touched, never the Head's text. */
+export const withEditStats = (report: string, cwd: string, files: readonly string[], stats: Readonly<Record<string, string>>) => {
+  if (files.length === 0 || Object.keys(stats).length === 0) return report
+  const at = report.indexOf(REPORT_MARKER)
+  const summary = at < 0 ? report : report.slice(0, at)
+  return summary.replace(/^edited \(\d+\): .*$/m, () => editedLine(cwd, files, stats)) + (at < 0 ? '' : report.slice(at))
+}
+
+const EDITED_LINE = /^edited(?: \((\d+)\))?: .*$/m
+
+const summaryOfReport = (report: string) => {
+  const at = report.indexOf(REPORT_MARKER)
+  return at < 0 ? report : report.slice(0, at)
+}
+
+/** How many files a report's own `edited` line names. */
+export const editedCount = (report: string) => Number(summaryOfReport(report).match(EDITED_LINE)?.[1] ?? 0)
+
+/** A report whose `edited` line names `files`: a Head moved to another account or engine also edited what its earlier attempts wrote. */
+export const withEdits = (report: string, cwd: string, files: readonly string[], stats: Readonly<Record<string, string>> = {}) => {
+  const summary = summaryOfReport(report)
+  return summary.replace(EDITED_LINE, () => editedLine(cwd, files, stats)) + report.slice(summary.length)
+}
+
+/** `git diff --numstat -z` rows and `git ls-files --others -z` paths as one stat per file: `+12 −3`, or `new` for a file git does not track yet. */
+export const parseDiffStat = (numstat: string, untracked: string) => {
+  const stats: Record<string, string> = {}
+  for (const row of numstat.split('\0')) {
+    const [added, removed, path] = row.split('\t')
+    if (path && added !== undefined && /^\d+$/.test(added) && removed !== undefined && /^\d+$/.test(removed)) stats[path] = `+${added} −${removed}`
+  }
+  for (const path of untracked.split('\0')) if (path) stats[path] = 'new'
+  return stats
+}
+
+/** The ended Head the Lead named in `resume`, or why it cannot be continued. The latest Head of that name wins. */
+export const resumeTarget = (runs: readonly HeadRun[], name: string): { run: HeadRun & { sessionId: string } } | { deny: string } => {
+  const run = [...runs].reverse().find(entry => entry.id === name)
+  const open = runs.filter(entry => entry.sessionId && entry.state !== 'running' && entry.state !== 'queued').map(entry => entry.id)
+  if (!run) return { deny: `No Head named "${name}" in this session. resume takes the name of an ended Head${open.length > 0 ? `: ${open.join(', ')}` : ', and none can be continued yet'}.` }
+  if (run.state === 'running' || run.state === 'queued') return { deny: `Head ${name} is still ${run.state}. Wait for its report, or stop it first.` }
+  if (!isEngine(run.engine) || !RESUMABLE.has(run.engine)) return { deny: `Head ${name} ran on ${isEngine(run.engine) ? ENGINE_LABEL[run.engine] : 'an unknown engine'}, whose Heads cannot be continued. Start a new Head with the full task.` }
+  if (!run.sessionId) return { deny: `Head ${name} left no session to continue (it never got one). Start a new Head with the full task.` }
+  return { run: run as HeadRun & { sessionId: string } }
+}
+
+/** Whether the Lead can continue this Head with `resume`: it has a session, on an engine that can reopen one. */
+export const canResume = (run: Pick<HeadRun, 'sessionId' | 'engine'>) => !!run.sessionId && RESUMABLE.has((run.engine ?? DEFAULT_ENGINE) as Engine)
+
+/** Which limit a capped Head ran into: its turn cap when it used every turn, else the round limit. */
+export const capOf = (run: Pick<HeadRun, 'turns' | 'maxTurns'>): 'turn' | 'round' => (run.maxTurns !== undefined && run.turns >= run.maxTurns ? 'turn' : 'round')
+
+/** Why a Head that did not finish stopped, and what the Lead can do about it. */
+export const stopLine = (head: { id: string; ending?: Ending; cap?: 'turn' | 'round'; maxTurns?: number; sessionId?: string; engine?: Engine; files: readonly string[] }) => {
+  const canResume = !!head.sessionId && RESUMABLE.has(head.engine ?? DEFAULT_ENGINE)
+  const again = canResume ? `continue it with resume: "${head.id}"` : 'start a new Head for what is left'
+  const hasEdits = head.files.length > 0
+  switch (head.ending) {
+    case 'blocked': return `BLOCKED: the Head says it cannot finish (its report says why). Fix what stops it, then ${again}, or do it yourself.`
+    case 'stalled': return `stalled: it replied ${hasEdits ? 'after its edits ' : ''}without acting, finishing or saying it is blocked. Read its last message below${hasEdits ? ' and the diff: the work may be complete' : ''}.`
+    case 'capped': return head.cap === 'round'
+      ? `out of rounds: it kept stopping without finishing. Its handoff is below; ${again}.`
+      : `out of turns (${head.maxTurns ?? '?'}): its handoff is below; ${again}${canResume ? ' and a higher maxTurns' : ''}, or split the task.`
+    case 'timeout': return `out of time: its handoff, if it wrote one, is below; ${again}${canResume ? ' and a higher maxMinutes' : ''}, or split the task.`
+    default: return undefined
+  }
+}
+
 export const formatReport = (head: {
+  /** How the run ended, and for a capped one which limit and how many turns it had. */
+  ending?: Ending; cap?: 'turn' | 'round'; maxTurns?: number
+  startedAt?: number; endedAt?: number
+  /** Lines added and removed per edited file (keyed by its path relative to `cwd`), as `diffStat` reads them from git. */
+  stats?: Readonly<Record<string, string>>
   id: string; model: string; effort?: string; cwd: string; sessionId?: string; finished: boolean; rounds: number; turns: number;
   usd: number | null; files: string[]; denied: SessionReport['denied']; finalText: string; exit: string; rulesNote?: string; errors?: string
   writeDirs?: readonly string[]; engine?: Engine; tokens?: string; /** Things the Lead must check by hand, each shown as a ⚠ line. */ warnings?: readonly string[]
@@ -390,10 +556,13 @@ export const formatReport = (head: {
   /** Other Heads that ran in the same folder, or one inside or holding it, during this Head. */
   alsoRan?: readonly string[]
 }) => {
+  const took = head.startedAt !== undefined && head.endedAt !== undefined ? ` · ${clockOf(head.endedAt - head.startedAt)}` : ''
   const lines = [
-    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}`,
+    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}${took}`,
     `session ${head.sessionId ?? 'none'} (${resumeCommand(head.engine ?? DEFAULT_ENGINE)} ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
+  const stop = head.finished ? undefined : stopLine(head)
+  if (stop) lines.push(stop)
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
   for (const warning of head.warnings ?? []) lines.push(`⚠ ${warning}`)
   if (head.writeDirs && head.writeDirs.length > 0) lines.push(`may also write: ${head.writeDirs.join(', ')}`)
@@ -401,7 +570,7 @@ export const formatReport = (head: {
   if (outside.length > 0) lines.push(`⚠ WROTE OUTSIDE THE PROJECT (${outside.length}): ${outside.join(', ')}`)
   const ignoreEdits = head.files.filter(isIgnoreFile)
   if (ignoreEdits.length > 0) lines.push(`⚠ CHANGED .hydraignore (${ignoreEdits.map(file => relativeTo(head.cwd, file)).join(', ')}): check it before the next Head runs`)
-  lines.push(head.files.length > 0 ? `edited (${head.files.length}): ${head.files.map(file => relativeTo(head.cwd, file)).join(', ')}` : 'edited: nothing')
+  lines.push(editedLine(head.cwd, head.files, head.stats))
   if (head.reverted && head.reverted.length > 0) lines.push(`⚠ put back to the committed version during this Head (uncommitted edits there are gone): ${head.reverted.map(file => relativeTo(head.cwd, file)).join(', ')}`)
   if (head.restored && head.restored.length > 0) lines.push(`⚠ rewritten during this Head and now identical to the committed version (if anyone edited them while it ran, those edits are gone): ${head.restored.map(file => relativeTo(head.cwd, file)).join(', ')}`)
   if (head.overwritten && head.overwritten.length > 0) lines.push(`⚠ changed files that already had uncommitted edits before this Head started: ${head.overwritten.map(file => relativeTo(head.cwd, file)).join(', ')}`)
@@ -409,7 +578,7 @@ export const formatReport = (head: {
   if (head.denied.length > 0) {
     lines.push(`denied (${head.denied.length}):`, ...head.denied.map(d => `  - ${d.tool} ${relativeTo(head.cwd, d.target)}: ${d.text.slice(0, 140)}`))
   }
-  lines.push('--- head report ---', (head.finalText || '(no final report)').trim().slice(-8000))
+  lines.push('--- head report ---', clipReport(head.finalText) || '(no final report)')
   if (!head.finished && head.errors?.trim()) lines.push('--- stderr ---', head.errors.trim())
   return lines.join('\n')
 }

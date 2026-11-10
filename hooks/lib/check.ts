@@ -61,7 +61,11 @@ export const raisedEffort = (effort: string | undefined) => {
 
 /** What the Head is told when it goes back: the check, what it printed, and that the files it changed are still there. */
 export const fixNote = (check: string, outcome: Extract<CheckOutcome, { kind: 'failed' }>, files: readonly string[]) =>
-  `\n\nYour previous attempt finished, but the acceptance check failed. Check: \`${check}\` (exit ${outcome.exitCode}). Its last output:\n\`\`\`\n${outcome.tail || '(no output)'}\n\`\`\`\nFiles already changed: ${files.length > 0 ? files.join(', ') : 'none recorded'}. Fix the code so the check passes. Do not weaken, skip or delete tests or the check to get there.`
+  `\n\nYour previous attempt ended, but the acceptance check failed. Check: \`${check}\` (exit ${outcome.exitCode}). Its last output:\n\`\`\`\n${outcome.tail || '(no output)'}\n\`\`\`\nFiles already changed: ${files.length > 0 ? files.join(', ') : 'none recorded'}. Fix the code so the check passes. Do not weaken, skip or delete tests or the check to get there. Hydra runs the check again when you finish: you need not run it yourself.`
+
+/** What a Head is told about its check before it starts: Hydra runs it, so the Head neither has to nor has to wait for it. */
+export const checkNote = (check: string) =>
+  `\n\nAcceptance check: when you finish, Hydra runs \`${check.slice(0, 300)}\` itself, outside your sandbox, and sends you back with its output if it fails. You do not have to run it, and if you cannot, do not wait for it or ask for its result: finish the work and end your report.`
 
 /** Build and test files: when the Head changed one, the check ran code the Head wrote, and a pass proves less. */
 const RUNS_CODE = [
@@ -104,7 +108,19 @@ export const withSummary = (report: string, lines: readonly string[], output?: s
 }
 
 /** The steps `checkHead` takes, wired by the caller to the engine, the run record and the clock. */
-export type CheckSteps<R extends { text: string; isDone: boolean; files?: string[] }> = {
+/** What `checkHead` reads of a Head's result. */
+export type Checked = { text: string; isDone: boolean; files?: string[]; ending?: string }
+
+/** Endings where the work may still be whole: the Head stopped on its own limits, not on a refusal or a failure. */
+const UNFINISHED_BUT_CHECKABLE = new Set(['stalled', 'capped', 'timeout'])
+
+/** A finished Head is checked, and so is one that ran out of turns, time or words after editing files: the check, not the Head, says whether the work is done. */
+export const isCheckable = (result: Checked) =>
+  result.isDone || (UNFINISHED_BUT_CHECKABLE.has(result.ending ?? '') && (result.files?.length ?? 0) > 0)
+
+const UNFINISHED_PASS = 'the Head did not report HEAD DONE, but the check passed: read its last message for what it left undone'
+
+export type CheckSteps<R extends Checked> = {
   check: string
   cwd: string
   /** The Head's whole time budget, in minutes: fix rounds only start while some of it is left. */
@@ -121,11 +137,13 @@ export type CheckSteps<R extends { text: string; isDone: boolean; files?: string
 
 /**
  * A Head with an acceptance check: once it finishes, the check runs; a failure sends it back with the check's output,
- * one effort level up, up to `CHECK_FIX_ROUNDS` times. A check that could not judge the code (no start, a timeout,
- * command not found) is UNKNOWN and never retried, and a Head that did not finish is never checked. Returns the last
- * run with every try's files and the check lines in its report, and the final outcome (none when the check never ran).
+ * one effort level up, up to `CHECK_FIX_ROUNDS` times. A Head that ran out of turns or time, or stalled, after editing
+ * files is checked too (`isCheckable`): the check's verdict counts for more than the missing HEAD DONE. A check that
+ * could not judge the code (no start, a timeout, command not found) is UNKNOWN and never retried, and a Head that was
+ * blocked, stopped or failed is never checked. Returns the last run with every try's files and the check lines in its
+ * report, and the final outcome (none when the check never ran).
  */
-export async function checkHead<R extends { text: string; isDone: boolean; files?: string[] }>(steps: CheckSteps<R>): Promise<{ result: R; outcome?: CheckOutcome }> {
+export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promise<{ result: R; outcome?: CheckOutcome }> {
   const startedAt = await steps.now()
   const edited: string[] = []
   const tries: CheckOutcome[] = []
@@ -133,7 +151,7 @@ export async function checkHead<R extends { text: string; isDone: boolean; files
   let result = await steps.run()
   for (;;) {
     for (const file of result.files ?? []) if (!edited.includes(file)) edited.push(file)
-    if (!result.isDone || steps.isAborted()) {
+    if (!isCheckable({ ...result, files: edited }) || steps.isAborted()) {
       const line = tries.length > 0 ? `✗ FAILED earlier, and the Head did not finish its fix round` : 'not run: the Head did not finish'
       return { result: { ...result, files: edited, text: withSummary(result.text, [`check: \`${steps.check}\` ${line}`]) }, outcome: tries.at(-1) }
     }
@@ -143,6 +161,7 @@ export async function checkHead<R extends { text: string; isDone: boolean; files
     const minutesLeft = steps.minutes - Math.floor(((await steps.now()) - startedAt) / 60_000)
     if (outcome.kind !== 'failed' || tries.length > CHECK_FIX_ROUNDS || minutesLeft < 1 || steps.isAborted()) {
       const lines = checkLines(steps.check, outcome, tries, outcome.kind === 'unknown' ? [] : checkedEdits(steps.check, edited, steps.cwd))
+      if (outcome.kind === 'passed' && !result.isDone) lines.push(`⚠ ${UNFINISHED_PASS}`)
       return { result: { ...result, files: edited, text: withSummary(result.text, lines, outcome.kind === 'passed' ? undefined : outcome.tail) }, outcome }
     }
     effort = raisedEffort(effort)

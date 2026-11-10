@@ -8,7 +8,9 @@ import { isQuotaFailure } from '../lib/accounts'
 import { effortModeOf, headEffort } from '../lib/effort'
 import { EDIT_TOOLS, applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
+import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
+import type { RoundSpec } from '../lib/rounds'
+import { compareChangedFiles, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
@@ -244,7 +246,7 @@ async function runRoundBuddy(
   }
 }
 
-type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string>; /** WorkBuddy runs this same code with its own env. */ engine?: 'codebuddy' | 'workbuddy'; guarded?: Guarded }
+type BuddyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; env?: Record<string, string>; /** WorkBuddy runs this same code with its own env. */ engine?: 'codebuddy' | 'workbuddy'; guarded?: Guarded; /** An earlier Head's session to continue. */ resume?: string }
 
 const BUDDY_SETTINGS_DIR = '.claude/hydra/heads'
 
@@ -303,28 +305,16 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   const search = !searchBlock
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
-  const controller = new AbortController()
-  if (outer.aborted) controller.abort()
-  else outer.addEventListener('abort', () => controller.abort(), { once: true })
-  let timedOut = false
-  const timerStop = new AbortController()
-  void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(
-    () => {
-      timedOut = true
-      controller.abort()
-    },
-    () => undefined,
-  )
-  const signal = controller.signal
-
   let turns = 0
   const state = newBuddyState()
   const labels = new Map<string, string>()
+  const counter = createCallCounter()
   const onEvent = async (event: StreamEvent) => {
+    counter.see(event)
     if (event.type === 'turn_end') turns++
     await setRun($, id, run => applyEvent(run, event, labels, cwd))
   }
-  const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
+  const runRound = async (round: RoundSpec, signal: AbortSignal) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
     const ran = await runRoundBuddy($, { ...round, model, effort, cwd, addDirs, settings, shell, search, sessionId: buddySessionId(id, await $.clock.now()), state, env: head.env }, signal, onEvent)
@@ -333,42 +323,37 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
 
   const startedAt = await $.clock.now()
   await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
-  let round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
-  for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
-    await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
-    round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
-  }
-  const sessionId = round.sessionId ?? round.startedSession
-  let rounds = 1
-  // A usage limit answers every resume the same way: stop here so the Head moves to the next account.
-  while (!signal.aborted && sessionId && isResumable(round.code) && !isQuotaFailure(round.errors) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
-    const denied = state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`)
-    await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
-    round = await roundAt({ prompt: continuePrompt(denied), maxTurns: maxTurns - turns, resume: sessionId })
-    rounds++
-  }
+  const ended = await runRounds({
+    task, maxTurns, minutes, outer, resume: head.resume, runRound,
+    turns: () => turns,
+    calls: () => counter.calls,
+    denied: () => state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`),
+    // A usage limit answers every resume the same way: stop so the Head moves to the next account.
+    mayResume: round => !isQuotaFailure(round.errors),
+    sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
+    onStep: activity => setRun($, id, { activity }),
+  })
+  const { round, rounds, sessionId, ending } = ended
 
-  timerStop.abort()
   const files = [...state.files]
   const tokens = tokensText(state.inputTokens, state.outputTokens)
   const endedAt = await $.clock.now()
   const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
-  const finished = isFinished(round.finalText)
-  const isDone = round.code === 0 && round.subtype === 'success' && finished
+  const isDone = ending === 'done'
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns, tokens, endedAt,
+    state: isDone ? 'done' : 'failed', turns, tokens, endedAt, ending, sessionId,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
-    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
+    activity: endActivity(ended, { maxTurns, minutes, stopped }),
   })
   void refreshHeads($, limits)
 
   const text = formatReport({
-    id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: null, files, denied: state.denied,
-    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
+    id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns, usd: null, files, denied: state.denied,
+    finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
     writeDirs: head.writeDirs, engine: head.engine ?? 'codebuddy', tokens,
     rulesNote: searchBlock ? `search tool removed because ${relativeTo(cwd, searchBlock)} is in reach` : undefined,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone, failure: isDone ? undefined : round.errors, files }
+  return { text, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
 }

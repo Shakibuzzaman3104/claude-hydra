@@ -15,7 +15,7 @@ import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHead
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
 import type { Engine } from './lib/engines'
-import { REPORT_HEAD, headName, isLive, listRuns, reportContext, reportNotice, stopRuns, strings } from './lib/format'
+import { REPORT_HEAD, headName, isLive, listRuns, reportContext, reportNotice, resumeTarget, stopRuns, strings } from './lib/format'
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
 import { pauseOneSecond } from './lib/platform'
 import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
@@ -32,6 +32,7 @@ export * from './lib/engines'
 export * from './lib/format'
 export * from './lib/onboarding'
 export * from './lib/policy'
+export * from './lib/rounds'
 export * from './lib/runtime'
 export * from './lib/safety'
 export * from './engines/agy'
@@ -64,6 +65,7 @@ export const register: Register = (on, options) => {
   const isAutoDefault = options.headEngine === AUTO
   // On unless the person turned it off: a Head the engine stops moves to another model or engine instead of failing.
   const isFallbackOn = options.headFallback !== false
+  const isAutoStart = options.autoStart === true
   setConfiguredEngine(defaultEngine)
   setAccountStrategy(isStrategy(options.accountStrategy) ? options.accountStrategy : 'fill')
   setExtraHomeRead([String(options.headReadDirs ?? '')])
@@ -107,22 +109,24 @@ export const register: Register = (on, options) => {
     })
     await $.tool.register({
       name: 'head',
-      description: 'Hydra: run one Head (a cheaper coding agent on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode, per the person\'s engine setting) headlessly on a self-contained implementation task. Returns its report, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
+      description: 'Hydra: run one Head (a cheaper coding agent on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode, per the person\'s engine setting) headlessly on a self-contained implementation task, or continue an earlier Head with `resume`. Returns how it ended (finished, blocked, out of turns or time, stalled), its report or handoff, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
       inputSchema: {
         type: 'object',
         properties: {
-          task: { type: 'string', description: 'Self-contained spec: goal, exact files, constraints, acceptance check' },
+          task: { type: 'string', description: 'Self-contained spec: goal, exact files, constraints, what done looks like. With `resume`: only the follow-up (what to fix or do next), since the Head still has the rest. Put a build or test command in `check`, not here: a Head told to verify what its sandbox cannot run stalls.' },
+          resume: { type: 'string', description: 'Name of an ended Head to continue in its own session, on its engine, model and account, with what it already read and did: for feedback on its work, the next step of the same job, or a Head that ran out of turns or time (raise maxTurns or maxMinutes). `task` is then just the follow-up. Cheaper and better informed than a new Head. Not for Antigravity Heads, nor for unrelated work.' },
           cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
           engine: { type: 'string', enum: [...ENGINES], description: 'The engine this Head runs on. Required in auto mode; in a fixed-engine session it defaults to that engine, and naming another ready one sends just this Head there. Pick by the task: see the routing guide in the Hydra policy. If the engine is at its usage limit or signed out, Hydra moves the Head to another model or engine on its own, and the report says where it ran.' },
           model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-terra (default) for coding, including hard or multi-file work, gpt-6.1-sol for work that is not code, gpt-6-luna for mechanical or small tasks. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-3.8-flash (default, bulk), gemini-4-argon (research and search) or claude-sonnet-5-5 (normal work), claude-opus-5-5 (hard work), gpt-oss-120b (simple edits, retiring 2 November 2026); Claude + GPT-OSS, Gemini and Argon draw on separate usage limits. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
-          maxTurns: { type: 'number', description: 'Turn cap for the Head (default 60)' },
+          files: { type: 'array', items: { type: 'string' }, description: 'The files this Head must create or change, relative to cwd, as the task names them. Hydra measures the Head against them: the band shows files written of files named, and the report flags a named file it never changed and any file it changed beyond them. Leave out for a reading job.' },
+          maxTurns: { type: 'number', description: 'Turn cap for the Head (default 100; 200 on Codex and Antigravity, where a turn is one tool call). It stops a runaway Head; a Head that hits it writes a handoff. Raise it for wide reads and audits.' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
           writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
           shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs. OpenCode Heads never get one.' },
           name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
           effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head (default low). Use low when you will check the result, one level up on each retry after a failed check, max first only for subtle work you cannot check. Ignored while the person has fixed a level with /hydra effort=<level>.' },
-          maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40)' },
-          check: { type: 'string', description: 'Acceptance check: a shell command Hydra runs in cwd once the Head finishes (e.g. ./gradlew testDebugUnitTest --tests LoginViewModelTest). It runs as the person, outside the Head\'s lockdown. On a failure the Head is sent back with the output, one effort level up, at most twice. Scope it to what this Head changes: Heads running in the same cwd share the files. The person is asked once before the first check runs.' },
+          maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40); it then gets two minutes to write a handoff' },
+          check: { type: 'string', description: 'Acceptance check: a shell command Hydra runs in cwd once the Head ends (e.g. ./gradlew testDebugUnitTest --tests LoginViewModelTest). It runs as the person, outside the Head\'s lockdown, so it can build and test what the Head cannot; the Head is told Hydra runs it. On a failure the Head is sent back in the same session with the output, one effort level up, at most twice. A Head that ran out of turns or time after editing is checked too. Scope it to what this Head changes: Heads running in the same cwd share the files. The person is asked once before the first check runs.' },
           checkMinutes: { type: 'number', description: 'Time limit for one run of the check, in minutes (default and maximum 10)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
         },
@@ -168,7 +172,10 @@ export const register: Register = (on, options) => {
       wasLive = isAnyLive
     })())
 
-    return next(e)
+    const started = await next(e)
+    if (isAutoStart && !(await readMode($))?.isOn) void $.command.run({ command: 'hydra' }).catch(() => undefined)
+
+    return started
   })
 
   on('session.measure', async ($, e, next) => {
@@ -297,10 +304,14 @@ export const register: Register = (on, options) => {
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
     if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
     if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be low, medium, high, xhigh or max.' }
-    const cwd = typeof e.cwd === 'string' && e.cwd ? e.cwd : await $.session.root()
-    const writable = await resolveWriteDirs($, cwd, strings(e.writeDirs))
+    // `resume` continues an ended Head where its session lives: its engine, model, account, folder and grants.
+    const target = typeof e.resume === 'string' && e.resume.trim() ? resumeTarget(await readRuns($), e.resume.trim()) : undefined
+    if (target && 'deny' in target) return { deny: target.deny }
+    const earlier = target?.run
+    const cwd = earlier?.cwd ?? (typeof e.cwd === 'string' && e.cwd ? e.cwd : await $.session.root())
+    const writable = await resolveWriteDirs($, cwd, e.writeDirs === undefined && earlier ? earlier.writeDirs ?? [] : strings(e.writeDirs))
     if ('refusal' in writable) return { deny: writable.refusal }
-    const routed = resolveHeadEngine(hydra, e.engine, defaultEngine)
+    const routed = earlier ? { engine: earlier.engine as Engine, isNew: false } : resolveHeadEngine(hydra, e.engine, defaultEngine)
     if ('deny' in routed) return { deny: routed.deny }
     const engine = routed.engine
     if (routed.isNew) {
@@ -311,18 +322,21 @@ export const register: Register = (on, options) => {
     if (routed.isNew && isAuto(hydra)) await updateMode($, mode => (mode ? { ...mode, engines: [...poolOf(mode), engine] } : mode))
     const check = typeof e.check === 'string' ? e.check.trim() : ''
     if (check && !(await hasCheckConsent($, check))) return { deny: NO_CHECK_CONSENT }
-    const headModel = headModelFor(engine, undefined, hydra.headModel, defaultHead)
-    const asked = typeof e.model === 'string' && e.model ? e.model : undefined
-    const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}) }
+    const headModel = earlier?.model ?? headModelFor(engine, undefined, hydra.headModel, defaultHead)
+    const asked = earlier ? earlier.model : typeof e.model === 'string' && e.model ? e.model : undefined
+    const resumed = earlier
+      ? { cwd, model: earlier.model, addDirs: e.addDirs ?? earlier.addDirs, shell: e.shell ?? earlier.shell, resumeSession: { id: earlier.sessionId, engine, model: earlier.model, account: earlier.account }, resumeFiles: earlier.files ?? [] }
+      : {}
+    const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}), ...resumed }
     const routing = { headModel: hydra.headModel, configured: defaultHead, model: asked, pool: isAuto(hydra) && hydra.pinned ? poolOf(hydra) : undefined, fallback: isFallbackOn }
     const taken = new Set([...usedNames, ...(await readRuns($)).map(run => run.id)])
-    const id = headName(e.name, String(e.task ?? ''), taken)
+    const id = headName(e.name ?? earlier?.id, String(e.task ?? ''), taken)
     usedNames.add(id)
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment, or run this Head without background.' }
       backgroundJobs.push({ input, headModel, id, engine, routing })
 
-      return { result: `Head ${id} started in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
+      return { result: `Head ${id} ${earlier ? `continues ${earlier.id}` : 'started'} in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
       const { text } = await runHead($, input, headModel, next.signal, limits, id, engine, routing)

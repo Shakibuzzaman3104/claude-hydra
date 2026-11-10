@@ -250,7 +250,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // Oldest first; each bar is drawn on the track and ends with the Head's elapsed time.
     expect(rows[0]).toMatch(/^✓ api-client\s+━+─+\s+2:00$/)
     expect(rows[2]).toMatch(/login-tests\s+─+━+\s+1:40$/)
-    expect(rows[3]).toMatch(/flaky-spec\s+─+━+─+\s+0:10$/)
+    expect(rows[3]).toMatch(/✗ flaky-spec\s+─+━+─+\s+0:10$/)
     expect(rows[4]).toMatch(/^◌ docs-pass\s+┄+\s+–$/)
     // The per-Head detail and the stop button still work beside it.
     expect(text).toContain('Stop login-tests')
@@ -283,7 +283,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     serve(on, { runs: RUNS, tick: NOW, mode: AUTO_MODE })
     const band = await $.ui.mount({
       plugin: 'hydra', surface, component: 'AbovePrompt',
-      props: { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 100, scroll, view: {} },
+      props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 12, bodyColumns: 100, scroll, view: {} },
     })
     const lines = linesOf(await band.drawn())
     // Live Heads: the running, the queued and the two that ended in the last minute.
@@ -301,13 +301,13 @@ test('the band drops columns, not rows, on a narrow screen', async ($, on) => {
   serve(on, { runs: RUNS, tick: NOW, mode: AUTO_MODE })
   const band = await $.ui.mount({
     plugin: 'hydra', surface: 'terminal', component: 'AbovePrompt',
-    props: { hasSurvey: false, isWorking: true, maxRows: 12, bodyColumns: 40, scroll, view: {} },
+    props: { hasSurvey: false, isCollapsed: false, isWorking: true, maxRows: 12, bodyColumns: 40, scroll, view: {} },
   })
   const lines = linesOf(await band.drawn())
   expect(lines).toHaveLength(1 + 4)
   const row = lines.find(line => line.includes('login-tes'))!
   expect(row).toContain('codex')
-  expect(row).not.toContain('/150')
+  expect(row).not.toContain('turns')
   expect(row).not.toContain('█')
 })
 

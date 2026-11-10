@@ -130,6 +130,23 @@ def test_report_lists_edited_files_denials_calls_and_cost(home, projects):
     ]
 
 
+def test_report_since_a_time_counts_only_what_a_continued_head_did(home, projects):
+    earlier, later = timedelta(minutes=30), timedelta(minutes=2)
+    write_jsonl(projects / "p" / "cont.jsonl", [
+        {"timestamp": stamp(earlier), **tool_use("t1", "edit_file", file_path="/proj/a.py")},
+        {"timestamp": stamp(earlier), **tool_result("t1", "Edited /proj/a.py", cost=0.2)},
+        {"timestamp": stamp(later), **tool_use("t2", "edit_file", file_path="/proj/b.py")},
+        tool_result("t2", "Edited /proj/b.py", cost=0.05),
+    ])
+    since = str((NOW - timedelta(minutes=10)).timestamp() * 1000)
+
+    assert usage(home, "--report", "cont")["files"] == ["/proj/a.py", "/proj/b.py"]
+    report = usage(home, "--report", "cont", since)
+    assert report["files"] == ["/proj/b.py"]
+    assert report["usd"] == 0.05
+    assert report["toolCalls"] == 1
+
+
 def test_report_keeps_only_the_last_twelve_denials(home, projects):
     rows = []
     for number in range(15):

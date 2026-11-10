@@ -7,7 +7,9 @@ import type { EngineInterface } from 'claude-code'
 import { effortModeOf, headEffort, nearestEffort, supportedEfforts } from '../lib/effort'
 import { applyEvent, formatReport, relativeTo } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, compareChangedFiles, continuePrompt, isFinished, isResumable, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
+import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
+import type { RoundSpec } from '../lib/rounds'
+import { compareChangedFiles, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, strictGuardCommand, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
@@ -33,9 +35,10 @@ async function findSession($: EngineInterface, since: number, task: string): Pro
   }
 }
 
-async function sessionReport($: EngineInterface, sessionId: string): Promise<SessionReport> {
+/** A session's cost, edits and denials from its transcript; with `since`, only from then on: a Head that continues a session reports its own part. */
+async function sessionReport($: EngineInterface, sessionId: string, since?: number): Promise<SessionReport> {
   try {
-    const ran = await runScript($, 'cc-usage.py', ['--report', sessionId])
+    const ran = await runScript($, 'cc-usage.py', ['--report', sessionId, ...(since ? [String(since)] : [])])
     return JSON.parse(ran.stdout) as SessionReport
   } catch {
     return { usd: null, files: [], denied: [], toolCalls: 0 }
@@ -341,7 +344,7 @@ async function runRoundAt(
 /** A Head on Command Code: the project's shared rules file, then rounds until it reports HEAD DONE. */
 export async function runCommandCodeHead(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; guarded?: Guarded },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; guarded?: Guarded; resume?: string; since?: number },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
@@ -366,7 +369,7 @@ export async function runCommandCodeHead(
     ? `native Windows: the write guard checks every call; no shell${head.shell ? ' (shell: true ignored)' : ''}, no search tool`
     : envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
-    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, rulesNote, effort }, outer, limits, id)
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, rulesNote, effort, resume: head.resume, since: head.since }, outer, limits, id)
   } finally {
     await leaveProject($, cwd, id)
   }
@@ -374,7 +377,7 @@ export async function runCommandCodeHead(
 
 async function runLockedHead(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; rulesNote?: string; effort?: string },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; rulesNote?: string; effort?: string; resume?: string; /** When the Head that continues this session started: its report covers the transcript from then on. */ since?: number },
   outer: AbortSignal,
   limits: HeadLimits,
   id: string,
@@ -382,70 +385,53 @@ async function runLockedHead(
   const { task, cwd, model, maxTurns, addDirs, minutes, rulesNote } = head
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
-  const controller = new AbortController()
-  if (outer.aborted) controller.abort()
-  else outer.addEventListener('abort', () => controller.abort(), { once: true })
-  let timedOut = false
-  const timerStop = new AbortController()
-  void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(
-    () => {
-      timedOut = true
-      controller.abort()
-    },
-    () => undefined,
-  )
-  const signal = controller.signal
 
   let turns = 0
   const labels = new Map<string, string>()
+  const counter = createCallCounter()
   const onEvent = async (event: StreamEvent) => {
+    counter.see(event)
     if (event.type === 'turn_end') turns++
     await setRun($, id, run => applyEvent(run, event, labels, cwd))
   }
-  const roundAt = async (argv: Omit<Parameters<typeof runRound>[1], 'effort'>) => {
+  const runRound = async (round: RoundSpec, signal: AbortSignal) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundAt($, { ...argv, effort }, signal, onEvent)
+    const ran = await runRoundAt($, { ...round, model, cwd, addDirs, effort }, signal, onEvent)
     if (ran.effort !== effort) await setRun($, id, { effort: ran.effort })
     return ran
   }
 
   const startedAt = await $.clock.now()
   await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
-  let round = await roundAt({ prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs })
-  for (let attempt = 1; !round.sessionId && !signal.aborted && attempt <= START_RETRIES; attempt++) {
-    await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
-    round = await roundAt({ prompt: task + HEAD_RULES, model, maxTurns, cwd, addDirs })
-  }
-  const sessionId = round.sessionId ?? (await findSession($, startedAt, task))
-  let rounds = 1
-  while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && turns < maxTurns) {
-    const so_far = await sessionReport($, sessionId)
-    const denied = so_far.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`)
-    await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
-    round = await roundAt({ prompt: continuePrompt(denied), model, maxTurns: maxTurns - turns, resume: sessionId, cwd, addDirs })
-    rounds++
-  }
+  const ended = await runRounds({
+    task, maxTurns, minutes, outer, resume: head.resume, runRound,
+    turns: () => turns,
+    calls: () => counter.calls,
+    denied: async sessionId => (await sessionReport($, sessionId)).denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`),
+    findSession: () => findSession($, startedAt, task),
+    sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
+    onStep: activity => setRun($, id, { activity }),
+  })
+  const { round, rounds, sessionId, ending } = ended
 
-  timerStop.abort()
-  const report = sessionId ? await sessionReport($, sessionId) : { usd: null, files: [], denied: [], toolCalls: 0 }
+  const report = sessionId ? await sessionReport($, sessionId, head.since) : { usd: null, files: [], denied: [], toolCalls: 0 }
   const endedAt = await $.clock.now()
   const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
-  const finished = isFinished(round.finalText)
-  const isDone = round.code === 0 && round.subtype === 'success' && finished
+  const isDone = ending === 'done'
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt,
+    state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt, ending, sessionId,
     files: report.files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
-    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? 'stopped before HEAD DONE',
+    activity: endActivity(ended, { maxTurns, minutes, stopped }),
   })
   void refreshHeads($, limits)
 
   const text = formatReport({
-    id, model, effort: round.effort, cwd, sessionId, finished, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
-    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? String(round.code ?? round.signal), errors: round.errors,
+    id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
+    finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
     rulesNote, writeDirs: head.writeDirs,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone, failure: isDone ? undefined : round.errors }
+  return { text, isDone, failure: isDone ? undefined : round.errors, files: report.files, ending, sessionId }
 }

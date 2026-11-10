@@ -4,7 +4,7 @@
 @since 06/10/26
 
 Sums Command Code spend (usage.costUsd) from ~/.commandcode/projects over rolling 5h and 7d windows,
-for one session with --session <id>, or reports one session's cost, edited files and denied calls with --report <id>.
+for one session with --session <id>, or reports one session's cost, edited files and denied calls with --report <id> [since-ms].
 """
 import json
 import os
@@ -106,16 +106,22 @@ def result_text(content):
     return ""
 
 
-def session_report(session_id):
+def session_report(session_id, since_ms=0.0):
+    """One session's cost, edits and denials; with since_ms, only what happened from then on (a Head that continues a session)."""
     path = transcript_path(session_id)
     if not path:
         return {"usd": None, "files": [], "denied": [], "toolCalls": 0}
-    calls, files, denied, usd, count = {}, [], [], 0.0, 0
+    calls, files, denied, usd, count, at_ms = {}, [], [], 0.0, 0, 0.0
     with open(path, encoding="utf-8", errors="replace") as transcript:
         for line in transcript:
             try:
                 row = json.loads(line)
             except ValueError:
+                continue
+            stamp = parse_time(row.get("timestamp"))
+            if stamp:
+                at_ms = stamp.timestamp() * 1000
+            if since_ms and at_ms < since_ms:
                 continue
             usd += float((row.get("usage") or {}).get("costUsd") or 0)
             content = (row.get("message") or {}).get("content")
@@ -165,8 +171,8 @@ def main():
     if len(sys.argv) == 4 and sys.argv[1] == "--find":
         print(json.dumps({"sessionId": find_session(float(sys.argv[2]), sys.argv[3])}))
         return
-    if len(sys.argv) == 3 and sys.argv[1] == "--report":
-        print(json.dumps(session_report(sys.argv[2])))
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--report":
+        print(json.dumps(session_report(sys.argv[2], float(sys.argv[3]) if len(sys.argv) == 4 else 0.0)))
         return
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
         print(json.dumps({"usd": session_cost(sys.argv[2])}))

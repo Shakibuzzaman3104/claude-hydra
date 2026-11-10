@@ -3,26 +3,33 @@
 Claude leads, cheaper coding agents do the typing. Hydra is a Claude Code plugin. With it on, Claude plans the work, hands self-contained implementation tasks to **Heads** (agents on a cheaper model, run through the Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode CLI), then reviews their diffs and runs the build itself.
 
 ```
-🐉 Hydra 2 running · 1 done · 31k tok · $0.0213 · /heads for detail
-⠹ login-tests  codex       high   ███░░░░░ 14/150 3:12 edit LoginViewModelTest.kt
-⠹ prefs-utils  agy         medium █░░░░░░░  5/150 1:04 search "SharedPreferences"
-✓ api-client   commandcode high   ██░░░░░░ 11/60  2:40 done · $0.0213
+🐉 Hydra 2 running · 1 done · 1 to continue · 8/12 files · $0.0213 · /heads for detail
+⠹ login-tests  codex       high   █████░░░ 2/3 files   3:12 edit LoginViewModelTest.kt
+⚙ prefs-utils  agy         medium ████████ 3/3 files   2:10 check 1/3 · ./gradlew testDebugUnitTest
+✓ api-client   commandcode high   ████████ 4/4 files   2:40 done · 4/4 files · check ✓ · $0.0213
+◷ sync-engine  codex       low    ████░░░░ 1/2 files  21:40 out of turns · resume: "sync-engine"
 ```
+
+The bar is measured, not guessed: Claude names the files a Head must create or change, and the bar fills as the Head writes them (`2/3 files`). A Head with no named files (a reading job) shows its turn count and no bar. The turn cap shows only when a Head nears it (`160/200 turns`).
+
+The glyph and its colour say how a Head stands: a spinner while it works, ⚙ while Hydra runs its check, ✓ green when it is done. Yellow means the Head stopped but can go on, and the row says how: ◆ blocked (with what it needs), ◷ out of turns or time (with the `resume` to continue it), ≈ stalled. Red ✗ is kept for real failures: an engine error, or a check that still fails after its fix rounds.
 
 The engine shows on each row when Claude picks one per Head (auto mode). `/heads` adds the totals and a timeline of the session:
 
 ```
 🐉 Hydra · Auto (Command Code + Codex + Antigravity) · gpt-6.1-terra · effort auto
-1 running · 1 queued · 2 done · 1 failed · 4:00 wall
-12 edits · 1 denied · 105k tok · $0.0336
+1 running · 1 queued · 2 done · 1 to continue · 4:00 wall
+8/12 files · 12 edits · 1 denied · 105k tok · $0.0336
 codex 2 · agy 2 · commandcode 1
 Timeline 4:00 span
-✓ api-client     ━━━━━━━━━━━━━━━━━━━━────────────────────  2:00
-✓ prefs-utils    ──────━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━───  3:00
+✓ api-client     ━━━━━━━━━━━━━━━━╍╍╍╍────────────────────  2:00
+✓ prefs-utils    ──────━━━━━━━━━━━━━━━╍╍━━━━━━━╍╍╍╍╍╍╍───  3:00 ×2
 ⠋ login-tests    ───────────────────────━━━━━━━━━━━━━━━━━  1:40
-✗ flaky-spec     ───────────────────────────────━━━──────  0:10
+◷ sync-engine    ───────────────────────────────━━━──────  0:10
 ◌ docs-pass      ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄     –
 ```
+
+On the timeline `━` is the Head working and `╍` is Hydra running its check; `×2` means the check ran twice. Pick a Head to see its files as a checklist with the size of each change (`✓ LoginViewModel.kt +42 −7`, `· LoginState.kt` not written yet, `+` for a file it changed that Claude did not name), what to do next when it did not finish, and its report.
 
 - **`/hydra`** turns it on for the session, on whichever engines are ready on your machine. `/hydra <task>` turns it on and hands Claude the task.
 - **`/heads`** shows the Heads live: totals (counts, tokens, dollars, edits, denials, wall time), the timeline, and per Head its turn count, current step, edits, denied calls and final report. Press `s` to stop one.
@@ -124,8 +131,12 @@ Per engine (verified live on macOS, a case-insensitive disk; see the changelog):
 ### Acceptance checks
 Claude can give a Head a `check`, a shell command such as `./gradlew testDebugUnitTest --tests LoginViewModelTest`. When the Head finishes, Hydra runs it in the project:
 - **passed:** the report says `check: … ✓ passed`. Claude still reads the diff;
-- **failed:** the Head is sent back with the check's last 60 lines of output, one effort level up (unless you fixed the level), at most twice. The report shows every try (`3 tries: ✗ ✗ ✓`) and, if it never passed, `✗ FAILED` with the output;
-- **could not run** (not found, no start, over its time limit): the report says `? UNKNOWN` and the Head is not retried. A Head that did not finish is never checked.
+- **failed:** the Head is sent back, in the same session where the engine can continue one, with the check's last 60 lines of output, one effort level up (unless you fixed the level), at most twice. The report shows every try (`3 tries: ✗ ✗ ✓`) and, if it never passed, `✗ FAILED` with the output;
+- **could not run** (not found, no start, over its time limit): the report says `? UNKNOWN` and the Head is not retried.
+
+A Head that ran out of turns or time, or stalled, after editing files is checked too: if the check passes, the work is done and the report says the Head never reported `HEAD DONE`. A Head that was blocked, stopped or failed is not checked.
+
+A Head is told that Hydra runs the check, so it does not have to (most Heads cannot: no shell, or a sandbox with no network). It lists what it could not verify under `Unverified` in its report.
 
 What to know:
 - the check runs as you, with your environment, outside every Head's lockdown, and Claude Code's Bash prompt is not involved. Hydra asks once (`Run checks`) before the first one. It runs code the Head may have written (tests, build scripts), so the report adds `⚠ the check ran code this Head changed (…)` when the Head edited test or build files or a file the check names;
@@ -134,6 +145,31 @@ What to know:
 - Heads sharing a project see each other's edits, so Claude gives checks only to Heads whose result does not depend on another running Head.
 
 **Your code leaves your machine.** Each Head's task, and every file it reads, goes to the Head model through Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode. Leave Hydra off in projects whose code must not leave your machine. A Head with shell access can still read a `.env` file through a command that doesn't name it (`grep -r KEY .`), so Claude avoids giving Heads a shell in projects with real secrets.
+
+## How a Head ends
+A Head ends its report one of three ways, and the report's first lines say which:
+- **`HEAD DONE`:** the work is complete. The report has `Done`, `Changed`, `Unverified` (what the Head could not check itself) and `Notes`.
+- **`HEAD BLOCKED`:** it cannot go on (a call it needs is denied, a file is missing, the brief contradicts the code). The report says what stops it and what it needs.
+- **A handoff:** it ran out of turns, rounds or time. It gets one short extra round to write what is done, what is not and the next step.
+
+A Head that stops without any of these is resumed in the same session, up to 8 rounds. Two rounds in a row without a single tool call end it as **stalled** instead of spending the other six.
+
+An unfinished Head's report has one line with why it stopped and what to do, for example:
+
+```
+head login-tests · gpt-6.1-terra · effort low · NOT finished · exit 8 · 2 round(s) · 100 turns · 1.2M in / 9k out · 21:40
+session 01a1… (codex --resume 01a1…) · cwd /Users/you/app
+out of turns (100): its handoff is below; continue it with resume: "login-tests" and a higher maxTurns, or split the task.
+edited (3): LoginViewModel.kt (+42 −7), LoginState.kt (new), LoginViewModelTest.kt (+88 −0)
+named files: 3/3 changed
+```
+
+When Claude named the files, the report also flags a named file the Head never changed and any file it changed beyond them.
+
+### Continuing a Head
+Claude can send an ended Head a follow-up with `resume: "<its name>"`: finish what the handoff lists, fix what the review found, or answer a blocked Head. It runs in the same CLI session, so the Head keeps everything it read and did, on the same engine, model, account, folder and grants. Command Code, CodeBuddy, WorkBuddy, Codex and OpenCode Heads can be continued; an Antigravity Head cannot (its conversation is removed when it ends), so that one gets a new Head with the handoff in its task.
+
+A Head runs for 100 turns at most by default (200 on Codex and Antigravity, which count tool calls) and 40 minutes; Claude can raise either per Head (`maxTurns`, `maxMinutes`).
 
 ## Settings
 Change these in `/config` (the Hydra rows) or when installing:
@@ -147,6 +183,7 @@ Change these in `/config` (the Hydra rows) or when installing:
 | `headsPlan` | empty | Your plan's name, shown in `/hydra-usage` |
 | `headReadDirs` | empty | More folders in your home that Codex Heads may read (comma separated, e.g. `~/tools, ~/.config/mytool`), on top of the toolchain folders Hydra opens; one that holds a credential folder is ignored |
 | `headFallback` | `true` | Move a Head the engine stopped (usage limit, signed out, model gone, setup it cannot run) to another model or ready engine you have agreed to, instead of failing |
+| `autoStart` | `false` | `true` turns Hydra on when a session starts; otherwise it stays off until you run `/hydra` |
 | `accountStrategy` | `fill` | With several accounts on an engine: `fill` uses the default first and moves on at a usage limit, `spread` rotates, least recently used first |
 
 ## Several accounts
@@ -174,7 +211,7 @@ While Hydra is on, it writes `🐉 <head model> · <effort> | Heads 5h $… | 7d
 - **An OpenCode Head says it hung:** OpenCode sometimes prints nothing at all. Hydra stops a run with no output for 90 seconds (or 5 minutes mid-run), retries it once in the same session, then reports the hang.
 - **An OpenCode Head was refused before it ran:** the reason says which rule. A monorepo subfolder, a home-folder grant, or a project with links Hydra can't list or too many to deny needs another engine (or `cwd` at the repository root).
 - **CodeBuddy, WorkBuddy, Codex, Antigravity and OpenCode show tokens, not dollars:** they count credits, plan usage or account quota, so `/hydra-usage` has no Heads spend while the engine is one of them; each Head's report and `/heads` row show its tokens.
-- **A very large file (1,500+ lines)** can take a Head past its 40-minute limit. Ask Claude to split the work.
+- **A very large file (1,500+ lines)** can take a Head past its 40-minute limit. It then writes a handoff, and Claude can continue it (`resume`) or split the work.
 - **"`.hydraignore` could not be read":** Hydra reads it with git, so the folder must be in a git repository (`git init` it, or remove the file). The reason names what git said.
 - **"`.hydraignore` matches N paths":** more than 200 matches is too many to deny one by one. Name a folder (`secrets/`) instead of the files in it.
 - **An Antigravity Head was refused on a Mac:** a macOS disk ignores letter case, so Hydra denies each protected path in every spelling, and a long name (`local.properties`) needs too many rules, or a granted folder holds a credential folder. Use another engine for that project, or `/hydra engine=auto` and Claude routes around it.

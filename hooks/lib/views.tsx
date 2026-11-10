@@ -5,13 +5,16 @@
 import type { EngineInterface, RenderInput } from 'claude-code'
 
 import { accountOverview, accountStrategy, hasExtraAccounts, rowText } from './accounts'
+import { checklistOf, nextStepOf, reportLines, sessionProgressText, taskTitle } from './detail'
 import { effortModeOf } from './effort'
 import { ENGINE_LABEL, engineLabel, isAuto, isEngine } from './engines'
 import type { Engine } from './engines'
-import { bandLayout, barOf, clockOf, colorOf, compactNumber, elapsedOf, engineMixOf, engineMixText, fitText, glyphColor, glyphOf, headsSummary, isLive, isNoSpend, leadLabel, nowLine, percentOf, resetsIn, shortModel, spendText, timelineBar, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf } from './format'
+import { COUNT_WIDTH, bandLayout, barOf, clockOf, colorOf, compactNumber, elapsedOf, engineMixOf, engineMixText, fitText, isLive, isNearCap, isNoSpend, leadLabel, percentOf, progressBar, progressText, resetsIn, shortModel, spendText, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf, turnsOf } from './format'
 import type { HeadLimits } from './format'
+import { CHECK_TRIES, endingWord, headsSummaryOf, lookOf, needsLead, rowLine } from './look'
 import { stopHeadsNow } from './runtime'
 import { readHeads, readLead, readMode, readRuns, readSelected, readTick, updateSelected } from './state'
+import { checkTriesOf, TIMELINE_GLYPH, timelineSegments } from './timeline'
 
 /** Cells a view may draw across: the narrower of the site's own width and the surface's, 80 where neither is known. */
 const columnsOf = (e: { props: { bodyColumns?: number }; viewport?: { columns: number } }) => Math.min(e.props.bodyColumns ?? 80, e.viewport?.columns ?? 80)
@@ -26,24 +29,30 @@ export async function bandView($: EngineInterface, e: RenderInput<'AbovePrompt'>
   const { Box, Text } = $.ui.resolve(e)
   const layout = bandLayout(columnsOf(e), isRouted)
   const spend = spendText(totalsOf(live, now))
+  const sessionProg = sessionProgressText(live)
+  const headerText = `${headsSummaryOf(live)}${sessionProg ? ` · ${sessionProg}` : ''}${spend ? ` · ${spend}` : ''} · /heads for detail`
 
   return (
     <Box flexDirection="column">
       <Box>
         <Text bold>🐉 Hydra </Text>
-        <Text dimColor wrap="truncate-end">{headsSummary(live)}{spend ? ` · ${spend}` : ''} · /heads for detail</Text>
+        <Text dimColor wrap="truncate-end">{headerText}</Text>
       </Box>
-      {live.map(run => (
-        <Box key={run.id}>
-          <Text color={glyphColor(run)}>{glyphOf(run, frame)} </Text>
-          <Text bold>{fitText(run.id, layout.idWidth)} </Text>
-          {isRouted && <Text color="cyan">{fitText(run.engine ?? '', layout.engineWidth)} </Text>}
-          {layout.showEffort && <Text dimColor>{(run.effort ?? '').padEnd(5)} </Text>}
-          {layout.showBar && <Text color={glyphColor(run)}>{barOf(run.maxTurns ? (run.turns / run.maxTurns) * 100 : 0, 8)} </Text>}
-          <Text dimColor>{layout.showTurns ? `${String(run.turns).padStart(2)}/${run.maxTurns ?? '?'} ` : ''}{elapsedOf(run, now).padStart(5)} </Text>
-          <Text wrap="truncate-end" dimColor={run.state !== 'running'}>{nowLine(run)}</Text>
-        </Box>
-      ))}
+      {live.map(run => {
+        const look = lookOf(run, frame)
+        return (
+          <Box key={run.id}>
+            <Text color={look.color}>{look.glyph} </Text>
+            <Text bold>{fitText(run.id, layout.idWidth)} </Text>
+            {isRouted && <Text color="cyan">{fitText(run.engine ?? '', layout.engineWidth)} </Text>}
+            {layout.showEffort && <Text dimColor>{(run.effort ?? '').padEnd(5)} </Text>}
+            {layout.showBar && <Text color={look.color}>{progressBar(run, 8)} </Text>}
+            {layout.showTurns && <Text color={isNearCap(run) ? 'yellow' : undefined} dimColor={!isNearCap(run)}>{progressText(run).padEnd(COUNT_WIDTH)} </Text>}
+            <Text dimColor>{elapsedOf(run, now).padStart(5)} </Text>
+            <Text wrap="truncate-end" color={needsLead(run) ? 'yellow' : undefined} dimColor={!needsLead(run) && run.state !== 'running'}>{rowLine(run)}</Text>
+          </Box>
+        )
+      })}
     </Box>
   )
 }
@@ -67,15 +76,25 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
   const timeline = [...list].reverse().slice(-timelineRowCount(e.props.scroll?.bodyRows ?? 24, list.length))
   const span = timelineSpan(timeline, now)
   const layout = timelineLayout(columnsOf(e))
-  const [counts, work] = totalsLines(totalsOf(list, now))
+  const totals = totalsOf(list, now)
+  const [, work] = totalsLines(totals)
+  const countsLine = `${headsSummaryOf(list)}${totals.wallMs > 0 ? ` · ${clockOf(totals.wallMs)} wall` : ''}`
+  const sessionProg = sessionProgressText(list)
+  const workLine = sessionProg ? `${sessionProg} · ${work}` : work
   const mixText = engineMixText(list, defaultEngine)
+
+  const chosenLook = chosen ? lookOf(chosen, frame) : undefined
+  const chosenNextStep = chosen ? nextStepOf(chosen) : undefined
+  const checklist = chosen ? checklistOf(chosen) : []
+  const checklistRows = checklist.slice(0, 12)
+  const checklistRest = checklist.length - checklistRows.length
 
   return (
     <Box flexDirection="column">
       <Text bold>🐉 Hydra · {hydra?.isOn ? `${engineLabel(hydra, defaultEngine)} · ${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
       {list.length === 0 && <Text dimColor>No Heads in this session yet. Claude starts them once Hydra is on (/hydra).</Text>}
-      {list.length > 0 && <Text wrap="wrap">{counts}</Text>}
-      {list.length > 0 && <Text dimColor wrap="wrap">{work}</Text>}
+      {list.length > 0 && <Text wrap="wrap">{countsLine}</Text>}
+      {list.length > 0 && <Text dimColor wrap="wrap">{workLine}</Text>}
       {mixText !== '' && <Text dimColor wrap="wrap">{mixText}</Text>}
       {list.length > 0 && <Text dimColor wrap="wrap">1-9 or j/k to pick a Head, s to stop it</Text>}
       {list.length > 1 && (
@@ -89,41 +108,57 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
         <Box flexDirection="column" marginTop={1}>
           <Text bold>Timeline <Text dimColor>{timeline.length < list.length ? `last ${timeline.length} of ${list.length} · ` : ''}{clockOf(span.end - span.start)} span</Text></Text>
           {timeline.map(run => {
-            const cells = timelineBar(run, span, layout.barWidth, now)
+            const look = lookOf(run, frame)
+            const tries = checkTriesOf(run)
             return (
               <Box key={`line-${run.id}`}>
-                <Text color={glyphColor(run)}>{glyphOf(run, frame)} </Text>
+                <Text color={look.color}>{look.glyph} </Text>
                 <Text bold={run.id === chosen?.id}>{fitText(run.id, layout.nameWidth)} </Text>
                 {run.startedAt === undefined ? (
                   <Text dimColor>{'┄'.repeat(layout.barWidth)}</Text>
                 ) : (
                   <Box>
-                    <Text dimColor>{'─'.repeat(cells.before)}</Text>
-                    <Text color={glyphColor(run)}>{'━'.repeat(cells.bar)}</Text>
-                    <Text dimColor>{'─'.repeat(cells.after)}</Text>
+                    {timelineSegments(run, span, layout.barWidth, now).map((segment, index) => {
+                      const color = segment.kind === 'idle' ? undefined : segment.kind === 'work' ? look.color : (look.color === 'cyan' ? 'green' : 'cyan')
+                      const dimColor = segment.kind === 'idle'
+                      return (
+                        <Text key={String(index)} color={color} dimColor={dimColor}>
+                          {TIMELINE_GLYPH[segment.kind].repeat(segment.cells)}
+                        </Text>
+                      )
+                    })}
                   </Box>
                 )}
                 <Text dimColor> {elapsedOf(run, now).padStart(5)}</Text>
+                {tries > 1 && <Text dimColor> ×{tries}</Text>}
               </Box>
             )
           })}
         </Box>
       )}
       <Box flexDirection="column" marginTop={1}>
-        {list.map((run, index) => (
-          <Box key={run.id}>
-            <Button key={`pick-${run.id}`} plain hotkey={index < 9 ? String(index + 1) : undefined} label={run.id} onPress={() => updateSelected($, () => run.id)} />
-            <Text color={glyphColor(run)}> {glyphOf(run, frame)} </Text>
-            <Text dimColor>{elapsedOf(run, now).padStart(5)} {String(run.turns).padStart(3)}t </Text>
-            <Text wrap="truncate-end" bold={run.id === chosen?.id}>{run.task}</Text>
-          </Box>
-        ))}
+        {list.map((run, index) => {
+          const look = lookOf(run, frame)
+          return (
+            <Box key={run.id}>
+              <Button key={`pick-${run.id}`} plain hotkey={index < 9 ? String(index + 1) : undefined} label={run.id} onPress={() => updateSelected($, () => run.id)} />
+              <Text color={look.color}> {look.glyph} </Text>
+              <Text dimColor>{elapsedOf(run, now).padStart(5)} </Text>
+              <Text>{progressText(run).padEnd(COUNT_WIDTH)} </Text>
+              <Text color={look.color}>{endingWord(run).padEnd(13)} </Text>
+              <Text wrap="truncate-end" bold={run.id === chosen?.id}>{taskTitle(run.task)}</Text>
+            </Box>
+          )
+        })}
       </Box>
       {chosen && (
         <Box flexDirection="column" marginTop={1}>
           <Text bold>
-            {chosen.id} · {shortModel(chosen.model)}{chosen.effort ? ` · effort ${chosen.effort}` : ''}{chosen.account ? ` · ${chosen.account}` : ''} · {chosen.state} {elapsedOf(chosen, now)}
+            {chosen.id} · {shortModel(chosen.model)}{chosen.effort ? ` · effort ${chosen.effort}` : ''}{chosen.account ? ` · ${chosen.account}` : ''} · {endingWord(chosen)} {elapsedOf(chosen, now)}
           </Text>
+          {chosenNextStep !== undefined && (
+            <Text color="yellow" wrap="wrap">{chosenNextStep}</Text>
+          )}
           <Text dimColor wrap="wrap">{chosen.task}</Text>
           {(chosen.state === 'running' || chosen.state === 'queued') && (
             <Box marginTop={1}>
@@ -131,15 +166,28 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
             </Box>
           )}
           <Box marginTop={1}>
-            <Text>turn {chosen.turns}/{chosen.maxTurns ?? '?'} </Text>
-            <Text color={glyphColor(chosen)}>{barOf(chosen.maxTurns ? (chosen.turns / chosen.maxTurns) * 100 : 0, barWidth)}</Text>
+            <Text color={isNearCap(chosen) ? 'yellow' : undefined}>{progressText(chosen)} </Text>
+            <Text color={chosenLook?.color}>{progressBar(chosen, barWidth)}</Text>
           </Box>
+          {checklistRows.map((entry, index) => {
+            const markColor = entry.mark === '✓' ? 'green' : entry.mark === '+' ? 'yellow' : undefined
+            const dimColor = entry.mark === '·'
+            return (
+              <Box key={`check-${index}`}>
+                <Text color={markColor} dimColor={dimColor}>{entry.mark} {entry.file}</Text>
+                {entry.stat !== '' && <Text dimColor> {entry.stat}</Text>}
+              </Box>
+            )
+          })}
+          {checklistRest > 0 && (
+            <Text dimColor>… {checklistRest} more</Text>
+          )}
           <Text dimColor>
-            {chosen.edits ?? 0} edits · {chosen.denials ?? 0} denied{chosen.costUsd !== undefined ? ` · $${chosen.costUsd.toFixed(4)}` : chosen.tokens ? ` · ${chosen.tokens}` : ''}
+            turn {chosen.turns} (cap {chosen.maxTurns ?? '?'}){chosen.earlierTurns ? ` · ${turnsOf(chosen)} in all` : ''} · {chosen.edits ?? 0} edits · {chosen.denials ?? 0} denied{chosen.costUsd !== undefined ? ` · $${chosen.costUsd.toFixed(4)}` : chosen.tokens ? ` · ${chosen.tokens}` : ''}{chosen.check ? ` · check ${chosen.check.tries}/${CHECK_TRIES} ${chosen.check.state}` : ''}
           </Text>
           <Box marginTop={1}>
-            <Text color={glyphColor(chosen)}>{glyphOf(chosen, frame)} </Text>
-            <Text wrap="truncate-end">{nowLine(chosen)}</Text>
+            <Text color={chosenLook?.color}>{chosenLook?.glyph} </Text>
+            <Text wrap="truncate-end">{rowLine(chosen)}</Text>
           </Box>
           {(chosen.steps ?? []).map((step, index) => (
             <Box key={`step-${index}`}>
@@ -147,15 +195,15 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
               <Text wrap="truncate-end" dimColor={step.isOk}>{step.text}{step.isOk ? '' : ' (denied)'}</Text>
             </Box>
           ))}
-          {chosen.files && chosen.files.length > 0 && (
-            <Box marginTop={1}>
-              <Text wrap="wrap">edited ({chosen.files.length}): {chosen.files.join(', ')}</Text>
-            </Box>
-          )}
           {chosen.summary && (
             <Box flexDirection="column" marginTop={1}>
               <Text bold>Report</Text>
-              <Text dimColor wrap="wrap">{chosen.summary}</Text>
+              {reportLines(chosen.summary, 30).map((entry, index) => (
+                <Text key={`rep-${index}`} wrap="wrap">
+                  {entry.label ? <Text bold>{entry.label}: </Text> : null}
+                  {entry.text}
+                </Text>
+              ))}
             </Box>
           )}
         </Box>
@@ -250,7 +298,7 @@ export async function usagePaneView(
       )}
 
       <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
-      {recent.length > 0 && <Text dimColor>{headsSummary(recent)} · /heads to watch them</Text>}
+      {recent.length > 0 && <Text dimColor>{headsSummaryOf(recent)} · /heads to watch them</Text>}
     </Box>
   )
 }
