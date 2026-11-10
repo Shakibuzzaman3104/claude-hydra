@@ -12,7 +12,6 @@ import { AGY_MODEL, DEFAULT_ENGINE, ENGINE_LABEL, FALLBACK_ORDER, agyBaseOf, mod
 import type { Engine, Routing } from '../lib/engines'
 import { checkHead, checkMinutesOf, checkNote, runCheck, withSummary } from '../lib/check'
 import { RESUMABLE, addTokens, editedCount, expectedFiles, formatReport, overlappingHeads, relativeTo, scopeLines, strings, withEditStats, withEdits } from '../lib/format'
-import type { HeadLimits } from '../lib/format'
 import { DEFAULT_MINUTES, diffStat, forgetChangedFiles, gate, hasConsent, keepOwnEdits, notStarted, preflight, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
 import type { HeadResult, HeadSession } from '../lib/runtime'
 import { homeOf } from '../lib/platform'
@@ -39,7 +38,7 @@ const sessionOf = (value: unknown): HeadSession | undefined => {
   return session && typeof session.id === 'string' && typeof session.engine === 'string' && typeof session.model === 'string' ? (session as HeadSession) : undefined
 }
 
-export async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, limits: HeadLimits, id: string, engine: Engine = DEFAULT_ENGINE, routing?: Routing) {
+export async function runHead($: EngineInterface, input: Record<string, unknown>, headModel: string, signal: AbortSignal, id: string, engine: Engine = DEFAULT_ENGINE, routing?: Routing) {
   const task = String(input.task ?? '').trim()
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : await $.session.root()
   const requested = typeof input.model === 'string' && input.model ? input.model : headModel
@@ -58,12 +57,12 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
   const expected = expectedFiles(cwd, strings(input.files))
   const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot', cwd, engine, addDirs, writeDirs, shell, ...(expected.length > 0 ? { expected } : {}) }
   await updateRuns($, list => [...list, queued].slice(-RUN_HISTORY))
-  await refreshStatus($, limits)
+  await refreshStatus($)
   await gate.enter()
   if (signal.aborted) {
     gate.leave()
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: stopReason(signal) })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return {
       text: formatReport({ id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '', exit: stopReason(signal), engine }),
       isDone: false,
@@ -73,7 +72,7 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
   await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
   await updateTick($, () => startedAt)
   try {
-    const result = await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, turnsGiven: input.maxTurns, resume, since: resume ? startedAt : undefined }, signal, limits, id, routing)
+    const result = await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, turnsGiven: input.maxTurns, resume, since: resume ? startedAt : undefined }, signal, id, routing)
     // A Head that never got to write says nothing about the files it was given.
     const beside = expected.length > 0 ? overlappingHeads(await readRuns($), { id, cwd, startedAt, endedAt: await $.clock.now() }) : []
     const scope = result.isDone || (result.files?.length ?? 0) > 0 ? scopeLines(cwd, expected, result.files ?? [], beside) : []
@@ -93,7 +92,6 @@ async function runHeadInside(
   $: EngineInterface,
   head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; check: string; checkMinutes: number; turnsGiven?: unknown; resume?: HeadSession; since?: number },
   outer: AbortSignal,
-  limits: HeadLimits,
   id: string,
   routing?: Routing,
 ) {
@@ -104,7 +102,7 @@ async function runHeadInside(
   const refusal = homeHeadRefusal(realCwd ?? cwd, realHome ?? '') ?? secretDirRefusal(granted, realHome ?? '', 'addDirs/writeDirs')
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, `${refusal} A Head never runs where Hydra's rules cannot keep it inside a project.`, engine)
   }
   const given = union([cwd, ...writeDirs], addDirs)
@@ -112,15 +110,15 @@ async function runHeadInside(
   const guarded = await guardedPaths($, given.map((path, index) => ({ path, real: reals[index] })))
   if ('refusal' in guarded) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: guarded.refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, guarded.refusal, engine)
   }
   const spec: HeadSpec = { task: check ? task + checkNote(check) : task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded, resume, since }
   // A resumed Head stays where its session lives; a fresh one may move across accounts and engines.
-  const run = (head: HeadSpec) => (head.resume ? runResumed($, head, head.resume, outer, limits, id) : runRoutes($, head, turnsGiven, routing, outer, limits, id))
+  const run = (head: HeadSpec) => (head.resume ? runResumed($, head, head.resume, outer, id) : runRoutes($, head, turnsGiven, routing, outer, id))
   // Not every engine can stop a delete or a new spelling, so every run ends by comparing each `.hydraignore` with how it started.
   const before = await snapshotIgnoreFiles($, guarded.ignoreFiles)
-  const result = check ? await runChecked($, spec, check, checkMinutes, run, outer, limits, id) : await run(spec)
+  const result = check ? await runChecked($, spec, check, checkMinutes, run, outer, id) : await run(spec)
   const changed = ignoreChanges(before, await snapshotIgnoreFiles($, guarded.ignoreFiles))
   return changed.length > 0 ? { ...result, text: withSummary(result.text, [ignoreChangedLine(changed)]) } : result
 }
@@ -133,7 +131,6 @@ async function runChecked(
   checkMinutes: number,
   run: (head: HeadSpec) => Promise<HeadResult>,
   outer: AbortSignal,
-  limits: HeadLimits,
   id: string,
 ): Promise<HeadResult> {
   // Each fix round reports its own tokens; the Head used all of them.
@@ -171,7 +168,7 @@ async function runChecked(
     isAborted: () => outer.aborted,
     onStep: async activity => {
       await setRun($, id, { state: 'running', endedAt: undefined, activity: activity.slice(0, 80) })
-      await refreshStatus($, limits)
+      await refreshStatus($)
     },
   })
   if (outcome) {
@@ -180,7 +177,7 @@ async function runChecked(
     const tries = (await readRuns($)).find(run => run.id === id)?.check?.tries ?? 1
     await setRun($, id, { check: { tries, state: outcome.kind } })
     await setRun($, id, { state: isOk ? 'done' : 'failed', endedAt: await $.clock.now(), activity: outcome.kind === 'passed' ? 'check passed' : outcome.kind === 'failed' ? `check failed (exit ${outcome.exitCode})` : 'check could not run' })
-    await refreshStatus($, limits)
+    await refreshStatus($)
   }
   return result
 }
@@ -191,17 +188,17 @@ const isLostSession = (result: HeadResult) => !result.isDone && (result.engineBo
 type HeadSpec = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; guarded: Guarded; /** An earlier Head's session to continue, on the engine and account it lives on. */ resume?: HeadSession; /** When a Head that continues another's session started: what it reports begins there. */ since?: number }
 
 /** Continues `session` where it lives: the same engine and account, with no rotation or fallback, since no other can open it. */
-async function runResumed($: EngineInterface, head: HeadSpec, session: HeadSession, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+async function runResumed($: EngineInterface, head: HeadSpec, session: HeadSession, outer: AbortSignal, id: string): Promise<HeadResult> {
   const account = session.account ? (await accountsOf($, session.engine)).find(entry => accountId(entry) === session.account) : undefined
-  return startHead($, { ...head, engine: session.engine, model: session.model }, account?.dir ? account : undefined, outer, limits, id)
+  return startHead($, { ...head, engine: session.engine, model: session.model }, account?.dir ? account : undefined, outer, id)
 }
 
 /** Starts one Head run on `account` (undefined: the CLI's own config): its engine's run function, with the account's env or token folder. */
-async function startHead($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+async function startHead($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, id: string): Promise<HeadResult> {
   // A fix round or a move to another account starts the engine again: its turns and files add to the Head's, they do not replace them.
   const before = (await readRuns($)).find(run => run.id === id)
   if (before && before.turns > 0) await setRun($, id, { earlierTurns: (before.earlierTurns ?? 0) + before.turns, turns: 0 })
-  const ran = await startOn($, head, account, outer, limits, id)
+  const ran = await startOn($, head, account, outer, id)
   const earlier = before?.files ?? []
   if (earlier.length > 0) await setRun($, id, run => ({ files: [...new Set([...earlier, ...(run.files ?? [])])] }))
   const files = ran.files ?? []
@@ -212,21 +209,21 @@ async function startHead($: EngineInterface, head: HeadSpec, account: Account | 
   return { ...result, session: { id: result.sessionId, engine: head.engine, model: head.model, ...(account ? { account: accountId(account) } : {}) } }
 }
 
-async function startOn($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+async function startOn($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, id: string): Promise<HeadResult> {
   const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded } = head
   const env = accountEnv(account)
   const resume = head.resume?.id
   // An Antigravity conversation lives in the Head's own HOME, which is gone once it ends: a follow-up there starts fresh.
-  if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, tokenDir: account?.dir, guarded }, outer, limits, id)
-  if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort, env, guarded, resume }, outer, limits, id)
-  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env, guarded, resume }, outer, limits, id)
+  if (engine === 'agy') return runAgyHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, tokenDir: account?.dir, guarded }, outer, id)
+  if (engine === 'codex') return runCodexHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, effort, env, guarded, resume }, outer, id)
+  if (engine === 'codebuddy') return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env, guarded, resume }, outer, id)
   if (engine === 'workbuddy') {
     const buddyEnv = { ...workbuddyEnv(await homeOf($)), ...(env ?? {}) }
-    return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env: buddyEnv, engine: 'workbuddy', guarded, resume }, outer, limits, id)
+    return runBuddyHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, shell, minutes, effort, env: buddyEnv, engine: 'workbuddy', guarded, resume }, outer, id)
   }
   // OpenCode never gets a shell (it does not check a command's paths) and takes no effort level.
-  if (engine === 'opencode') return runOpenCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, env, guarded, resume }, outer, limits, id)
-  return runCommandCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, guarded, resume, since: head.since }, outer, limits, id)
+  if (engine === 'opencode') return runOpenCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, env, guarded, resume }, outer, id)
+  return runCommandCodeHead($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, guarded, resume, since: head.since }, outer, id)
 }
 
 /** Why a route stopped, as the report's fallback line says it. */
@@ -245,7 +242,7 @@ const MAX_MODELS_PER_ENGINE = 2
  * then the other engines in `FALLBACK_ORDER`, as far as `routing` allows. Each move carries a note naming the files already
  * changed, and the report starts with the routes taken. At most `MAX_ROUTES` runs.
  */
-async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown, routing: Routing | undefined, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown, routing: Routing | undefined, outer: AbortSignal, id: string): Promise<HeadResult> {
   const startedAt = await $.clock.now()
   const tried = new Set([routeKey(head)])
   const trail: string[] = []
@@ -253,7 +250,7 @@ async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown
   let spent: string | undefined
   const tokensNow = async () => (await readRuns($)).find(run => run.id === id)?.tokens
   let current: HeadSpec = head
-  let result = await runOnAccounts($, current, outer, limits, id)
+  let result = await runOnAccounts($, current, outer, id)
   let ending = ''
   while (!result.isDone && !outer.aborted && result.engineBound && routing?.fallback) {
     for (const file of result.files ?? []) if (!edited.includes(file)) edited.push(file)
@@ -270,7 +267,7 @@ async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown
     const minutes = Math.max(1, head.minutes - Math.floor(((await $.clock.now()) - startedAt) / 60_000))
     await setRun($, id, { engine: next.engine, model: next.model, account: undefined, state: 'running', endedAt: undefined, activity: `moved to ${routeText(next)}` })
     current = { ...head, ...next, maxTurns: turnsOn(next.engine, turnsGiven), task: head.task + note, minutes }
-    result = await runOnAccounts($, current, outer, limits, id)
+    result = await runOnAccounts($, current, outer, id)
   }
   if (spent) await setRun($, id, { tokens: addTokens(spent, await tokensNow()) })
   // The last attempt's report lists its own edits only: the files of the attempts before a move are the Head's too.
@@ -319,7 +316,7 @@ async function nextRoute($: EngineInterface, head: HeadSpec, current: HeadSpec, 
  * elsewhere at once. Antigravity accounts are checked against `agy /usage` before a Head starts on one. Here the steps are wired
  * to the store, the run record and the engine.
  */
-async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSignal, limits: HeadLimits, id: string): Promise<HeadResult> {
+async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSignal, id: string): Promise<HeadResult> {
   const { engine, cwd, model } = head
   const accounts = await accountsOf($, engine)
   const pool = usagePoolOf(engine, model)
@@ -341,7 +338,7 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSig
       await markUsed($, name, await $.clock.now())
       if (accounts.length > 1) await setRun($, id, { account: name, ...(isSwitch ? { state: 'running' as const, endedAt: undefined, activity: `switched to ${name}` } : {}) })
     },
-    run: (account, note, minutes) => startHead($, { ...head, task: head.task + note, minutes }, account.dir ? account : undefined, outer, limits, id),
+    run: (account, note, minutes) => startHead($, { ...head, task: head.task + note, minutes }, account.dir ? account : undefined, outer, id),
     cooled: async (key, until) => {
       // Antigravity says exactly when each bucket refills; its error text may not.
       const account = engine === 'agy' ? named(key.split('#')[0]!) : undefined
@@ -351,7 +348,7 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSig
     signedOut: name => recordSignedOut($, name),
     refuse: async reason => {
       await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: reason })
-      await refreshStatus($, limits)
+      await refreshStatus($)
       return notStarted(id, model, cwd, reason, engine)
     },
   })

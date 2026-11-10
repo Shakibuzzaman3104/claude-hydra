@@ -8,7 +8,7 @@ import { effortModeOf, headEffort } from '../lib/effort'
 import { agyTokenOf } from '../lib/accounts'
 import { AGY_TOKEN, agyModelId, agyPoolOf } from '../lib/engines'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
-import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
+import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
 import { changedFiles, compareChangedFiles, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
@@ -419,7 +419,7 @@ export async function sweepAgyHomes($: EngineInterface) {
 type AgyHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; /** An extra account's folder: the sign-in token is copied from there instead of the person's own home. */ tokenDir?: string; guarded?: Guarded }
 
 /** A Head on Antigravity: its own HOME with permission rules, then rounds until it reports HEAD DONE. */
-export async function runAgyHead($: EngineInterface, head: AgyHead, outer: AbortSignal, limits: HeadLimits, id: string) {
+export async function runAgyHead($: EngineInterface, head: AgyHead, outer: AbortSignal, id: string) {
   const { cwd, model } = head
   let home = ''
   const refusal =
@@ -435,17 +435,17 @@ export async function runAgyHead($: EngineInterface, head: AgyHead, outer: Abort
   if (refusal) {
     await removeAgyHome($, home)
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'agy', 'unavailable')
   }
   try {
-    return await runAgyRounds($, head, home, outer, limits, id)
+    return await runAgyRounds($, head, home, outer, id)
   } finally {
     await removeAgyHome($, home)
   }
 }
 
-async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, outer: AbortSignal, limits: HeadLimits, id: string) {
+async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, outer: AbortSignal, id: string) {
   const { task, cwd, model, maxTurns, minutes } = head
   const addDirs = union(head.addDirs, head.writeDirs)
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
@@ -489,7 +489,7 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: endActivity(ended, { maxTurns, minutes, stopped }),
   })
-  void refreshHeads($, limits)
+  void refreshHeads($)
 
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns: state.turns, usd: null, files, denied: state.denied,

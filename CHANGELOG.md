@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1 — 2026-11-10
+- **The status line shows a small Hydra mark, not a line of its own.** Hydra used to add a second row under your status line with the Head model, the effort and the Command Code spend (`🐉 deepseek-v4.1-flash · high | Heads 5h $0.06/$14 | 7d $1.41/$35`). With Heads on several engines in one session, one model and one engine's spend no longer describe it. Hydra now writes only `🐉` while it is on, and the status line script prints it inside your own line, after the model (`Fable 5.2 🐉 | 5h …`). The engines and what they used stay in the band above the prompt, `/heads` and `/hydra-usage`. If your script has the old lines from `/hydra statusline`, it keeps working and shows the mark on its own row; `/hydra statusline` prints the new lines.
+- The Command Code spend limits were passed through every Head function only to feed the old status line. That parameter is gone from `runHead`, the engine runners, `refreshStatus`, `refreshHeads`, `storeLead`, `stopHeadsNow` and the `/heads` pane; `/hydra-usage` still reads `headsFiveHourUsd` and `headsWeeklyUsd`.
+
 ## 2.0.0 — 2026-11-10
 
 **Highlights**

@@ -8,13 +8,12 @@ import type { Ending, HeadRun, HeadsUsage, LeadWindow } from '../../types'
 import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
 import type { Engine, Routing } from './engines'
 import type { EngineBound } from './accounts'
-import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, parseDiffStat, relativeTo, resetsIn, statusLine, stopRuns } from './format'
-import type { HeadLimits } from './format'
+import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, parseDiffStat, relativeTo, resetsIn, statusMark, stopRuns } from './format'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
 import { AUTO_CONSENT_QUESTION, CHECK_CONSENT_QUESTION, CHECK_CONSENT_YES, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, secretDirRefusal, union } from './safety'
 import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
-import { readHeads, readMode, readRuns, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
+import { readMode, readRuns, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
 
 const STATUS_KEEP_MS = 7 * 86_400_000
 const CONSENT_KEY = 'consent-v1'
@@ -37,17 +36,17 @@ export const setConfiguredEngine = (engine: Engine) => {
   configuredEngine = engine
 }
 
-/** Where the person's status line command finds this session's Hydra line; empty while Hydra is off. */
+/** Where the person's status line command finds this session's Hydra mark; empty while Hydra is off. */
 export const statusFile = (home: string, sessionId: string) => `${home}/.claude/hydra/status/${sessionId}.txt`
 
 let lastStatus: string | undefined
 
 /**
- * Hydra's line goes to a per-session file that ~/.claude/statusline.sh prints, not to `$.ui.status`, which the
+ * Hydra's mark goes to a per-session file that ~/.claude/statusline.sh prints, not to `$.ui.status`, which the
  * engine draws with a `⚠ hydra:` prefix.
  */
-export async function refreshStatus($: EngineInterface, limits: HeadLimits) {
-  const line = statusLine(await readMode($), await readHeads($), limits) ?? ''
+export async function refreshStatus($: EngineInterface) {
+  const line = statusMark(await readMode($)) ?? ''
   if (line === lastStatus) return
   const home = await homeOf($)
   if (!home) return
@@ -185,7 +184,7 @@ export async function hasConsent($: EngineInterface, headModel: string, mayAsk: 
   return true
 }
 
-export async function refreshHeads($: EngineInterface, limits: HeadLimits) {
+export async function refreshHeads($: EngineInterface) {
   const hydra = await readMode($)
   const engine = engineOf(hydra, configuredEngine)
   const hasCommandCode = isAuto(hydra) ? poolOf(hydra).includes('commandcode') : engine === 'commandcode'
@@ -194,7 +193,7 @@ export async function refreshHeads($: EngineInterface, limits: HeadLimits) {
     const error = isAuto(hydra) ? AUTO_NO_SPEND : engine === 'agy' ? AGY_NO_SPEND : engine === 'codex' ? CODEX_NO_SPEND
       : engine === 'workbuddy' ? WORKBUDDY_NO_SPEND : engine === 'opencode' ? OPENCODE_NO_SPEND : CODEBUDDY_NO_SPEND
     await updateHeads($, () => ({ fiveHour: { usd: 0, resetsAt: null }, weekly: { usd: 0, resetsAt: null }, measuredAt, error }))
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return
   }
   try {
@@ -210,10 +209,10 @@ export async function refreshHeads($: EngineInterface, limits: HeadLimits) {
       error: String(error).slice(0, 120),
     }))
   }
-  await refreshStatus($, limits)
+  await refreshStatus($)
 }
 
-export async function storeLead($: EngineInterface, windows: readonly LeadWindow[], limits: HeadLimits) {
+export async function storeLead($: EngineInterface, windows: readonly LeadWindow[]) {
   await updateLead($, () => windows.map(w => ({ kind: w.kind, percentUsed: w.percentUsed, resetsAt: w.resetsAt })))
   for (const w of windows) {
     const mark = `${w.kind}@${w.resetsAt ?? ''}`
@@ -221,7 +220,7 @@ export async function storeLead($: EngineInterface, windows: readonly LeadWindow
     await updateWarned($, list => [...list, mark].slice(-20))
     $.ui.toast(`Claude ${leadLabel(w.kind)} at ${Math.round(w.percentUsed)}% · ${resetsIn(w.resetsAt, await $.clock.now())}`)
   }
-  await refreshStatus($, limits)
+  await refreshStatus($)
 }
 
 export async function setRun($: EngineInterface, id: string, change: Partial<HeadRun> | ((run: HeadRun) => Partial<HeadRun>)) {
@@ -382,12 +381,12 @@ export const waitForResult = async <T,>(box: { result?: T }, signal: AbortSignal
 }
 
 /** Stops live Heads by id; ones with no process behind them are marked failed at once. Returns those. */
-export async function stopHeadsNow($: EngineInterface, ids: readonly string[], reason: string, limits: HeadLimits) {
+export async function stopHeadsNow($: EngineInterface, ids: readonly string[], reason: string) {
   for (const id of ids) controllers.get(id)?.abort(reason)
   const ghosts = ids.filter(id => !controllers.has(id))
   const now = await $.clock.now()
   if (ghosts.length > 0) await updateRuns($, current => stopRuns(current, ghosts, `${reason} (no live process)`, now))
-  await refreshStatus($, limits)
+  await refreshStatus($)
   return ghosts
 }
 

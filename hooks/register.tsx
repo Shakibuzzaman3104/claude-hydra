@@ -69,7 +69,6 @@ export const register: Register = (on, options) => {
   setConfiguredEngine(defaultEngine)
   setAccountStrategy(isStrategy(options.accountStrategy) ? options.accountStrategy : 'fill')
   setExtraHomeRead([String(options.headReadDirs ?? '')])
-  const limits = { fiveHourUsd, weeklyUsd }
 
   on('session.start', async ($, e, next) => {
     if (!isWorkerRunning) {
@@ -85,12 +84,12 @@ export const register: Register = (on, options) => {
           const job = await backgroundJobs.next()
           const controller = new AbortController()
           controllers.set(job.id, controller)
-          void runHead($, job.input, job.headModel, controller.signal, limits, job.id, job.engine, job.routing)
+          void runHead($, job.input, job.headModel, controller.signal, job.id, job.engine, job.routing)
             .catch(async error => {
               const reason = `failed before it reported: ${String(error).slice(0, 300)}`
               const now = await $.clock.now()
               await updateRuns($, list => stopRuns(list, [job.id], reason, now))
-              await refreshStatus($, limits)
+              await refreshStatus($)
               return { text: `Hydra Head ${job.id} ${reason}`, isDone: false }
             })
             .then(async result => {
@@ -160,9 +159,9 @@ export const register: Register = (on, options) => {
     void sweepCodexTemps($)
     void sweepOpenCodeFiles($)
     const usage = await $.session.usage()
-    await storeLead($, usage.rateLimits, limits)
-    void refreshHeads($, limits)
-    $.clock.every(REFRESH_MS, () => void refreshHeads($, limits))
+    await storeLead($, usage.rateLimits)
+    void refreshHeads($)
+    $.clock.every(REFRESH_MS, () => void refreshHeads($))
     // The views' clock: stamps the time once a second while some Head is live, and once more after the last one goes quiet.
     let wasLive = false
     $.clock.every(1_000, () => void (async () => {
@@ -179,7 +178,7 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', async ($, e, next) => {
-    if (e.changed.includes('rateLimits')) await storeLead($, e.rateLimits, limits)
+    if (e.changed.includes('rateLimits')) await storeLead($, e.rateLimits)
 
     return next(e)
   })
@@ -211,7 +210,7 @@ export const register: Register = (on, options) => {
     if (action === 'off') {
       await updateMode($, () => ({ ...current, isOn: false }))
       $.ui.invalidate('tool.describe')
-      await refreshStatus($, limits)
+      await refreshStatus($)
       return { text: 'Hydra off. Claude works alone again.' }
     }
 
@@ -236,7 +235,7 @@ export const register: Register = (on, options) => {
       const nextAuto = { isOn: true, headModel: headModel ?? (isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead), effort: effort ?? currentEffort, engine: AUTO, engines: ready.pool, pinned: engines !== undefined || (keepsAuto && stored?.pinned === true) }
       await updateMode($, () => nextAuto)
       $.ui.invalidate('tool.describe')
-      await refreshStatus($, limits)
+      await refreshStatus($)
       const autoModel = await $.session.model()
       const autoHint = leadModel && !autoModel.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
       const left = plannedPool ? '' : ready.skipped.map(item => `\n⚠ ${ENGINE_LABEL[item.engine]} left out: ${item.problem}`).join('')
@@ -255,7 +254,7 @@ export const register: Register = (on, options) => {
     if (!(await hasConsent($, next.headModel, true, next.engine as Engine))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
     await updateMode($, () => next)
     $.ui.invalidate('tool.describe')
-    await refreshStatus($, limits)
+    await refreshStatus($)
     const model = await $.session.model()
     const switchHint = leadModel && !model.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
     const changed = current.isOn && next.effort !== currentEffort ? ' Running Heads switch at their next round.' : ''
@@ -339,7 +338,7 @@ export const register: Register = (on, options) => {
       return { result: `Head ${id} ${earlier ? `continues ${earlier.id}` : 'started'} in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
-      const { text } = await runHead($, input, headModel, next.signal, limits, id, engine, routing)
+      const { text } = await runHead($, input, headModel, next.signal, id, engine, routing)
 
       return { result: text }
     }
@@ -368,7 +367,7 @@ export const register: Register = (on, options) => {
       const list = await readRuns($)
       const targets = list.filter(run => (run.state === 'running' || run.state === 'queued') && (ids === 'all' || ids.includes(run.id)))
       if (targets.length === 0) return { result: `No running or queued Head${ids === 'all' ? '' : ` ${ids[0]}`}.` }
-      const ghosts = await stopHeadsNow($, targets.map(run => run.id), 'stopped by the Lead', limits)
+      const ghosts = await stopHeadsNow($, targets.map(run => run.id), 'stopped by the Lead')
 
       return { result: `Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
     }
@@ -412,7 +411,7 @@ export const register: Register = (on, options) => {
       return { deny: `Unknown action "${action}". Use list, stop, clear, on, off or effort.` }
     }
     $.ui.invalidate('tool.describe')
-    await refreshStatus($, limits)
+    await refreshStatus($)
     const hydra = await readMode($)
 
     return { result: hydra?.isOn ? `Hydra on · Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'Hydra off.' }
@@ -430,10 +429,10 @@ export const register: Register = (on, options) => {
     return (await bandView($, e)) ?? next(e)
   })
 
-  on('ui.render', { component: 'Pane', requestId: HEADS_PANE }, ($, e) => headsPaneView($, e, defaultEngine, limits))
+  on('ui.render', { component: 'Pane', requestId: HEADS_PANE }, ($, e) => headsPaneView($, e, defaultEngine))
 
   on('command.run', { command: USAGE_COMMAND }, async $ => {
-    await refreshHeads($, limits)
+    await refreshHeads($)
     await $.ui.open({ id: PANE, title: 'Usage' })
 
     return { text: 'Usage pane opened.' }

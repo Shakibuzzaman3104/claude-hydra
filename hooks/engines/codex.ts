@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { effortModeOf, headEffort } from '../lib/effort'
 import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
-import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
+import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
 import { changedFiles, compareChangedFiles, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
@@ -285,12 +285,12 @@ export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => (
 export const codexBaseUrl = (config: string) => /^[ \t]*openai_base_url[ \t]*=[ \t]*"([^"]+)"/m.exec(config.split(/^[ \t]*\[/m)[0] ?? '')?.[1]
 
 /** A Head on Codex: a filesystem profile on the command line (no file to clean up), then rounds until it reports HEAD DONE. */
-export async function runCodexHead($: EngineInterface, head: CodexHead, outer: AbortSignal, limits: HeadLimits, id: string) {
+export async function runCodexHead($: EngineInterface, head: CodexHead, outer: AbortSignal, id: string) {
   const { cwd, model } = head
   if (/^[A-Za-z]:|^\\\\|\\/.test(cwd)) {
     const refusal = `${cwd} is a Windows path, and Hydra's rules use POSIX paths. Run Claude Code under WSL instead.`
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex', 'unavailable')
   }
   const [realCwd] = await realPaths($, [cwd])
@@ -300,7 +300,7 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   if (!realHome) {
     const refusal = 'Hydra cannot find your home folder (HOME is empty), so it cannot close it to a Codex Head.'
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex', 'unavailable')
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
@@ -309,13 +309,13 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead, tempDir)
   const baseUrl = codexBaseUrl(await $.fs.read(`${head.env?.CODEX_HOME ?? `${realHome}/.codex`}/config.toml`).catch(() => ''))
   try {
-    return await runCodexRounds($, head, filesystem, baseUrl, tempDir, outer, limits, id)
+    return await runCodexRounds($, head, filesystem, baseUrl, tempDir, outer, id)
   } finally {
     await removeCodexTemp($, tempDir)
   }
 }
 
-async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, baseUrl: string | undefined, tempDir: string, outer: AbortSignal, limits: HeadLimits, id: string) {
+async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: string, baseUrl: string | undefined, tempDir: string, outer: AbortSignal, id: string) {
   const { task, cwd, maxTurns, minutes } = head
   let model = refusedOnPlan.has(head.model) ? CODEX_PLAN_MODEL : head.model
   const warnings: string[] = model === head.model ? [] : [planWarning(head.model)]
@@ -373,7 +373,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: endActivity(ended, { maxTurns, minutes, stopped }),
   })
-  void refreshHeads($, limits)
+  void refreshHeads($)
 
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, rounds, turns: state.turns, usd: null, files, denied: state.denied,

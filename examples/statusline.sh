@@ -94,6 +94,11 @@ segment() {
 
 out="$model"
 
+# Hydra (the Claude Code mod) writes a small mark here while /hydra is on in this session; empty otherwise.
+session_id=$(printf '%s' "$input" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"' | head -1 | sed -E 's/.*"([A-Za-z0-9-]*)"$/\1/')
+hydra_file="$HOME/.claude/hydra/status/$session_id.txt"
+[ -n "$session_id" ] && [ -s "$hydra_file" ] && out="$out $(head -1 "$hydra_file")"
+
 five_seg=$(segment "5h" "$five_used" "$five_reset")
 [ -n "$five_seg" ] && out="$out | $five_seg"
 
@@ -109,11 +114,4 @@ case "$ctx_remaining" in
     ;;
 esac
 
-# Hydra (the Claude Code mod) writes this session's line here while /hydra is on; empty otherwise.
-session_id=$(printf '%s' "$input" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[A-Za-z0-9-]*"' | head -1 | sed -E 's/.*"([A-Za-z0-9-]*)"$/\1/')
-hydra_file="$HOME/.claude/hydra/status/$session_id.txt"
-if [ -n "$session_id" ] && [ -s "$hydra_file" ]; then
-  printf '%s\n\033[38;5;179m%s\033[0m' "$out" "$(head -1 "$hydra_file")"
-else
-  printf '%s' "$out"
-fi
+printf '%s' "$out"

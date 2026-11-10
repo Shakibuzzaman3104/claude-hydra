@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { effortModeOf, headEffort, nearestEffort, supportedEfforts } from '../lib/effort'
 import { applyEvent, formatReport, relativeTo } from '../lib/format'
-import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
+import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
 import { compareChangedFiles, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
@@ -346,7 +346,6 @@ export async function runCommandCodeHead(
   $: EngineInterface,
   head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; guarded?: Guarded; resume?: string; since?: number },
   outer: AbortSignal,
-  limits: HeadLimits,
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, writeDirs, minutes, effort, guarded } = head
@@ -355,7 +354,7 @@ export async function runCommandCodeHead(
   const refusal = await joinProject($, cwd, id, { addDirs, writeDirs, shell, guarded }, minutes)
   if (refusal) {
     await setRun($, id, { state: 'failed', endedAt: await $.clock.now(), activity: refusal })
-    await refreshStatus($, limits)
+    await refreshStatus($)
     return {
       text: formatReport({
         id, model, cwd, finished: false, rounds: 0, turns: 0, usd: 0, files: [], denied: [], finalText: '',
@@ -369,7 +368,7 @@ export async function runCommandCodeHead(
     ? `native Windows: the write guard checks every call; no shell${head.shell ? ' (shell: true ignored)' : ''}, no search tool`
     : envFile ? `search tool denied because ${relativeTo(cwd, envFile)} is in reach` : undefined
   try {
-    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, rulesNote, effort, resume: head.resume, since: head.since }, outer, limits, id)
+    return await runLockedHead($, { task, cwd, model, maxTurns, addDirs: union(addDirs, writeDirs), writeDirs, minutes, rulesNote, effort, resume: head.resume, since: head.since }, outer, id)
   } finally {
     await leaveProject($, cwd, id)
   }
@@ -379,7 +378,6 @@ async function runLockedHead(
   $: EngineInterface,
   head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; rulesNote?: string; effort?: string; resume?: string; /** When the Head that continues this session started: its report covers the transcript from then on. */ since?: number },
   outer: AbortSignal,
-  limits: HeadLimits,
   id: string,
 ) {
   const { task, cwd, model, maxTurns, addDirs, minutes, rulesNote } = head
@@ -425,7 +423,7 @@ async function runLockedHead(
     files: report.files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
     activity: endActivity(ended, { maxTurns, minutes, stopped }),
   })
-  void refreshHeads($, limits)
+  void refreshHeads($)
 
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,

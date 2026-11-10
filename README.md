@@ -202,7 +202,7 @@ When an engine stops a Head (every account at its usage limit, signed out, a mod
 Hydra never reads or stores a credential: each account's sign-in lives in the CLI's own config folder (`~/.claude/hydra/accounts/<engine>/<name>/`), and the folder is the only thing Hydra points the CLI at.
 
 ## Status line (optional)
-While Hydra is on, it writes `🐉 <head model> · <effort> | Heads 5h $… | 7d $…` to `~/.claude/hydra/status/<session id>.txt`. To show it under your own status line, `/hydra statusline` prints the lines to add. [`examples/statusline.sh`](examples/statusline.sh) is a full script. Add `"refreshInterval": 2` to the `statusLine` block of `~/.claude/settings.json`, or the line only updates at your next message. Without it, the band above the prompt and `/heads` show the same thing.
+While Hydra is on, it writes a small mark (`🐉`) to `~/.claude/hydra/status/<session id>.txt`. To show it inside your own status line (`Fable 5.2 🐉 | 5h …`), `/hydra statusline` prints the lines to add. [`examples/statusline.sh`](examples/statusline.sh) is a full script. Add `"refreshInterval": 2` to the `statusLine` block of `~/.claude/settings.json`, or the mark only updates at your next message. Which engines the Heads run on and what they used is in the band above the prompt, `/heads` and `/hydra-usage`.
 
 ## Troubleshooting
 - **`/hydra` says it can't start:** it names what's missing and what to run.
