@@ -223,7 +223,7 @@ export const isNoSpend = (error: string | undefined) =>
 
 /** Hydra's mark in the person's status line, only while it is on: which engines and what they spend is in the band, `/heads` and `/hydra-usage`. */
 export const HYDRA_MARK = '🐉'
-export const statusMark = (hydra: HydraMode | null) => (hydra?.isOn ? HYDRA_MARK : undefined)
+export const statusMark = (hydra: HydraMode | null) => (hydra?.isOn ? (hydra.surge ? `${HYDRA_MARK} ${hydra.surge}` : HYDRA_MARK) : undefined)
 
 /** The events of Command Code's JSON stream the live view reads. */
 export type StreamEvent = { type: string; toolCallId?: string; toolName?: string; input?: Record<string, unknown>; isError?: boolean; /** Every file one call wrote, when it wrote more than the one its input names. */ files?: readonly string[] }

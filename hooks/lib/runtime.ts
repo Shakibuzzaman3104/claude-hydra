@@ -8,6 +8,7 @@ import type { Ending, HeadRun, HeadsUsage, LeadWindow } from '../../types'
 import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
 import type { Engine, Routing } from './engines'
 import type { EngineBound } from './accounts'
+import type { Schema } from './schema'
 import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, parseDiffStat, relativeTo, resetsIn, statusMark, stopRuns } from './format'
 import { lookOf, rowLine } from './look'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
@@ -28,6 +29,8 @@ export const HANDOFF_TURNS = 2
 export const HANDOFF_MS = 120_000
 export const MAX_ROUNDS = 8
 export const MAX_PARALLEL = 6
+/** While a hunt runs: its Heads are short and spread over several engines. */
+export const HUNT_PARALLEL = 10
 export const DEFAULT_MINUTES = 40
 export const START_RETRIES = 2
 
@@ -316,12 +319,14 @@ export async function resolveWriteDirs($: EngineInterface, cwd: string, dirs: re
 }
 
 /** A FIFO gate so a fan-out never starts more Heads at once than the provider and the machine take. */
-export const createGate = (limit: number) => {
+export const createGate = (initial: number) => {
+  let limit = initial
   let active = 0
   const waiting: (() => void)[] = []
   return {
     get active() { return active },
     get waiting() { return waiting.length },
+    get limit() { return limit },
     async enter() {
       if (active < limit) {
         active++
@@ -330,9 +335,18 @@ export const createGate = (limit: number) => {
       await new Promise<void>(resolve => waiting.push(resolve))
     },
     leave() {
-      const nextInLine = waiting.shift()
+      // Above a lowered limit the slot is given up, not handed on.
+      const nextInLine = active <= limit ? waiting.shift() : undefined
       if (nextInLine) nextInLine()
       else active = Math.max(0, active - 1)
+    },
+    /** A higher limit lets waiting Heads in at once; a lower one takes effect as running Heads end. */
+    setLimit(next: number) {
+      limit = Math.max(1, next)
+      while (active < limit && waiting.length > 0) {
+        active++
+        waiting.shift()!()
+      }
     },
   }
 }
@@ -362,7 +376,7 @@ export type HeadResult = {
 /** A Head's session and the engine, model and account it belongs to. */
 export type HeadSession = { id: string; engine: Engine; model: string; account?: string }
 /** `reply` hands a foreground call its result; it answers false once that call is gone, and the report goes out as a message. */
-export type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; routing?: Routing; reply?: (result: HeadResult) => boolean }
+export type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; routing?: Routing; /** The JSON shape the Head's reply must carry. */ schema?: Schema; reply?: (result: HeadResult) => boolean }
 
 /**
  * The foreground call's end of a worker-run Head. An interrupted call (the person typed, opened a pane, pressed Esc)

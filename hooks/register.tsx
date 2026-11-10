@@ -8,21 +8,26 @@ import { sweepAgyHomes } from './engines/agy'
 import { sweepBuddySettings } from './engines/codebuddy'
 import { sweepCodexTemps } from './engines/codex'
 import { writeRules } from './engines/commandcode'
-import { runHead } from './engines/index'
 import { sweepOpenCodeFiles } from './engines/opencode'
 import { coolingLines, isStrategy, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
 import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
 import type { Engine } from './lib/engines'
-import { REPORT_HEAD, headName, isLive, listRuns, reportContext, reportNotice, resumeTarget, stopRuns, strings } from './lib/format'
+import { REPORT_HEAD, isLive, listRuns, reportContext, reportNotice, stopRuns } from './lib/format'
+import { HUNT_MAX_HEADS, parseHunt } from './lib/hunt'
+import { REPORT_HUNT, huntContext, huntControllers, huntJobs, huntNotice, prepareHead, runHuntJob, runStructured, sweepHunts } from './lib/launch'
+import type { Launch } from './lib/launch'
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
 import { pauseOneSecond } from './lib/platform'
-import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
-import { announceEnding, backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
+import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, SURGE_LABEL, SURGE_OFF_HINT, SURGE_POLICY, parseHydraArgs } from './lib/policy'
+import { announceEnding, backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
 import { setExtraHomeRead } from './lib/safety'
+import { schemaProblem } from './lib/schema'
+import type { Schema } from './lib/schema'
 import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/state'
+import { findSurges, surgeDecorations, surgeOf } from './lib/surge'
 import { bandView, headCardView, headsPaneView, usagePaneView } from './lib/views'
 
 export * from './lib/accounts'
@@ -30,11 +35,15 @@ export * from './lib/checks'
 export * from './lib/effort'
 export * from './lib/engines'
 export * from './lib/format'
+export * from './lib/hunt'
+export * from './lib/launch'
 export * from './lib/onboarding'
 export * from './lib/policy'
 export * from './lib/rounds'
 export * from './lib/runtime'
 export * from './lib/safety'
+export * from './lib/schema'
+export * from './lib/surge'
 export * from './engines/agy'
 export * from './engines/codebuddy'
 export * from './engines/codex'
@@ -46,6 +55,7 @@ export * from './engines/opencode'
 const USAGE_COMMAND = 'hydra-usage'
 const HEAD_TOOL = 'mcp__hydra__head'
 const CONTROL_TOOL = 'mcp__hydra__control'
+const HUNT_TOOL = 'mcp__hydra__hunt'
 
 const PANE = 'hydra-usage'
 const HEADS_PANE = 'hydra-heads'
@@ -53,6 +63,9 @@ const HEADS_PANE = 'hydra-heads'
 const REFRESH_MS = 120_000
 
 let isWorkerRunning = false
+
+/** The person waved the keyword off for the draft in the box: it stays plain text until that prompt is sent or cleared. */
+let isSurgeDismissed = false
 
 export const register: Register = (on, options) => {
   const fiveHourUsd = Number(options.headsFiveHourUsd ?? 0) || 0
@@ -66,6 +79,8 @@ export const register: Register = (on, options) => {
   // On unless the person turned it off: a Head the engine stops moves to another model or engine instead of failing.
   const isFallbackOn = options.headFallback !== false
   const isAutoStart = options.autoStart === true
+  const isKeywordOn = options.surgeKeywords !== false
+  const launch: Launch = { defaultEngine, defaultHead, isFallbackOn }
   setConfiguredEngine(defaultEngine)
   setAccountStrategy(isStrategy(options.accountStrategy) ? options.accountStrategy : 'fill')
   setExtraHomeRead([String(options.headReadDirs ?? '')])
@@ -84,7 +99,8 @@ export const register: Register = (on, options) => {
           const job = await backgroundJobs.next()
           const controller = new AbortController()
           controllers.set(job.id, controller)
-          void runHead($, job.input, job.headModel, controller.signal, job.id, job.engine, job.routing)
+          void runStructured($, { input: job.input, headModel: job.headModel, id: job.id, engine: job.engine ?? defaultEngine, routing: job.routing ?? { headModel: job.headModel, configured: defaultHead, fallback: isFallbackOn } }, controller.signal, job.schema)
+            .then(structured => structured.result)
             .catch(async error => {
               const reason = `failed before it reported: ${String(error).slice(0, 300)}`
               const now = await $.clock.now()
@@ -99,13 +115,27 @@ export const register: Register = (on, options) => {
             .finally(() => controllers.delete(job.id))
         }
       })()
+      void (async () => {
+        for (;;) {
+          const job = await huntJobs.next()
+          const name = job.plan.name
+          const controller = new AbortController()
+          huntControllers.set(name, controller)
+          void runHuntJob($, job, controller.signal)
+            .catch(error => `hunt ${name} · failed before it reported: ${String(error).slice(0, 300)}`)
+            .then(async text => {
+              if (!job.reply?.(text)) await $.prompt.submit({ text: `Hydra Hunt ${name} finished.\n${text}` }).catch(() => undefined)
+            })
+            .finally(() => huntControllers.delete(name))
+        }
+      })()
     }
     await $.command.register({ name: USAGE_COMMAND, description: 'Hydra: Claude and Head usage limits', immediate: true })
     await $.command.register({ name: 'heads', description: 'Hydra: watch the Heads work, live (opens without interrupting Claude)', immediate: true })
     await $.command.register({
       name: 'hydra',
       description: 'Turn on Hydra: Claude leads, Heads (Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode agents) implement',
-      argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | off | status | help | accounts',
+      argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | rampage | chimera | calm | off | status | help | accounts',
     })
     await $.tool.register({
       name: 'head',
@@ -129,8 +159,30 @@ export const register: Register = (on, options) => {
           check: { type: 'string', description: 'Acceptance check: a shell command Hydra runs in cwd once the Head ends (e.g. ./gradlew testDebugUnitTest --tests LoginViewModelTest). It runs as the person, outside the Head\'s lockdown, so it can build and test what the Head cannot; the Head is told Hydra runs it. On a failure the Head is sent back in the same session with the output, one effort level up, at most twice. A Head that ran out of turns or time after editing is checked too. Scope it to what this Head changes: Heads running in the same cwd share the files. The person is asked once before the first check runs.' },
           checkMinutes: { type: 'number', description: 'Time limit for one run of the check, in minutes (default and maximum 10)' },
           background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
+          schema: { type: 'object', description: 'A JSON Schema (root type object, with properties) the Head\'s result must match: for findings, lists and verdicts you will merge or count. Hydra asks the Head for one fenced json block, checks it, and sends a reply without usable JSON back to the Head up to twice; the report\'s `json:` line says how it ended. Supported: type, properties, required, items, enum, minItems, maxItems.' },
         },
         required: ['task'],
+      },
+    })
+    await $.tool.register({
+      name: 'hunt',
+      description: `Hydra: run a whole phase of Heads as one call and get one merged result back, instead of one report per Head. Every Head starts at once (up to ${HUNT_MAX_HEADS}); with \`schema\` each returns checked JSON; with \`refute\` a second Head on another engine tries to break each result and the author fixes what it broke, with no waiting between Heads. Returns a compact block per Head (status, check, refute verdict, edited files, its data) and the list of Heads that did not finish; every full report is saved to a file you can Read. Calling it again with the same \`name\` reuses the results of Heads whose task did not change and runs only the rest. Usable only while the person has Hydra on.`,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Names the hunt, its Heads and its saved results: lowercase letters, digits and dashes, up to 30 (auth-audit, login-build). Reuse the name to rerun only what failed or changed.' },
+          heads: {
+            type: 'array',
+            description: `1 to ${HUNT_MAX_HEADS} Heads. Each takes the Head tool's own fields: task (required), name, engine (required in auto mode), model, effort, files, check, checkMinutes, shell, cwd, addDirs, writeDirs, maxTurns, maxMinutes. Editing Heads must name disjoint files.`,
+            items: { type: 'object', properties: { task: { type: 'string' }, name: { type: 'string' }, engine: { type: 'string', enum: [...ENGINES] }, model: { type: 'string' }, effort: { type: 'string', enum: [...HEAD_EFFORTS] }, files: { type: 'array', items: { type: 'string' } }, check: { type: 'string' }, checkMinutes: { type: 'number' }, shell: { type: 'boolean' }, cwd: { type: 'string' }, addDirs: { type: 'array', items: { type: 'string' } }, writeDirs: { type: 'array', items: { type: 'string' } }, maxTurns: { type: 'number' }, maxMinutes: { type: 'number' } }, required: ['task'] },
+          },
+          shared: { type: 'string', description: 'Text put before every Head\'s task: the project, the hard rules, what a finding must be. Write it once here, not in each task.' },
+          schema: { type: 'object', description: 'One JSON Schema (root type object, with properties) every Head\'s result must match. Give one whenever you will merge, count or compare the results.' },
+          refute: { description: 'true, or { lenses: ["correctness", "edge cases"], fix: true }: after a Head finishes, one Head per lens (at most 3) on another engine tries to break its result and answers holds, broken or unsure. A broken result goes back to its author once (unless fix is false) and is refuted once more. A refuter that fails counts as no verdict, never as broken.' },
+          fresh: { type: 'boolean', description: 'Run every Head again, ignoring results saved under this name.' },
+          background: { type: 'boolean', description: 'Return at once; the merged result arrives later as a message.' },
+        },
+        required: ['name', 'heads'],
       },
     })
     await $.tool.register({
@@ -140,7 +192,7 @@ export const register: Register = (on, options) => {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['list', 'stop', 'clear', 'on', 'off', 'effort'], description: 'What to do (default list)' },
-          id: { type: 'string', description: 'For stop: the Head name (e.g. prefs-utils), or all; default all' },
+          id: { type: 'string', description: 'For stop: the Head name (e.g. prefs-utils), a hunt name (stops the hunt and its Heads), or all; default all' },
           effort: { type: 'string', enum: [...EFFORT_MODES], description: 'For on/effort: auto or a fixed level' },
           headModel: { type: 'string', description: 'For on/effort: the model the Heads run on' },
           engine: { type: 'string', enum: [...ENGINES, AUTO], description: 'For on/effort: the CLI Heads run on: commandcode, codebuddy, codex, agy, workbuddy or opencode (beta), or auto to let you pick one per Head' },
@@ -159,6 +211,7 @@ export const register: Register = (on, options) => {
     void sweepAgyHomes($)
     void sweepCodexTemps($)
     void sweepOpenCodeFiles($)
+    void sweepHunts($)
     const usage = await $.session.usage()
     await storeLead($, usage.rateLimits)
     void refreshHeads($)
@@ -185,7 +238,7 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'hydra' }, async ($, e) => {
-    const { action, leadModel, headModel, effort, engine, engines, task, unknown } = parseHydraArgs(e.args)
+    const { action, leadModel, headModel, effort, engine, engines, surge, task, unknown } = parseHydraArgs(e.args)
     const stored = await readMode($)
     const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
     const currentEffort = stored ? effortModeOf(stored) : defaultEffort
@@ -206,14 +259,23 @@ export const register: Register = (on, options) => {
     }
     if (action === 'status') {
       const model = await $.session.model()
-      return { text: current.isOn ? `🐉 Hydra on · Lead ${model} · Head ${current.headModel} on ${engineLabel(current, defaultEngine)} · effort ${currentEffort}` : 'Hydra is off. Turn it on with /hydra.' }
+      return { text: current.isOn ? `🐉 Hydra on · Lead ${model} · Head ${current.headModel} on ${engineLabel(current, defaultEngine)} · effort ${currentEffort}${stored?.surge ? ` · ${SURGE_LABEL[stored.surge]}` : ''}` : 'Hydra is off. Turn it on with /hydra.' }
     }
     if (action === 'off') {
-      await updateMode($, () => ({ ...current, isOn: false }))
+      await updateMode($, () => ({ ...current, isOn: false, surge: undefined }))
       $.ui.invalidate('tool.describe')
       await refreshStatus($)
       return { text: 'Hydra off. Claude works alone again.' }
     }
+    if (surge === 'calm') {
+      if (!stored?.isOn) return { text: 'Hydra is off. Turn it on with /hydra.' }
+      if (!stored.surge) return { text: 'Hydra is already calm.' }
+      await updateMode($, () => ({ ...stored, surge: undefined }))
+      await refreshStatus($)
+      return { text: `🐉 ${SURGE_LABEL[stored.surge]} off. Plain Hydra again.` }
+    }
+    const nextSurge = surge ?? (stored?.isOn ? stored.surge : undefined)
+    const surgeText = nextSurge ? ` · ${SURGE_LABEL[nextSurge]} until /hydra calm` : ''
 
     if (unknown) return { text: `Unknown option "${unknown}". A task needs a few words; /hydra help lists the options.` }
     if (effort !== undefined && !isEffortMode(effort)) return { text: `Unknown effort "${effort}". Use auto (the Lead picks low to max per Head) or one of: ${EFFORTS.join(', ')}.` }
@@ -233,7 +295,7 @@ export const register: Register = (on, options) => {
       const ready = await readyEngines($, parsed.engines)
       if (ready.pool.length === 0) return { text: ['🐉 Hydra can\'t start yet: none of those engines is ready.', ...ready.skipped.map(item => `  • ${ENGINE_LABEL[item.engine]}: ${item.problem}`), 'Then run /hydra again.'].join('\n') }
       if (!(await hasConsentAll($, ready.pool, true))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
-      const nextAuto = { isOn: true, headModel: headModel ?? (isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead), effort: effort ?? currentEffort, engine: AUTO, engines: ready.pool, pinned: engines !== undefined || (keepsAuto && stored?.pinned === true) }
+      const nextAuto = { isOn: true, headModel: headModel ?? (isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead), effort: effort ?? currentEffort, engine: AUTO, engines: ready.pool, pinned: engines !== undefined || (keepsAuto && stored?.pinned === true), surge: nextSurge }
       await updateMode($, () => nextAuto)
       $.ui.invalidate('tool.describe')
       await refreshStatus($)
@@ -241,7 +303,7 @@ export const register: Register = (on, options) => {
       const autoHint = leadModel && !autoModel.toLowerCase().includes(leadModel) ? ` Run /model ${leadModel} to switch the Lead.` : ''
       const left = plannedPool ? '' : ready.skipped.map(item => `\n⚠ ${ENGINE_LABEL[item.engine]} left out: ${item.problem}`).join('')
       const autoEffort = nextAuto.effort === 'auto' ? 'effort auto (Lead picks low to max)' : `effort ${nextAuto.effort}`
-      const autoText = `🐉 Hydra on · Lead ${autoModel} · Heads on ${engineLabel(nextAuto, defaultEngine)}, Claude picks the engine per Head · ${autoEffort}. /heads to watch, /hydra engines for what each is for, /hydra off to stop.${autoHint}${left}${ready.warnings.map(warning => `\n⚠ ${warning}`).join('')}${await takeWelcome($)}`
+      const autoText = `🐉 Hydra on · Lead ${autoModel} · Heads on ${engineLabel(nextAuto, defaultEngine)}, Claude picks the engine per Head · ${autoEffort}${surgeText}. /heads to watch, /hydra engines for what each is for, /hydra off to stop.${autoHint}${left}${ready.warnings.map(warning => `\n⚠ ${warning}`).join('')}${await takeWelcome($)}`
       if (task) {
         if (isWorkerRunning) pendingPrompts.push(task)
         else return { text: autoText, context: [task] }
@@ -249,7 +311,7 @@ export const register: Register = (on, options) => {
       return { text: autoText }
     }
     const nextEngine = (engine ?? plannedEngine ?? currentEngine) as Engine
-    const next = { isOn: true, headModel: headModelFor(nextEngine, headModel, current.headModel, defaultHead), effort: effort ?? currentEffort, engine: nextEngine, pinned: engine !== undefined || (keepsStored && stored?.pinned === true && nextEngine === currentEngine) }
+    const next = { isOn: true, headModel: headModelFor(nextEngine, headModel, current.headModel, defaultHead), effort: effort ?? currentEffort, engine: nextEngine, pinned: engine !== undefined || (keepsStored && stored?.pinned === true && nextEngine === currentEngine), surge: nextSurge }
     const check = planned ? { problems: [] as string[], warnings: planned.warnings } : await preflight($, next.engine as Engine)
     if (check.problems.length > 0) return { text: preflightText(check) }
     if (!(await hasConsent($, next.headModel, true, next.engine as Engine))) return { text: 'Hydra stays off. Run /hydra when you want Heads to work for Claude.' }
@@ -262,7 +324,7 @@ export const register: Register = (on, options) => {
     const effortText = next.effort === 'auto' ? 'effort auto (Lead picks low to max)' : `effort ${next.effort}`
     const warnings = check.warnings.map(warning => `\n⚠ ${warning}`).join('')
     const only = planned?.plan.kind === 'fixed' && planned.plan.isFallback ? `\n${onlyReadyNote(nextEngine)}` : ''
-    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} on ${ENGINE_LABEL[nextEngine]} · ${effortText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}${only}${await takeWelcome($)}`
+    const text = `🐉 Hydra on · Lead ${model} · Head ${next.headModel} on ${ENGINE_LABEL[nextEngine]} · ${effortText}${surgeText}. /heads to watch, /hydra off to stop.${changed}${switchHint}${warnings}${only}${await takeWelcome($)}`
 
     // A command's `context` only rides along with the next prompt; submitting the task starts the Lead's turn now.
     if (task) {
@@ -276,9 +338,57 @@ export const register: Register = (on, options) => {
   // A background Head's report reaches Claude as context, not as a long message preview: the person sees one line.
   on('prompt.submit', async ($, e, next) => {
     const origin = e.origin as { kind: string; name?: string }
-    if (origin.kind !== 'plugin' || origin.name !== 'hydra' || e.command || !REPORT_HEAD.test(e.text)) return next(e)
+    if (origin.kind === 'plugin' && origin.name === 'hydra' && !e.command && REPORT_HEAD.test(e.text)) return next({ ...e, text: reportNotice(e.text), context: [...(e.context ?? []), reportContext(e.text)] })
+    if (origin.kind === 'plugin' && origin.name === 'hydra' && !e.command && REPORT_HUNT.test(e.text)) return next({ ...e, text: huntNotice(e.text), context: [...(e.context ?? []), huntContext(e.text)] })
 
-    return next({ ...e, text: reportNotice(e.text), context: [...(e.context ?? []), reportContext(e.text)] })
+    // A surge word the person typed turns that mode on for the one prompt; /hydra rampage|chimera sets it for the session.
+    const wasDismissed = isSurgeDismissed
+    if (origin.kind === 'composer') isSurgeDismissed = false
+    const surge = isKeywordOn && !wasDismissed && origin.kind === 'composer' && !e.command ? surgeOf(e.text) : undefined
+    if (!surge) return next(e)
+    const stored = await readMode($)
+    if (!stored) {
+      $.ui.toast(SURGE_OFF_HINT(surge))
+
+      return next(e)
+    }
+    if (!stored.isOn) {
+      await updateMode($, () => ({ ...stored, isOn: true }))
+      $.ui.invalidate('tool.describe')
+      await refreshStatus($)
+    }
+    if (stored.isOn && (stored.surge === surge || stored.surge === 'chimera')) return next(e)
+    $.ui.toast(`🐉 ${SURGE_LABEL[surge]} for this prompt`)
+
+    return next({ ...e, context: [...(e.context ?? []), SURGE_POLICY(surge, 'prompt')] })
+  })
+
+  on('prompt.edit', async ($, e, next) => {
+    if (!isKeywordOn) return next(e)
+    // Like the engine's own keywords: backspace right after the word, or Option+W, keeps the word and drops its effect.
+    const hits = isSurgeDismissed ? [] : findSurges(e.text)
+    const isBackspace = e.key?.key === 'backspace' && !e.key.ctrl && !e.key.meta && hits.some(hit => hit.end === e.cursor)
+    const isOptionW = hits.length > 0 && ((e.key?.key === 'w' && e.key.meta === true) || e.inputText === '∑')
+    if (isBackspace || isOptionW) {
+      isSurgeDismissed = true
+      $.ui.toast('🐉 Keyword off for this prompt')
+
+      return { text: e.text, cursor: e.cursor }
+    }
+    const box = await next(e)
+    if (!box.text.trim()) isSurgeDismissed = false
+    const painted = isSurgeDismissed ? [] : surgeDecorations(box.text)
+
+    return painted.length > 0 ? { ...box, decorations: [...(box.decorations ?? []), ...painted] } : box
+  })
+
+  // A recalled history entry or a fill reaches the box without a `prompt.edit`.
+  on('prompt.change', async ($, e, next) => {
+    if (!e.text.trim()) isSurgeDismissed = false
+    const painted = isKeywordOn && !isSurgeDismissed ? surgeDecorations(e.text) : []
+    if (painted.length > 0) void $.prompt.paint({ text: e.text, decorations: painted }).catch(() => undefined)
+
+    return next(e)
   })
 
   on('prompt.compose', async ($, e, next) => {
@@ -290,7 +400,9 @@ export const register: Register = (on, options) => {
     const cooling = await coolingLines($, isAuto(hydra) && hydra.pinned ? poolOf(hydra) : ENGINES).catch(() => [])
     const limited = cooling.length > 0 ? [{ id: 'hydra:limits', text: `- Usage limits in force now (Hydra moves a Head off these on its own; route new work elsewhere): ${cooling.join('; ')}.`, scope: 'session' as const }] : []
 
-    return { sections: [...composed.sections, policy, ...limited] }
+    const surged = hydra.surge ? [{ id: 'hydra:surge', text: SURGE_POLICY(hydra.surge, 'session'), scope: 'session' as const }] : []
+
+    return { sections: [...composed.sections, policy, ...limited, ...surged] }
   })
 
   on('tool.describe', { tool: HEAD_TOOL }, async ($, e, next) => {
@@ -302,55 +414,74 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: HEAD_TOOL }, async ($, e, next) => {
     const hydra = await readMode($)
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
-    if (!String(e.task ?? '').trim()) return { deny: 'A Head needs a task.' }
-    if (e.effort !== undefined && !isHeadEffort(e.effort)) return { deny: 'effort must be low, medium, high, xhigh or max.' }
-    // `resume` continues an ended Head where its session lives: its engine, model, account, folder and grants.
-    const target = typeof e.resume === 'string' && e.resume.trim() ? resumeTarget(await readRuns($), e.resume.trim()) : undefined
-    if (target && 'deny' in target) return { deny: target.deny }
-    const earlier = target?.run
-    const cwd = earlier?.cwd ?? (typeof e.cwd === 'string' && e.cwd ? e.cwd : await $.session.root())
-    const writable = await resolveWriteDirs($, cwd, e.writeDirs === undefined && earlier ? earlier.writeDirs ?? [] : strings(e.writeDirs))
-    if ('refusal' in writable) return { deny: writable.refusal }
-    const routed = earlier ? { engine: earlier.engine as Engine, isNew: false } : resolveHeadEngine(hydra, e.engine, defaultEngine)
-    if ('deny' in routed) return { deny: routed.deny }
-    const engine = routed.engine
-    if (routed.isNew) {
-      const ready = await preflight($, engine)
-      if (ready.problems.length > 0) return { deny: `${ENGINE_LABEL[engine]} is not ready here: ${ready.problems[0]} Pick another engine.` }
-    }
-    if (!(await hasConsent($, hydra.headModel, false, engine))) return { deny: NO_CONSENT }
-    if (routed.isNew && isAuto(hydra)) await updateMode($, mode => (mode ? { ...mode, engines: [...poolOf(mode), engine] } : mode))
-    const check = typeof e.check === 'string' ? e.check.trim() : ''
-    if (check && !(await hasCheckConsent($, check))) return { deny: NO_CHECK_CONSENT }
-    const headModel = earlier?.model ?? headModelFor(engine, undefined, hydra.headModel, defaultHead)
-    const asked = earlier ? earlier.model : typeof e.model === 'string' && e.model ? e.model : undefined
-    const resumed = earlier
-      ? { cwd, model: earlier.model, addDirs: e.addDirs ?? earlier.addDirs, shell: e.shell ?? earlier.shell, resumeSession: { id: earlier.sessionId, engine, model: earlier.model, account: earlier.account }, resumeFiles: earlier.files ?? [] }
-      : {}
-    const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}), ...resumed }
-    const routing = { headModel: hydra.headModel, configured: defaultHead, model: asked, pool: isAuto(hydra) && hydra.pinned ? poolOf(hydra) : undefined, fallback: isFallbackOn }
-    const taken = new Set([...usedNames, ...(await readRuns($)).map(run => run.id)])
-    const id = headName(e.name ?? earlier?.id, String(e.task ?? ''), taken)
-    usedNames.add(id)
+    const schemaFault = e.schema === undefined || e.schema === null ? undefined : schemaProblem(e.schema)
+    if (schemaFault) return { deny: `\`schema\`: ${schemaFault}.` }
+    const schema = e.schema === undefined || e.schema === null ? undefined : (e.schema as Schema)
+    const { schema: _schema, ...asked } = e as Record<string, unknown>
+    const prepared = await prepareHead($, hydra, asked, launch)
+    if ('deny' in prepared) return { deny: prepared.deny }
+    const { input, headModel, id, engine, routing } = prepared
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment, or run this Head without background.' }
-      backgroundJobs.push({ input, headModel, id, engine, routing })
+      backgroundJobs.push({ input, headModel, id, engine, routing, schema })
 
-      return { result: `Head ${id} ${earlier ? `continues ${earlier.id}` : 'started'} in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
+      return { result: `Head ${id} ${prepared.continues ? `continues ${prepared.continues}` : 'started'} in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
-      const { text } = await runHead($, input, headModel, next.signal, id, engine, routing)
+      const { result } = await runStructured($, prepared, next.signal, schema)
 
-      return { result: text }
+      return { result: result.text }
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
     // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
     const { box, reply } = createReplyBox<HeadResult>(next.signal)
-    backgroundJobs.push({ input, headModel, id, engine, routing, reply })
+    backgroundJobs.push({ input, headModel, id, engine, routing, schema, reply })
     const result = await waitForResult(box, next.signal, () => pauseOneSecond($))
 
     return { result: result?.text ?? `Head ${id} keeps running in the background after the call was interrupted; its report arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} if it is no longer wanted.` }
   }).catch(($, e, next) => ({ deny: `Hydra: the Head could not run (${next.error.message ?? next.error.kind}). Run /hydra to check the setup.` }))
+
+  on('tool.describe', { tool: HUNT_TOOL }, async ($, e, next) => {
+    const described = await next(e)
+
+    return { ...described, isDeferred: !(await readMode($))?.isOn }
+  })
+
+  on('tool.call', { tool: HUNT_TOOL }, async ($, e, next) => {
+    const hydra = await readMode($)
+    if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
+    const parsed = parseHunt(e as Record<string, unknown>)
+    if ('deny' in parsed) return { deny: parsed.deny }
+    const { plan } = parsed
+    if (huntControllers.has(plan.name)) return { deny: `A hunt named "${plan.name}" is still running. Wait for it, stop it with ${CONTROL_TOOL} (id: "${plan.name}"), or pick another name.` }
+    if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment.' }
+    // Everything a Head would be refused for is found here, before any Head starts.
+    const vetted = new Set<Engine>()
+    for (const head of plan.heads) {
+      if (head.effort !== undefined && !isHeadEffort(head.effort)) return { deny: `Head ${head.name}: effort must be low, medium, high, xhigh or max.` }
+      const routed = resolveHeadEngine(hydra, head.engine, defaultEngine)
+      if ('deny' in routed) return { deny: `Head ${head.name}: ${routed.deny}` }
+      if (vetted.has(routed.engine)) continue
+      vetted.add(routed.engine)
+      if (routed.isNew) {
+        const ready = await preflight($, routed.engine)
+        if (ready.problems.length > 0) return { deny: `Head ${head.name}: ${ENGINE_LABEL[routed.engine]} is not ready here: ${ready.problems[0]} Pick another engine.` }
+      }
+      if (!(await hasConsent($, hydra.headModel, false, routed.engine))) return { deny: NO_CONSENT }
+    }
+    const firstCheck = plan.heads.find(head => head.check)?.check
+    if (firstCheck && !(await hasCheckConsent($, firstCheck))) return { deny: NO_CHECK_CONSENT }
+    if (e.background === true) {
+      huntJobs.push({ plan, launch })
+
+      return { result: `Hunt ${plan.name} started in the background with ${plan.heads.length} Head(s). Its merged result arrives as a message from the hydra plugin when every Head has ended.` }
+    }
+    const { box, reply } = createReplyBox<string>(next.signal)
+    huntJobs.push({ plan, launch, reply })
+    const text = await waitForResult(box, next.signal, () => pauseOneSecond($))
+
+    return { result: text ?? `Hunt ${plan.name} keeps running in the background after the call was interrupted; its merged result arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} (id: "${plan.name}") if it is no longer wanted.` }
+  }).catch(($, e, next) => ({ deny: `Hydra: the hunt could not run (${next.error.message ?? next.error.kind}). Run /hydra to check the setup.` }))
 
   on('tool.describe', { tool: CONTROL_TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
@@ -367,10 +498,14 @@ export const register: Register = (on, options) => {
     if (action === 'stop') {
       const list = await readRuns($)
       const targets = list.filter(run => (run.state === 'running' || run.state === 'queued') && (ids === 'all' || ids.includes(run.id)))
-      if (targets.length === 0) return { result: `No running or queued Head${ids === 'all' ? '' : ` ${ids[0]}`}.` }
+      // A stopped hunt starts no further Head and stops the ones it has running.
+      const hunts = [...huntControllers.keys()].filter(name => ids === 'all' || ids.includes(name))
+      for (const name of hunts) huntControllers.get(name)?.abort('stopped by the Lead')
+      const stoppedHunts = hunts.length > 0 ? `Stopping hunt ${hunts.join(', ')} and its Heads. ` : ''
+      if (targets.length === 0) return { result: stoppedHunts || `No running or queued Head or hunt${ids === 'all' ? '' : ` ${ids[0]}`}.` }
       const ghosts = await stopHeadsNow($, targets.map(run => run.id), 'stopped by the Lead')
 
-      return { result: `Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
+      return { result: `${stoppedHunts}Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
     }
     if (action === 'clear') {
       await updateRuns($, list => list.filter(run => run.state === 'running' || run.state === 'queued'))
@@ -380,7 +515,7 @@ export const register: Register = (on, options) => {
     const stored = await readMode($)
     const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
     if (action === 'off') {
-      await updateMode($, () => ({ ...current, isOn: false }))
+      await updateMode($, () => ({ ...current, isOn: false, surge: undefined }))
     } else if ((action === 'on' || action === 'effort') && (String(e.engine) === AUTO || Array.isArray(e.engines) || (isAuto(stored) && e.engine === undefined) || (action === 'on' && !stored?.isOn && !stored?.pinned && isAutoDefault && e.engine === undefined))) {
       const listed = Array.isArray(e.engines) ? parseEngineList(e.engines.map(String).join(',')) : undefined
       if (listed && (listed.bad.length > 0 || listed.engines.length === 0)) return { deny: `engines must be some of: ${ENGINES.join(', ')}.` }
@@ -395,7 +530,7 @@ export const register: Register = (on, options) => {
         pool = ready.pool
       }
       const headModel = typeof e.headModel === 'string' && e.headModel ? e.headModel : isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead
-      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine: AUTO, engines: pool, pinned: listed === undefined && stored?.pinned === true }))
+      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine: AUTO, engines: pool, pinned: listed === undefined && stored?.pinned === true, surge: stored?.surge }))
     } else if (action === 'on' || action === 'effort') {
       if (e.engine !== undefined && !isEngine(e.engine)) return { deny: `engine must be one of: ${[...ENGINES, AUTO].join(', ')}.` }
       const engine = isEngine(e.engine) ? e.engine : engineOf(stored, defaultEngine)
@@ -407,7 +542,7 @@ export const register: Register = (on, options) => {
       const effort = typeof e.effort === 'string' ? e.effort : undefined
       if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
       const headModel = headModelFor(engine, typeof e.headModel === 'string' && e.headModel ? e.headModel : undefined, current.headModel, defaultHead)
-      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine, pinned: e.engine === undefined && stored?.pinned === true }))
+      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine, pinned: e.engine === undefined && stored?.pinned === true, surge: stored?.surge }))
     } else {
       return { deny: `Unknown action "${action}". Use list, stop, clear, on, off or effort.` }
     }

@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Claude leads, cheaper agents (Heads, on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
@@ -33,6 +33,12 @@
       "title": "Hydra auto start",
       "description": "Turn Hydra on by itself at the start of every session, as if you ran /hydra",
       "default": false
+    },
+    "surgeKeywords": {
+      "type": "boolean",
+      "title": "Hydra surge keywords",
+      "description": "Typing rampage or chimera in a prompt lights the word up and turns that mode on for the one prompt. Set to false to keep them plain words; /hydra rampage and /hydra chimera still work.",
+      "default": true
     },
     "headFallback": {
       "type": "boolean",

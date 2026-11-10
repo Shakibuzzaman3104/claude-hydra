@@ -13,7 +13,10 @@ export type HeadsUsage = {
   error?: string
 }
 
-export type HydraMode = { isOn: boolean; headModel: string; effort?: string; /** The CLI Heads run on: 'commandcode' (default), 'codebuddy', 'codex', 'agy', 'workbuddy' or 'opencode'; 'auto' lets the Lead pick one per Head from `engines`. */ engine?: string; /** The engines an auto session may use. */ engines?: string[]; /** The person chose this engine or pool (engine=, engines=): it survives /hydra off, and an auto pool is not widened. */ pinned?: boolean }
+/** A thorough mode on top of Hydra: `rampage` fans out Heads only, `chimera` adds Claude subagents. */
+export type Surge = 'rampage' | 'chimera'
+
+export type HydraMode = { isOn: boolean; headModel: string; effort?: string; /** Set by /hydra rampage or /hydra chimera for the session; a keyword typed in a prompt does not set it. */ surge?: Surge; /** The CLI Heads run on: 'commandcode' (default), 'codebuddy', 'codex', 'agy', 'workbuddy' or 'opencode'; 'auto' lets the Lead pick one per Head from `engines`. */ engine?: string; /** The engines an auto session may use. */ engines?: string[]; /** The person chose this engine or pool (engine=, engines=): it survives /hydra off, and an auto pool is not widened. */ pinned?: boolean }
 
 export type HeadStep = { isOk: boolean; text: string }
 

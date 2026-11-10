@@ -25,7 +25,8 @@ import { runCodexHead } from './codex'
 import { runCommandCodeHead } from './commandcode'
 import { runOpenCodeHead } from './opencode'
 
-const RUN_HISTORY = 20
+// A hunt of 24 Heads with refuters and fix rounds must stay resumable to its end.
+const RUN_HISTORY = 120
 const MAX_MARKS = 12
 
 // Codex and Antigravity number no model messages, so their turns are tool calls: a Head needs more of them for the same work.

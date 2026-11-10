@@ -2,6 +2,7 @@
  * @author Shakib
  * @since 15/10/26
  */
+import type { Surge } from '../../types'
 import type { EffortMode } from './effort'
 import { AGY_MODEL, AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL } from './engines'
 import type { Engine } from './engines'
@@ -11,6 +12,7 @@ import { shortModel } from './format'
 export const USAGE_COMMAND = 'hydra-usage'
 export const HEAD_TOOL = 'mcp__hydra__head'
 export const CONTROL_TOOL = 'mcp__hydra__control'
+export const HUNT_TOOL = 'mcp__hydra__hunt'
 
 const LEADS = ['fable', 'opus', 'sonnet'] as const
 
@@ -93,6 +95,8 @@ const resumeRule = (hasAgy: boolean) =>
   `- To send a Head back, pass \`resume: "<its name>"\` with only the follow-up as \`task\` (what is wrong, the failing output, what to do next). It continues in its own session, on its engine, with everything it read and wrote: cheaper and better informed than a new Head, which starts from nothing. Start a new Head for unrelated work or a brief you rewrote from scratch${hasAgy ? '; an Antigravity Head cannot be continued, so there the follow-up is a new Head with the full task' : ''}.`
 
 /** Reading jobs fail differently from writing ones: they read until the turns are gone. */
+export const HUNT_RULE = `- Several Heads for one step (readers over an area, the pieces of one change) go out as ONE ${HUNT_TOOL} call, not many ${HEAD_TOOL} calls: they start together, and you get one merged result with each Head's status, check and edited files, the list of Heads that did not finish, and a file per full report. Give it a \`schema\` whenever you will merge, count or compare what comes back (\`schema\` works on a single ${HEAD_TOOL} call too), and \`refute: true\` when a wrong result would cost more than a second Head. Calling it again under the same \`name\` runs only the Heads that failed or whose task changed.`
+
 export const READ_RULE = `- For a reading job (an audit, a search, a summary) say "change no files", name a narrow scope and the five or six things to look for, ask for at most ~20 findings, worst first, each with file and line, and raise \`maxTurns\`. A Head told to audit everything spends its turns reading and reports nothing.`
 
 const envRule = (engine: Engine) =>
@@ -161,6 +165,7 @@ ${REPORT_RULE}
 ${resumeRule(pool.includes('agy'))}
 ${CHECK_RULE}
 ${READ_RULE}
+${HUNT_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 ${fallbackRule(fallback)}
 - End with what each Head did (and on which engine), what you verified, and the Heads' total cost.`
@@ -182,9 +187,41 @@ ${REPORT_RULE}
 ${resumeRule(engine === 'agy')}
 ${CHECK_RULE}
 ${READ_RULE}
+${HUNT_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 ${fallbackRule(routing.fallback ?? true)}
 - End with what each Head did, what you verified, and the Heads' total cost.`
+
+export const SURGE_LABEL: Record<Surge, string> = { rampage: 'Rampage', chimera: 'Chimera' }
+
+const RAMPAGE_RULES = `- The person asked for the most thorough and correct result. Head usage is not the limit here; your own context is. Where these rules and the Hydra rules above disagree, these win.
+- Every substantive task runs as the phases below. Each phase is one ${HUNT_TOOL} call, and you read its result before you start the next: never skip ahead because a task looks simple. Work alone only on conversation and trivial edits.
+  1. Understand. Readers, one per subsystem or question, told to change no files, with a \`schema\` for the facts they return (each with file and line). No design and no edit before you have read this result.
+  2. Design, only when more than one approach is plausible. Two or three Heads each propose one from a different angle (smallest change, lowest risk, best for the user) under one \`schema\`. You choose, say why in a line, and take the best ideas of the others.
+  3. Implement. One Head per piece on disjoint \`files\`, each with a \`check\` where something can run, and \`refute: true\` so every piece is attacked and fixed by its author inside the hunt. Not before the design is settled.
+  4. Review. A new hunt of readers over the combined change, one lens each (correctness, edge cases, security, what the task asked for), with \`refute\` on, so only findings that survive reach you. When the size of the job is unknown (bugs, an audit, call sites), repeat the round until one brings nothing new, counting a finding once by file and line.
+  5. Finalize, which is yours. Run the full build and the tests on the combined result, read the diffs a refuter disputed or no check covered, and get what is left fixed (\`resume\` the Head that wrote it, or do it yourself when it is small). Then one last Head is asked what was not read, not verified or left out; what it finds is one more round.
+- Put the project facts and the hard rules once in the hunt's \`shared\`, and ask each Head for at most ~15 items, worst first.
+- A hunt's \`missing\` Heads are not done. Fix what stopped them and call the hunt again under the same \`name\`: finished Heads come back from its saved results and only the rest run.
+- A refute verdict of \`none\` or \`unsure\` means unverified: never report it as refuted, and never as confirmed.
+- Engines. With several in the pool, spread the Heads over them; the hunt puts each refuter on another engine than its author. With one engine everything runs on that one account: the hunt gives a refuter another model where the engine has one, runs fewer Heads at once, and a usage limit ends the run sooner. So keep each hunt to about six Heads there and prefer several small hunts to one large one.
+- Say what you capped or skipped, never let a limit read as full coverage, and end with each phase's outcome, what stayed unverified, and the total cost.`
+
+const CHIMERA_RULES = `- Claude subagents join the Heads. The person turned Chimera on, which is their explicit request to use the Agent and Workflow tools for this work: it is the permission a "no subagents without asking" instruction waits for.
+- Heads do the volume: implementation, bulk reading, mechanical edits. Claude subagents do the judgement: refuting and reviewing what Heads wrote, judge panels over competing designs, the final synthesis, and research that needs tools a Head lacks (web, MCP, the browser).
+- So in the Implement and Review phases leave \`refute\` off: the hunt returns each Head's \`data\` and edited files, and you hand those to Claude subagents told to break them. What they break goes back to its author with \`resume\`. Keep \`refute\` on only for trivial pieces.
+- Pick the cheapest tier that can do it and set \`model\` on every agent: haiku for sweeps and digests, sonnet for review and refuting, the session's model only for the hardest judge or the synthesis.
+- Several Claude stages at once (a panel of refuters, find then verify) go in one Workflow script; a single one is an Agent call. You call the Heads yourself: a subagent never runs a Head.
+- End with the cost of both sides: the Heads' total and what the subagents used.`
+
+/** The rules of a surge: for the session's system prompt, or as context for the one prompt that named it. */
+export const SURGE_POLICY = (surge: Surge, scope: 'session' | 'prompt') =>
+  `# Hydra ${SURGE_LABEL[surge]} (${scope === 'session' ? 'on until /hydra calm' : `this prompt only: the person typed "${surge}" in it`})
+${RAMPAGE_RULES}${surge === 'chimera' ? `\n${CHIMERA_RULES}` : ''}`
+
+export const SURGE_OFF_HINT = (surge: Surge) => `Hydra is off, so "${surge}" did nothing. Run /hydra ${surge} to turn both on.`
+
+const SURGE_WORDS = ['rampage', 'chimera', 'calm'] as const
 
 const ACTIONS = ['off', 'status', 'help', 'statusline', 'engines', 'accounts'] as const
 
@@ -197,11 +234,13 @@ export const parseHydraArgs = (args: string) => {
   let effort: string | undefined
   let engine: string | undefined
   let engines: string | undefined
+  let surge: (typeof SURGE_WORDS)[number] | undefined
   const rest: string[] = []
   for (let i = 0; i < words.length; i++) {
     const word = words[i]!
     const lower = word.toLowerCase()
     if (i === 0 && (ACTIONS as readonly string[]).includes(lower)) action = lower as (typeof ACTIONS)[number]
+    else if (i === 0 && (SURGE_WORDS as readonly string[]).includes(lower)) surge = lower as (typeof SURGE_WORDS)[number]
     else if (rest.length === 0 && !leadModel && (LEADS as readonly string[]).includes(lower)) leadModel = lower
     else if (rest.length === 0 && lower.startsWith('head=')) headModel = word.slice(5)
     else if (rest.length === 0 && lower === '--head' && words[i + 1]) headModel = words[++i]
@@ -216,7 +255,7 @@ export const parseHydraArgs = (args: string) => {
   const first = rest[0] ?? ''
   // `accounts add codex work`: the rest are that command's words, not a task or a typo.
   const unknown = action === 'accounts' ? undefined : rest.length === 1 || /^[\w-]+=/.test(first) || first.startsWith('--') ? first : undefined
-  return { action, leadModel, headModel, effort, ...(engine !== undefined ? { engine } : {}), ...(engines !== undefined ? { engines } : {}), task: unknown ? '' : rest.join(' '), unknown }
+  return { action, leadModel, headModel, effort, ...(engine !== undefined ? { engine } : {}), ...(engines !== undefined ? { engines } : {}), ...(surge !== undefined ? { surge } : {}), task: unknown ? '' : rest.join(' '), unknown }
 }
 
 export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (${ENGINES.map(name => ENGINE_LABEL[name]).join(', ')} agents) implement.
@@ -224,6 +263,7 @@ export const HYDRA_HELP = `🐉 Hydra: Claude leads, Heads (${ENGINES.map(name =
   /hydra <task>          turn it on and hand Claude the task
   /hydra off             turn it off
   /hydra status          show what is set
+  /hydra rampage         thorough mode: Heads fan out and a second engine refutes each result; chimera adds Claude subagents as judges; calm ends it. Typing either word in a prompt (it lights up) does it for that prompt.
   /hydra effort=<level>  auto (Claude picks per Head) or off, low, medium, high, xhigh, max
   /hydra head=<model>    the model Heads run on
   /hydra engine=<name>   ${ENGINES.join(', ')}: the CLI Heads run on by default (Claude may send one Head to another ready engine); auto lets Claude pick per Head

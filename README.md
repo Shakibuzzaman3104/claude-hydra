@@ -171,6 +171,33 @@ Claude can send an ended Head a follow-up with `resume: "<its name>"`: finish wh
 
 A Head runs for 100 turns at most by default (200 on Codex and Antigravity, which count tool calls) and 40 minutes; Claude can raise either per Head (`maxTurns`, `maxMinutes`).
 
+## Hunts: a whole phase of Heads in one call
+
+Claude can send several Heads out as one **hunt** instead of one call each. Every Head starts at once (up to 24), and Claude gets back one merged result: a short block per Head with how it ended, its check, the files it edited and its result, plus the list of Heads that did not finish. Each full report is saved under `~/.claude/hydra/hunts/<session>/<hunt name>/` for Claude to open when it needs the detail, so twenty reports no longer fill the conversation.
+
+- **Checked JSON results.** Claude can give a hunt (or a single Head) a JSON schema. The Head is asked for one `json` block, Hydra checks it, and a reply without usable JSON goes back to the Head up to twice. Findings then come back as data Claude can merge and count.
+- **Refute and fix.** With `refute` on, a second Head tries to break each result and answers holds, broken or unsure. A broken result goes back to its author once and is refuted once more. A refuter that fails counts as no verdict, never as broken.
+- **Rerun only what failed.** Calling a hunt again under the same name returns the finished Heads from its saved results and runs only the ones that failed or whose task changed. Saved results last for the session; week-old ones are swept.
+- **Stopping.** Claude stops a hunt by its name, which also stops its Heads. `/heads` shows a hunt's Heads like any others, with `-r1` (refuter), `-fix` and `-json` (asked again for its JSON) after the author's name.
+
+**With one engine or one account** everything runs there. A refuter is then a fresh Head on the same engine, on another of its models where the engine has one (CodeBuddy, WorkBuddy, Antigravity), which is still an independent read. Hydra keeps the usual six Heads running at once (ten when the pool has several engines), and Claude is told to keep hunts to about six Heads. If the account hits its usage limit mid-hunt, the unfinished Heads are listed as missing and a later rerun picks them up.
+
+## Rampage and Chimera
+
+Plain Hydra is frugal: Claude sends out the Heads a task needs and checks their work. Two surges trade that for thoroughness.
+
+- **Rampage** (Heads only): every substantive task runs as five phases, each one hunt, and Claude reads each result before starting the next: understand (readers return facts), design (when there is a real choice), implement (each piece checked, refuted and fixed inside the hunt), review (findings must survive a refuter), and finalize, which is Claude's own: the full build and tests, the disputed diffs, and a last Head asked what was missed. It costs more Head usage and nothing extra on Claude's side.
+- **Chimera** (Heads and Claude subagents): the same, but the judging goes to Claude subagents: refuting what Heads wrote, judge panels, the final synthesis, and research that needs the web or MCP. Claude picks the cheapest model tier for each. It spends Claude usage as well, and turning it on is your permission for subagents and Workflow scripts.
+
+Two ways to turn one on:
+
+- Type `rampage` or `chimera` anywhere in a prompt. The word lights up as you type (red to orange, or violet to gold), and the surge applies to that one prompt. If Hydra was on earlier in the session and is off, the word turns it back on.
+- `/hydra rampage` or `/hydra chimera` keeps it on for the session; `/hydra calm` goes back to plain Hydra, and `/hydra off` ends both. The status line mark reads `🐉 rampage` or `🐉 chimera` meanwhile.
+
+To wave a keyword off for one prompt, press backspace right after the lit word or Option+W: the word stays, its effect goes. To turn the keywords off for good, set `surgeKeywords` to `false`; the `/hydra` forms still work.
+
+A word does not count inside backticks, as part of a path or file name (`src/chimera/x`, `chimera.ts`), in quotes, or after a backslash (`\rampage`), so you can still talk about them.
+
 ## Settings
 Change these in `/config` (the Hydra rows) or when installing:
 
