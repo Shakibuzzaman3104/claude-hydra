@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- **A Head's progress shows on Remote Control and in the apps.** The band above the prompt is drawn on the terminal and the desktop app only, so a phone or browser following the session saw nothing while Heads worked. Outside the terminal, each Head now has a small card under its own tool call row: its name, engine and state, a progress bar with the files written of the files named (or its turns), what it is doing, and, when it stopped on a limit, how to continue it. The card follows the Head for as long as it runs, background Heads included. The terminal is unchanged.
+- **One line when a Head ends, while an app is attached.** With a phone, browser or the desktop app on the session, Hydra adds one dim transcript line per ended Head (`🐉 login-tests ✓ done · 3/3 files · check ✓ · $0.0103`), so the outcome is visible without opening the report.
+- The `/heads` pane is now tested on the mobile surface as well as the terminal and desktop.
+
 ## 2.0.1 — 2026-11-10
 - **The status line shows a small Hydra mark, not a line of its own.** Hydra used to add a second row under your status line with the Head model, the effort and the Command Code spend (`🐉 deepseek-v4.1-flash · high | Heads 5h $0.06/$14 | 7d $1.41/$35`). With Heads on several engines in one session, one model and one engine's spend no longer describe it. Hydra now writes only `🐉` while it is on, and the status line script prints it inside your own line, after the model (`Fable 5.2 🐉 | 5h …`). The engines and what they used stay in the band above the prompt, `/heads` and `/hydra-usage`. If your script has the old lines from `/hydra statusline`, it keeps working and shows the mark on its own row; `/hydra statusline` prints the new lines.
 - The Command Code spend limits were passed through every Head function only to feed the old status line. That parameter is gone from `runHead`, the engine runners, `refreshStatus`, `refreshHeads`, `storeLead`, `stopHeadsNow` and the `/heads` pane; `/hydra-usage` still reads `headsFiveHourUsd` and `headsWeeklyUsd`.

@@ -6,10 +6,11 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { EngineInterface, On } from 'claude-code'
 
 import {
-  AUTO, ENGINES, ENGINE_LABEL, INSTALL_HINT, WELCOME_LINES, bandLayout, compactNumber, engineMixOf, engineMixText, fitText, onboardingPlan, onlyReadyNote, parseTokens, setupCard,
+  AUTO, ENGINES, ENGINE_LABEL, INSTALL_HINT, WELCOME_LINES, announceEnding, bandLayout, compactNumber, engineMixOf, engineMixText, fitText, onboardingPlan, onlyReadyNote, parseTokens, setupCard,
   spendText, takeWelcome, timelineBar, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf, HYDRA_HELP,
 } from './register'
 import type { Engine } from './register'
+import { cardOf } from './lib/look'
 import { addTokens } from './lib/format'
 import type { HeadRun } from '../types'
 
@@ -234,7 +235,7 @@ const linesOf = (node: unknown): string[] => {
 
 const paneProps = (bodyColumns: number) => ({ title: 'Heads', isFocused: true, bodyColumns, placement: 'dock' as const, scroll, view: {} })
 
-for (const surface of ['terminal', 'desktop'] as const) {
+for (const surface of ['terminal', 'desktop', 'mobile'] as const) {
   test(`/heads shows the totals, the engine mix and a timeline row per Head (${surface})`, async ($, on) => {
     serve(on, { runs: RUNS, tick: NOW, mode: AUTO_MODE })
     const pane = await $.ui.mount({ plugin: 'hydra', surface, component: 'Pane', requestId: 'hydra-heads', props: paneProps(80) })
@@ -309,6 +310,106 @@ test('the band drops columns, not rows, on a narrow screen', async ($, on) => {
   expect(row).toContain('codex')
   expect(row).not.toContain('turns')
   expect(row).not.toContain('█')
+})
+
+// ---- a Head's card under its own tool call row ----
+
+const toolProps = {
+  tool_use_id: 'call-1',
+  tool: 'mcp__hydra__head',
+  input: { task: 't' },
+  isRunning: true,
+  isErrored: false,
+  isInterrupted: false,
+}
+
+const baselineRow = (on: On) => {
+  on('ui.render', ($, e) => $.ui.resolve(e).Text({ children: 'ROW' }))
+}
+
+const liveCard = run('login-tests', { callId: 'call-1', engine: 'codex', state: 'running', turns: 4, expected: ['a.kt', 'b.kt', 'c.kt'], touched: ['a.kt'], activity: 'edit LoginViewModelTest.kt' })
+
+for (const surface of ['mobile', 'desktop'] as const) {
+  test(`a Head's progress card is drawn under its tool call row (${surface})`, async ($, on) => {
+    baselineRow(on)
+    serve(on, { runs: [liveCard] })
+    const ui = await $.ui.mount({ plugin: 'hydra', surface, component: 'ToolUse', requestId: 'call-1', props: toolProps })
+    const drawn = await ui.drawn()
+    const text = linesOf(drawn).join('\n')
+    expect(text).toContain('login-tests')
+    expect(text).toContain(ENGINE_LABEL.codex)
+    expect(text).toContain('running')
+    expect(text).toContain('1/3 files')
+    expect(text).toContain('edit LoginViewModelTest.kt')
+    expect(text).toContain('ROW')
+    const outer = drawn as unknown as { type?: string; props?: { borderStyle?: string } }
+    expect(outer.type).toBe('Box')
+    expect(outer.props?.borderStyle).toBeDefined()
+    await ui.unmount()
+  })
+}
+
+test('the terminal draws the tool row alone, with no card', async ($, on) => {
+  baselineRow(on)
+  serve(on, { runs: [liveCard] })
+  const ui = await $.ui.mount({ plugin: 'hydra', surface: 'terminal', component: 'ToolUse', requestId: 'call-1', props: toolProps })
+  const text = linesOf(await ui.drawn()).join('\n')
+  expect(text).toContain('ROW')
+  expect(text).not.toContain('1/3 files')
+  await ui.unmount()
+})
+
+test('a tool row with no run under it draws no card on mobile', async ($, on) => {
+  baselineRow(on)
+  serve(on, { runs: [run('login-tests', { callId: 'other', engine: 'codex', state: 'running' })] })
+  const ui = await $.ui.mount({ plugin: 'hydra', surface: 'mobile', component: 'ToolUse', requestId: 'call-1', props: toolProps })
+  const text = linesOf(await ui.drawn()).join('\n')
+  expect(text).toContain('ROW')
+  expect(text).not.toContain('login-tests')
+  await ui.unmount()
+})
+
+test('a blocked Head shows its ending and next step on its card', async ($, on) => {
+  baselineRow(on)
+  serve(on, { runs: [run('login-tests', { callId: 'call-1', engine: 'codex', state: 'failed', ending: 'blocked', summary: 'needs the API key' })] })
+  const ui = await $.ui.mount({ plugin: 'hydra', surface: 'mobile', component: 'ToolUse', requestId: 'call-1', props: toolProps })
+  const text = linesOf(await ui.drawn()).join('\n')
+  expect(text).toContain('blocked')
+  expect(text).toContain('BLOCKED')
+  await ui.unmount()
+})
+
+test('a Head card names the elapsed time only once the run has ended', () => {
+  const ended = cardOf(run('done-head', { engine: 'codex', startedAt: 0, endedAt: 65_000 }))
+  expect(ended.title).toContain('1:05')
+  const live = cardOf(run('live-head', { engine: 'codex', state: 'running', startedAt: 0 }))
+  expect(live.title).toContain('running')
+  expect(live.title).not.toContain('1:05')
+})
+
+/** A `$` for announceEnding: the surfaces attached, the runs it reads, and the lines it logs. */
+const endingDollar = (surfaces: readonly string[], runs: HeadRun[]) => {
+  const logs: string[] = []
+  const $ = {
+    session: { surfaces: async () => surfaces },
+    state: { get: async () => ({ value: runs, version: 1 }) },
+    ui: { log: (text: string) => void logs.push(text) },
+  } as unknown as EngineInterface
+  return { $, logs }
+}
+
+test('announceEnding logs one line for a Head when a non-terminal surface is attached', async () => {
+  const { $, logs } = endingDollar(['terminal', 'mobile'], [run('login-tests', { engine: 'codex' })])
+  await announceEnding($, 'login-tests')
+  expect(logs).toHaveLength(1)
+  expect(logs[0]).toContain('login-tests')
+  expect(logs[0]).toContain('done')
+})
+
+test('announceEnding logs nothing when only the terminal is attached', async () => {
+  const { $, logs } = endingDollar(['terminal'], [run('login-tests', { engine: 'codex' })])
+  await announceEnding($, 'login-tests')
+  expect(logs).toHaveLength(0)
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {

@@ -2,7 +2,7 @@
  * @author Shakib
  * @since 15/10/26
  */
-import type { EngineInterface, RenderInput } from 'claude-code'
+import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 
 import { accountOverview, accountStrategy, hasExtraAccounts, rowText } from './accounts'
 import { checklistOf, nextStepOf, reportLines, sessionProgressText, taskTitle } from './detail'
@@ -10,7 +10,7 @@ import { effortModeOf } from './effort'
 import { ENGINE_LABEL, engineLabel, isAuto, isEngine } from './engines'
 import type { Engine } from './engines'
 import { COUNT_WIDTH, bandLayout, barOf, clockOf, colorOf, compactNumber, elapsedOf, engineMixOf, engineMixText, fitText, isLive, isNearCap, isNoSpend, leadLabel, percentOf, progressBar, progressText, resetsIn, shortModel, spendText, timelineLayout, timelineRowCount, timelineSpan, totalsLines, totalsOf, turnsOf } from './format'
-import { CHECK_TRIES, endingWord, headsSummaryOf, lookOf, needsLead, rowLine } from './look'
+import { CHECK_TRIES, cardOf, endingWord, headsSummaryOf, lookOf, needsLead, rowLine } from './look'
 import { stopHeadsNow } from './runtime'
 import { readHeads, readLead, readMode, readRuns, readSelected, readTick, updateSelected } from './state'
 import { checkTriesOf, TIMELINE_GLYPH, timelineSegments } from './timeline'
@@ -52,6 +52,34 @@ export async function bandView($: EngineInterface, e: RenderInput<'AbovePrompt'>
           </Box>
         )
       })}
+    </Box>
+  )
+}
+
+/** A Head's progress card under its own tool call row, on every non-terminal surface; the row alone on the terminal. */
+export async function headCardView($: EngineInterface, e: RenderInput<'ToolUse'>, row: RenderElement) {
+  if (e.surface === 'terminal') return row
+  const run = (await readRuns($)).find(item => item.callId === e.props.tool_use_id)
+  if (!run) return row
+  const { Box, Text } = $.ui.resolve(e)
+  const look = lookOf(run, run.turns)
+  const card = cardOf(run)
+  const next = nextStepOf(run)
+
+  return (
+    <Box flexDirection="column" borderStyle="single">
+      {row}
+      <Box key="head-card-title">
+        <Text color={look.color}>{look.glyph} </Text>
+        <Text bold>{run.id} </Text>
+        <Text dimColor>{card.title}</Text>
+      </Box>
+      <Box key="head-card-progress">
+        <Text color={look.color}>{progressBar(run, 12)} </Text>
+        <Text dimColor>{card.progress}</Text>
+      </Box>
+      <Text key="head-card-line" wrap="wrap" color={needsLead(run) ? 'yellow' : undefined}>{card.line}</Text>
+      {next !== undefined && <Text key="head-card-next" color="yellow" wrap="wrap">{next}</Text>}
     </Box>
   )
 }

@@ -9,6 +9,7 @@ import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, 
 import type { Engine, Routing } from './engines'
 import type { EngineBound } from './accounts'
 import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, parseDiffStat, relativeTo, resetsIn, statusMark, stopRuns } from './format'
+import { lookOf, rowLine } from './look'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
 import { AUTO_CONSENT_QUESTION, CHECK_CONSENT_QUESTION, CHECK_CONSENT_YES, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, secretDirRefusal, union } from './safety'
@@ -64,6 +65,19 @@ export async function sweepStatusFiles($: EngineInterface) {
   const entries = await $.fs.list(folder).catch(() => [])
   const old = entries.filter(entry => entry.kind === 'file' && entry.name.endsWith('.txt') && entry.name !== own && now - entry.mtimeMs > STATUS_KEEP_MS)
   if (old.length > 0) await $.process.run(['/bin/rm', '-f', ...old.map(entry => `${folder}/${entry.name}`)]).catch(() => undefined)
+}
+
+/** Logs one transcript line when a Head ends while a non-terminal surface is attached. */
+export async function announceEnding($: EngineInterface, id: string) {
+  try {
+    const surfaces = await $.session.surfaces()
+    if (!surfaces.some(surface => surface !== 'terminal')) return
+    const run = (await readRuns($)).find(entry => entry.id === id)
+    if (!run || (run.state !== 'done' && run.state !== 'failed')) return
+    $.ui.log(`🐉 ${id} ${lookOf(run, 0).glyph} ${rowLine(run)}`)
+  } catch {
+    // A log line is never worth breaking the worker for.
+  }
 }
 
 export type Preflight = { problems: string[]; warnings: string[] }

@@ -19,11 +19,11 @@ import { REPORT_HEAD, headName, isLive, listRuns, reportContext, reportNotice, r
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
 import { pauseOneSecond } from './lib/platform'
 import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, parseHydraArgs } from './lib/policy'
-import { backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
+import { announceEnding, backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, resolveWriteDirs, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, usedNames, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
 import { setExtraHomeRead } from './lib/safety'
 import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/state'
-import { bandView, headsPaneView, usagePaneView } from './lib/views'
+import { bandView, headCardView, headsPaneView, usagePaneView } from './lib/views'
 
 export * from './lib/accounts'
 export * from './lib/checks'
@@ -93,6 +93,7 @@ export const register: Register = (on, options) => {
               return { text: `Hydra Head ${job.id} ${reason}`, isDone: false }
             })
             .then(async result => {
+              await announceEnding($, job.id)
               if (!job.reply?.(result)) await $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${result.text}` })
             })
             .finally(() => controllers.delete(job.id))
@@ -427,6 +428,15 @@ export const register: Register = (on, options) => {
     if (e.props.hasSurvey) return next(e)
 
     return (await bandView($, e)) ?? next(e)
+  })
+
+  on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const row = await next(e)
+    try {
+      return await headCardView($, e, row)
+    } catch {
+      return row
+    }
   })
 
   on('ui.render', { component: 'Pane', requestId: HEADS_PANE }, ($, e) => headsPaneView($, e, defaultEngine))

@@ -55,7 +55,7 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
   if (resume) keepOwnEdits(id, strings(input.resumeFiles))
 
   const expected = expectedFiles(cwd, strings(input.files))
-  const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot', cwd, engine, addDirs, writeDirs, shell, ...(expected.length > 0 ? { expected } : {}) }
+  const queued: HeadRun = { id, task: task.slice(0, 200), model, state: 'queued', turns: 0, maxTurns, activity: 'waiting for a slot', cwd, engine, addDirs, writeDirs, shell, ...(expected.length > 0 ? { expected } : {}), ...(typeof input.tool_use_id === 'string' && input.tool_use_id ? { callId: input.tool_use_id } : {}) }
   await updateRuns($, list => [...list, queued].slice(-RUN_HISTORY))
   await refreshStatus($)
   await gate.enter()

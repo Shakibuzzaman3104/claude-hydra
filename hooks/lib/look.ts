@@ -4,7 +4,8 @@
  */
 import type { HeadRun } from '../../types'
 import { CHECK_FIX_ROUNDS } from './check'
-import { canResume, capOf, glyphOf, progressOf } from './format'
+import { ENGINE_LABEL, isEngine } from './engines'
+import { canResume, capOf, clockOf, glyphOf, progressOf, progressText } from './format'
 
 /** How many times a Head's check can run: the first try plus every fix round. */
 export const CHECK_TRIES = CHECK_FIX_ROUNDS + 1
@@ -98,6 +99,17 @@ export const rowLine = (run: HeadRun): string => {
   if (run.ending === 'timeout') return `out of time · ${again}`
   if (run.ending === 'stalled') return (run.files?.length ?? 0) > 0 || (run.touched?.length ?? 0) > 0 ? 'stalled · read its diff' : 'stalled · no edits'
   return run.activity ?? 'failed'
+}
+
+/** A Head's card text: its engine, how it ended and elapsed time; its progress and its current line. */
+export const cardOf = (run: HeadRun): { title: string; progress: string; line: string } => {
+  const label = isEngine(run.engine) ? ENGINE_LABEL[run.engine] : run.engine ?? ''
+  const took = run.startedAt !== undefined && run.endedAt !== undefined ? clockOf(run.endedAt - run.startedAt) : ''
+  return {
+    title: [label, endingWord(run), took].filter(Boolean).join(' · '),
+    progress: progressText(run),
+    line: rowLine(run),
+  }
 }
 
 /** The Heads' counts in one line: what runs, what finished, what to continue and what failed. */

@@ -42,6 +42,8 @@ export type HeadRun = {
   denials?: number
   cwd?: string
   engine?: string
+  /** The tool_use_id of the call that started this run, so its transcript row can find it. */
+  callId?: string
   /** The engine account the Head runs on, as `<engine>/<name>`; set only for engines with extra accounts. */
   account?: string
   files?: string[]
