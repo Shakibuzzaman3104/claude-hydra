@@ -6,8 +6,10 @@ import type { EngineInterface } from 'claude-code'
 
 import { applyEvent, formatReport, outsideFiles, relativeTo, tokensText } from '../lib/format'
 import type { HeadLimits, SessionReport, StreamEvent } from '../lib/format'
-import { HEAD_RULES, MAX_ROUNDS, START_RETRIES, changedFiles, compareChangedFiles, continuePrompt, isFinished, isResumable, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
+import { changedFiles, compareChangedFiles, continuePrompt, notStarted, pump, realPaths, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
 import type { IdleLimits, Round } from '../lib/runtime'
+import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
+import type { RoundSpec } from '../lib/rounds'
 import { SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { IGNORE_FILE } from '../lib/protect'
@@ -461,7 +463,7 @@ async function runRoundOpenCode(
   }
 }
 
-type OpenCodeHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; env?: Record<string, string>; guarded?: Guarded }
+type OpenCodeHead = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; minutes: number; env?: Record<string, string>; guarded?: Guarded; /** An earlier Head's session to continue. */ resume?: string }
 
 const HEADS_DIR = '.claude/hydra/heads'
 const PREFIX = 'opencode-'
@@ -591,31 +593,20 @@ export const idleRetryRound = (round: { prompt: string; maxTurns: number; resume
 
 async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Record<string, string>, outer: AbortSignal, limits: HeadLimits, id: string) {
   const { task, cwd, model, maxTurns, minutes } = head
-  const controller = new AbortController()
-  if (outer.aborted) controller.abort()
-  else outer.addEventListener('abort', () => controller.abort(), { once: true })
-  let timedOut = false
-  const timerStop = new AbortController()
-  void $.clock.sleep(minutes * 60_000, { signal: timerStop.signal }).then(
-    () => {
-      timedOut = true
-      controller.abort()
-    },
-    () => undefined,
-  )
-  const signal = controller.signal
 
   const startedAt = await $.clock.now()
   await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
   const state = newOpenCodeState(cwd)
   const labels = new Map<string, string>()
+  const counter = createCallCounter()
   const onEvent = async (event: StreamEvent) => {
+    counter.see(event)
     await setRun($, id, run => applyEvent(run, event, labels, cwd))
   }
   let hangs = 0
   const deniedCalls = () => state.denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`.slice(0, 160))
   // A silent run is stopped by the watchdog and tried once more; a second silence is reported as a hang.
-  const roundAt = async (round: { prompt: string; maxTurns: number; resume?: string }) => {
+  const runRound = async (round: RoundSpec, signal: AbortSignal) => {
     const turnsBefore = state.turns
     let ran = await runRoundOpenCode($, { ...round, model, cwd, env, state }, signal, onEvent)
     if (ran.signal === 'idle' && !signal.aborted) {
@@ -631,42 +622,39 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
     return ran
   }
 
-  let round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
-  for (let attempt = 1; !round.sessionId && !signal.aborted && round.signal !== 'idle' && attempt <= START_RETRIES; attempt++) {
-    await $.clock.sleep(attempt * 5_000, { signal }).catch(() => undefined)
-    round = await roundAt({ prompt: task + HEAD_RULES, maxTurns })
-  }
-  const sessionId = round.sessionId
-  let rounds = 1
-  while (!signal.aborted && sessionId && isResumable(round.code) && !isFinished(round.finalText) && rounds < MAX_ROUNDS && state.turns < maxTurns) {
-    await setRun($, id, { activity: `resuming (round ${rounds + 1})` })
-    round = await roundAt({ prompt: continuePrompt(deniedCalls()), maxTurns: maxTurns - state.turns, resume: sessionId })
-    rounds++
-  }
+  const ended = await runRounds({
+    task, maxTurns, minutes, outer, resume: head.resume, runRound,
+    turns: () => state.turns,
+    calls: () => counter.calls,
+    denied: () => deniedCalls(),
+    // A run the watchdog stopped twice is a hang: starting it again would only hang again.
+    mayRetryStart: round => round.signal !== 'idle',
+    sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
+    onStep: activity => setRun($, id, { activity }),
+  })
+  const { round, rounds, sessionId, ending } = ended
 
-  timerStop.abort()
   const files = union([...state.files], await changedFiles($, startedAt, [cwd, ...head.writeDirs]))
   const endedAt = await $.clock.now()
   const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const tokens = tokensText(state.inputTokens, state.outputTokens)
-  const finished = isFinished(round.finalText)
-  const isDone = round.code === 0 && round.subtype === 'success' && finished
+  const isDone = ending === 'done'
   const stopped = outer.aborted ? stopReason(outer) : undefined
   const hung = round.signal === 'idle'
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt,
+    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt, ending, sessionId,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
-    activity: isDone ? undefined : timedOut ? `timed out after ${minutes} min` : stopped ?? (hung ? 'OpenCode hung (no output)' : round.subtype === 'error_max_turns' ? `stopped at the ${maxTurns}-turn cap` : 'stopped before HEAD DONE'),
+    activity: hung && !isDone ? 'OpenCode hung (no output)' : endActivity(ended, { maxTurns, minutes, stopped }),
   })
   void refreshHeads($, limits)
 
   const warnings = [...new Set(state.flagged), ...changeWarnings(cwd, head.writeDirs, files, await realPaths($, files))]
   if (hangs > 0 && !hung) warnings.push(`OpenCode went silent ${hangs} time(s) and was restarted by Hydra's watchdog; check the files it edited.`)
   const text = formatReport({
-    id, model, cwd, sessionId, finished, rounds, turns: state.turns, usd: null, files, denied: state.denied,
-    finalText: round.finalText, exit: timedOut ? `timed out after ${minutes} min` : stopped ?? (hung ? 'hung' : String(round.code ?? round.signal)), errors: round.errors,
-    writeDirs: head.writeDirs, engine: 'opencode', tokens: state.usd > 0 ? `${tokens} · $${state.usd.toFixed(4)}` : tokens, warnings,
+    id, model, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, rounds, turns: state.turns, usd: null, files, denied: state.denied,
+    finalText: round.finalText, exit: hung && ending === 'error' ? 'hung' : exitOf(ended, { minutes, stopped }), errors: round.errors,
+    writeDirs: head.writeDirs, engine: 'opencode', tokens: state.usd > 0 ? `${tokens} · $${state.usd.toFixed(4)}` : tokens, warnings, startedAt, endedAt,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone, failure: isDone ? undefined : round.errors, files }
+  return { text, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
 }

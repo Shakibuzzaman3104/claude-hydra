@@ -340,6 +340,7 @@ test('switches to the next account on a usage limit, with a note naming the file
   expect(started[1]!.minutes).toBe(35) // the 5 minutes the first run took are not given again
   expect(cooled).toEqual([['codex/default', NOW + 5 * MIN + 180 * MIN]])
   expect(result.text).toBe(`accounts: codex/default (usage limit, cooling until ${timeOf(NOW + 185 * MIN)}) → codex/work\nsecond`)
+  expect(result.files).toEqual(['/p/src/a.kt', '/p/b.kt', '/p/c.kt'])
 })
 
 test('skips an account that is already cooling and goes to the next', async () => {

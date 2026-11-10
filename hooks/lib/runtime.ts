@@ -4,11 +4,11 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-import type { HeadRun, HeadsUsage, LeadWindow } from '../../types'
+import type { Ending, HeadRun, HeadsUsage, LeadWindow } from '../../types'
 import { AGY_TOKEN, DEFAULT_ENGINE, ENGINE_BIN, ENGINE_LABEL, engineOf, isAuto, poolOf } from './engines'
 import type { Engine, Routing } from './engines'
 import type { EngineBound } from './accounts'
-import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, resetsIn, statusLine, stopRuns } from './format'
+import { AGY_NO_SPEND, AUTO_NO_SPEND, CODEBUDDY_NO_SPEND, CODEX_NO_SPEND, OPENCODE_NO_SPEND, WORKBUDDY_NO_SPEND, WARN_AT, formatReport, leadLabel, overlappingHeads, parseDiffStat, relativeTo, resetsIn, statusLine, stopRuns } from './format'
 import type { HeadLimits } from './format'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
 import { AUTO_CONSENT_QUESTION, CHECK_CONSENT_QUESTION, CHECK_CONSENT_YES, CONSENT_QUESTION, CONSENT_YES } from './policy'
@@ -20,6 +20,12 @@ const STATUS_KEEP_MS = 7 * 86_400_000
 const CONSENT_KEY = 'consent-v1'
 
 export const DONE_MARK = 'HEAD DONE'
+export const BLOCKED_MARK = 'HEAD BLOCKED'
+/** Rounds in a row without a tool call or an ending before a Head is stopped as stalled. */
+export const STALL_ROUNDS = 2
+/** The handoff round of a Head that ran out of turns or time: a few turns and a short while, no more. */
+export const HANDOFF_TURNS = 2
+export const HANDOFF_MS = 120_000
 export const MAX_ROUNDS = 8
 export const MAX_PARALLEL = 6
 export const DEFAULT_MINUTES = 40
@@ -224,20 +230,51 @@ export async function setRun($: EngineInterface, id: string, change: Partial<Hea
 
 export const HEAD_RULES = `
 
-Rules for this run: never answer with text alone until the whole task is finished. Every reply before then must make a tool call. A denied tool call stays denied: do not retry it, work around it or name it as a blocker. When everything is done, end your final message with a short report and the line ${DONE_MARK}.`
+Rules for this run:
+- Work through tool calls. A reply with text alone ends your turn, so never send one until you are finished or blocked.
+- A denied tool call stays denied: do not retry it or work around it. If the task cannot be done without it, you are blocked.
+- You may have no way to build, run or test here (no shell, no network, a missing toolchain). That is expected, and the Lead verifies your work: never wait for results or ask for them. Finish the code and list what you could not check under "Unverified".
+- Stay inside the task: do not refactor, rename or reformat what it does not name, and never delete code another file still uses.
+- When the work is finished, end with a short report, most important first, and then the line ${DONE_MARK}:
+  Done: what now works, in a few lines.
+  Changed: each file and what changed in it.
+  Unverified: what you could not build, run or test (or "nothing").
+  Notes: what the Lead must know or decide (leave out if nothing).
+- If you cannot finish (a missing file, a contradiction in the task, access you need was denied), do not guess: say what you finished, what stops you and what you need, then end with the line ${BLOCKED_MARK}.`
 
-export const continuePrompt = (denied: string[]) =>
-  [
-    'Continue the task from where you stopped. Do not describe what you will do next: make the tool calls.',
-    denied.length > 0 ? `These calls were denied and will stay denied, so do not retry them: ${denied.join('; ')}.` : '',
-    `When every item is done, end with your report and the line ${DONE_MARK}.`,
-  ].filter(Boolean).join(' ')
+const deniedNote = (denied: readonly string[]) =>
+  denied.length > 0 ? `These calls were denied and will stay denied, so do not retry them: ${denied.join('; ')}.` : ''
 
-export const isFinished = (text: string) => text.includes(DONE_MARK)
+const ENDINGS = `If the work is already complete, do not wait for anyone to verify it: reply with your report (what you could not check goes under "Unverified") and the line ${DONE_MARK}. If you cannot proceed, say what stops you and end with the line ${BLOCKED_MARK}.`
 
-/** The last few lines of a Head's final report, without the done mark, for /heads. */
+export const continuePrompt = (denied: readonly string[]) =>
+  ['Continue the task from where you stopped. Do not describe what you will do next: make the tool calls.', deniedNote(denied), ENDINGS].filter(Boolean).join(' ')
+
+/** After a round that made no tool call and did not end the run: the next one must act, finish or say it is blocked. */
+export const nudgePrompt = (denied: readonly string[]) =>
+  ['Your last reply made no tool call and did not end the run. Hydra stops this run if your next reply does neither.', deniedNote(denied), `Make the next tool call now. ${ENDINGS}`].filter(Boolean).join(' ')
+
+/** The last round of a Head that ran out of turns, rounds or time: what it leaves for whoever continues. */
+export const handoffPrompt = (limit: 'turn' | 'round' | 'time') =>
+  `You have reached this run's ${limit} limit. Make no more tool calls. Reply now with a handoff for whoever continues: Done (what is finished and works), Not done (what remains, in order), Next step (the exact file and change to start with), Unverified (what you could not check). End the handoff with no closing line; only if everything in the task is in fact finished, end with the line ${DONE_MARK} instead.`
+
+/** The first prompt of a Head that continues an earlier Head's session: the Lead's follow-up, under the same rules. */
+export const followUpPrompt = (task: string) =>
+  `Follow-up from the Lead on your earlier work in this session (your previous edits are still in the files):\n\n${task}${HEAD_RULES}`
+
+/** How a Head's last message ends the run: the mark written last wins, so a report that quotes one mark and ends on the other is read by its ending. */
+export const endMark = (text: string): 'done' | 'blocked' | undefined => {
+  const done = text.lastIndexOf(DONE_MARK)
+  const blocked = text.lastIndexOf(BLOCKED_MARK)
+  if (done < 0 && blocked < 0) return undefined
+  return done > blocked ? 'done' : 'blocked'
+}
+
+export const isFinished = (text: string) => endMark(text) === 'done'
+
+/** The last few lines of a Head's final report, without the end marks, for /heads. */
 export const summaryOf = (text: string) =>
-  text.replace(DONE_MARK, '').split('\n').map(line => line.trim()).filter(Boolean).slice(-6).map(line => line.slice(0, 200)).join('\n') || undefined
+  text.replace(DONE_MARK, '').replace(BLOCKED_MARK, '').split('\n').map(line => line.trim()).filter(Boolean).slice(-6).map(line => line.slice(0, 200)).join('\n') || undefined
 
 /** 0 is a clean stop, 8 a turn-cap hit, 9 an empty model reply: all three can pick up where they left off. */
 export const isResumable = (code: number | null) => code === 0 || code === 8 || code === 9
@@ -302,7 +339,15 @@ export type HeadResult = {
   files?: string[]
   /** Set when the engine, not the task, stopped the Head (a usage limit, a lost sign-in, a setup this engine cannot run): another may run it. */
   engineBound?: EngineBound
+  /** How the run ended (see `Ending`); unset for a Head that never started. */
+  ending?: Ending
+  /** The engine's session, thread or conversation id, when the Head got one. */
+  sessionId?: string
+  /** Where that session lives, set by `startHead`: what a follow-up or a fix round needs to continue it. */
+  session?: HeadSession
 }
+/** A Head's session and the engine, model and account it belongs to. */
+export type HeadSession = { id: string; engine: Engine; model: string; account?: string }
 /** `reply` hands a foreground call its result; it answers false once that call is gone, and the report goes out as a message. */
 export type Job = { input: Record<string, unknown>; headModel: string; id: string; engine?: Engine; routing?: Routing; reply?: (result: HeadResult) => boolean }
 
@@ -490,10 +535,27 @@ export async function changedFiles($: EngineInterface, since: number, dirs: read
   }
 }
 
+const STAT_FILES = 200
+
+/** Lines added and removed since the last commit for each of `files` under `cwd`, keyed by its path relative to `cwd`. Empty outside a repository. */
+export async function diffStat($: EngineInterface, cwd: string, files: readonly string[]): Promise<Record<string, string>> {
+  const root = `${cwd.replace(/\/$/, '')}/`
+  const paths = files.map(file => (file.startsWith(root) ? file.slice(root.length) : file)).filter(path => path && !path.startsWith('/') && !/^[A-Za-z]:/.test(path)).slice(0, STAT_FILES)
+  if (paths.length === 0) return {}
+  const git = (args: string[]) => $.process.run(['git', '-C', cwd, ...args, '--', ...paths], { timeoutMs: 15_000 }).then(ran => (ran.exitCode === 0 ? ran.stdout : undefined), () => undefined)
+  const numstat = await git(['diff', '--numstat', '-z', '--no-renames', '--relative', 'HEAD'])
+  if (numstat === undefined) return {}
+  return parseDiffStat(numstat, (await git(['ls-files', '--others', '--exclude-standard', '-z'])) ?? '')
+}
+
+/** The files, relative to `cwd`, that the Head a resumed one continues had edited: its own work, not edits it found. */
+const ownEdits = new Map<string, ReadonlySet<string>>()
+export const keepOwnEdits = (id: string, files: readonly string[]) => void ownEdits.set(id, new Set(files))
+
 /** Each Head's uncommitted files and their sha1 when it started, by id: what its report must not call its own edits. */
 const editsBefore = new Map<string, Record<string, string>>()
 
-/** The uncommitted files under `dirs` and their sha1, kept for `id`; the first call wins, so a resumed Head keeps its start. */
+/** The uncommitted files under `dirs` and their sha1, kept for `id`; the first call wins, so a fix round or a retry never counts the Head's own edits as someone else's. */
 export async function snapshotChangedFiles($: EngineInterface, id: string, dirs: readonly string[]): Promise<Record<string, string>> {
   const kept = editsBefore.get(id)
   if (kept) return kept
@@ -538,12 +600,18 @@ export async function compareChangedFiles($: EngineInterface, id: string, head: 
     const since = head.startedAt ?? (await $.clock.now())
     const ran = await runScript($, 'changed-files.py', ['--compare', file, String(since), ...dirs])
     const parsed = JSON.parse(ran.stdout) as Partial<typeof edits>
-    edits = { overwritten: parsed.overwritten ?? [], reverted: parsed.reverted ?? [], restored: parsed.restored ?? [] }
+    const own = ownEdits.get(id)
+    edits = { overwritten: (parsed.overwritten ?? []).filter(path => !own?.has(relativeTo(head.cwd, path))), reverted: parsed.reverted ?? [], restored: parsed.restored ?? [] }
   } catch {
     // No report line beats a wrong one.
   } finally {
     if (file) await $.process.run(['/bin/rm', '-f', file]).catch(() => undefined)
   }
-  editsBefore.delete(id)
   return { ...edits, alsoRan: overlappingHeads(await readRuns($), { id, ...head }) }
+}
+
+/** Drops a Head's start snapshot once it has ended for good: until then every fix round and retry compares against the same start. */
+export const forgetChangedFiles = (id: string) => {
+  editsBefore.delete(id)
+  ownEdits.delete(id)
 }

@@ -543,7 +543,7 @@ export async function rotateAccounts<R extends Ran>(steps: Rotation<R>): Promise
   const withTrail = (result: R, stopped?: string, bound?: EngineBound): R => {
     const quiet = steps.count <= 1 && !stopped && trail.every(step => step.until === undefined && !step.signedOut)
     const engineBound = bound ?? result.engineBound
-    return { ...result, ...(engineBound ? { engineBound } : {}), text: quiet ? result.text : `${accountsLine(trail)}${stopped ? ` (${stopped})` : ''}\n${result.text}` }
+    return { ...result, ...(engineBound ? { engineBound } : {}), ...(edited.length > 0 ? { files: [...edited] } : {}), text: quiet ? result.text : `${accountsLine(trail)}${stopped ? ` (${stopped})` : ''}\n${result.text}` }
   }
   let last: R | undefined
   for (let attempt = 0; attempt < steps.count; attempt++) {
