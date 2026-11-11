@@ -27,7 +27,8 @@ import { setExtraHomeRead } from './lib/safety'
 import { schemaProblem } from './lib/schema'
 import type { Schema } from './lib/schema'
 import { readMode, readRuns, updateMode, updateRuns, updateTick } from './lib/state'
-import { findSurges, surgeDecorations, surgeOf } from './lib/surge'
+import { afterChange, afterEdit, afterSubmit, dismiss, isSurgeLive, surgeDecorations, wantsDismissal } from './lib/surge'
+import type { SurgeState } from './lib/surge'
 import { bandView, headCardView, headsPaneView, usagePaneView } from './lib/views'
 
 export * from './lib/accounts'
@@ -64,8 +65,8 @@ const REFRESH_MS = 120_000
 
 let isWorkerRunning = false
 
-/** The person waved the keyword off for the draft in the box: it stays plain text until that prompt is sent or cleared. */
-let isSurgeDismissed = false
+/** The person waved the keyword off for the draft in the box, or undefined while keywords are live. */
+let surgeState: SurgeState = undefined
 
 export const register: Register = (on, options) => {
   const fiveHourUsd = Number(options.headsFiveHourUsd ?? 0) || 0
@@ -342,9 +343,9 @@ export const register: Register = (on, options) => {
     if (origin.kind === 'plugin' && origin.name === 'hydra' && !e.command && REPORT_HUNT.test(e.text)) return next({ ...e, text: huntNotice(e.text), context: [...(e.context ?? []), huntContext(e.text)] })
 
     // A surge word the person typed turns that mode on for the one prompt; /hydra rampage|chimera sets it for the session.
-    const wasDismissed = isSurgeDismissed
-    if (origin.kind === 'composer') isSurgeDismissed = false
-    const surge = isKeywordOn && !wasDismissed && origin.kind === 'composer' && !e.command ? surgeOf(e.text) : undefined
+    const sent = afterSubmit(surgeState, e.text, origin.kind)
+    surgeState = sent.state
+    const surge = isKeywordOn && !e.command ? sent.surge : undefined
     if (!surge) return next(e)
     const stored = await readMode($)
     if (!stored) {
@@ -366,26 +367,23 @@ export const register: Register = (on, options) => {
   on('prompt.edit', async ($, e, next) => {
     if (!isKeywordOn) return next(e)
     // Like the engine's own keywords: backspace right after the word, or Option+W, keeps the word and drops its effect.
-    const hits = isSurgeDismissed ? [] : findSurges(e.text)
-    const isBackspace = e.key?.key === 'backspace' && !e.key.ctrl && !e.key.meta && hits.some(hit => hit.end === e.cursor)
-    const isOptionW = hits.length > 0 && ((e.key?.key === 'w' && e.key.meta === true) || e.inputText === '∑')
-    if (isBackspace || isOptionW) {
-      isSurgeDismissed = true
+    if (wantsDismissal(surgeState, { text: e.text, cursor: e.cursor }, e.key, e.inputText)) {
+      surgeState = dismiss(e.text)
       $.ui.toast('🐉 Keyword off for this prompt')
 
       return { text: e.text, cursor: e.cursor }
     }
     const box = await next(e)
-    if (!box.text.trim()) isSurgeDismissed = false
-    const painted = isSurgeDismissed ? [] : surgeDecorations(box.text)
+    surgeState = afterEdit(surgeState, { text: e.text, cursor: e.cursor }, { text: box.text, cursor: box.cursor })
+    const painted = isSurgeLive(surgeState) ? surgeDecorations(box.text) : []
 
     return painted.length > 0 ? { ...box, decorations: [...(box.decorations ?? []), ...painted] } : box
   })
 
   // A recalled history entry or a fill reaches the box without a `prompt.edit`.
   on('prompt.change', async ($, e, next) => {
-    if (!e.text.trim()) isSurgeDismissed = false
-    const painted = isKeywordOn && !isSurgeDismissed ? surgeDecorations(e.text) : []
+    surgeState = afterChange(surgeState, e.text, e.origin.kind)
+    const painted = isKeywordOn && isSurgeLive(surgeState) ? surgeDecorations(e.text) : []
     if (painted.length > 0) void $.prompt.paint({ text: e.text, decorations: painted }).catch(() => undefined)
 
     return next(e)

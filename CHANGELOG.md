@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.1 — 2026-11-11
+- **A waved-off keyword comes back when you type it again.** After backspace or Option+W turned `rampage` or `chimera` off for a draft, retyping a letter of the word, typing or pasting another keyword, or recalling a different prompt lights it again. Before, the whole draft had to be deleted. Deleting text never brings it back by accident.
+- A hunt's merged result now says why a Head did not run (for example a session opened at `/` with no `cwd` given) instead of "(no final report)".
+
 ## 2.1.0 — 2026-11-11
 - **Hunts: a whole phase of Heads in one call.** A new `hunt` tool starts up to 24 Heads at once and returns one merged result (how each ended, its check, edited files and result, and which Heads did not finish) instead of one report per Head. Each full report is saved to a file Claude can open, so a wide fan-out no longer fills the conversation.
 - **Checked JSON results.** A hunt, or a single Head, can take a JSON schema. Hydra asks the Head for one `json` block, checks it, and sends a reply without usable JSON back to the Head up to twice; the report's `json:` line says how it ended. A Head whose session cannot be continued is asked again from the start only if it changed no files.

@@ -194,7 +194,7 @@ Two ways to turn one on:
 - Type `rampage` or `chimera` anywhere in a prompt. The word lights up as you type (red to orange, or violet to gold), and the surge applies to that one prompt. If Hydra was on earlier in the session and is off, the word turns it back on.
 - `/hydra rampage` or `/hydra chimera` keeps it on for the session; `/hydra calm` goes back to plain Hydra, and `/hydra off` ends both. The status line mark reads `🐉 rampage` or `🐉 chimera` meanwhile.
 
-To wave a keyword off for one prompt, press backspace right after the lit word or Option+W: the word stays, its effect goes. To turn the keywords off for good, set `surgeKeywords` to `false`; the `/hydra` forms still work.
+To wave a keyword off for one prompt, press backspace right after the lit word or Option+W: the word stays, its effect goes. Typing a keyword again (delete a letter and retype it, or type another one) brings it back, as does recalling a different prompt. To turn the keywords off for good, set `surgeKeywords` to `false`; the `/hydra` forms still work.
 
 A word does not count inside backticks, as part of a path or file name (`src/chimera/x`, `chimera.ts`), in quotes, or after a backslash (`\rampage`), so you can still talk about them.
 

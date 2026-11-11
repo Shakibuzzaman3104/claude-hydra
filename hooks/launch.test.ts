@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { HUNT_RULE, HYDRA_POLICY } from './lib/policy'
-import { JSON_FIX_ROUNDS, checkOf, headText, huntContext, huntDir, huntNotice, jsonLine, pickRefuter, readStructured, refuterModel, REPORT_HUNT } from './lib/launch'
+import { JSON_FIX_ROUNDS, checkOf, headSummary, headText, huntContext, huntDir, huntNotice, jsonLine, pickRefuter, readStructured, refuterModel, REPORT_HUNT } from './lib/launch'
 import type { HeadResult, HeadSession } from './lib/runtime'
 import { HUNT_PARALLEL, MAX_PARALLEL, createGate } from './lib/runtime'
 
@@ -178,4 +178,10 @@ test('a stopped run asks no more, and the check verdict is the first run\'s', as
   expect(stopped.calls.length).toBe(0)
   const checked = rounds({ ...reply(GOOD), text: `head x · finished\ncheck: npm test ✓ passed (try 1)\n--- head report ---\n${GOOD}\nHEAD DONE` }, [])
   expect((await readStructured(checked.steps)).check).toBe('passed')
+})
+
+test('a head that never ran shows why in its summary', async () => {
+  const refused = 'head a · m · NOT finished · exit not started\nrules: / is the root of the disk.\nedited: nothing\n--- head report ---\n(no final report)'
+  expect(headSummary(refused)).toBe('did not run: / is the root of the disk.')
+  expect(headSummary('head a · m\nrules: fine\n--- head report ---\nDone.')).toBe('Done.')
 })

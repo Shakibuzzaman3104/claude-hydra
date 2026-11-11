@@ -74,6 +74,14 @@ export const headText = (report: string) => {
   return (end.length > 0 ? body.slice(0, Math.min(...end)) : body).trim()
 }
 
+/** What a merged result shows for a Head: its own words, or Hydra's reason when it never got to write any. */
+export const headSummary = (report: string) => {
+  const text = headText(report)
+  const reason = /^rules: (.+)$/m.exec(report.split(REPORT_MARK)[0]!)?.[1]
+
+  return text === '(no final report)' && reason ? `did not run: ${reason}` : text
+}
+
 /** How the acceptance check ended, read from Hydra's own summary lines only. */
 export const checkOf = (report: string): 'passed' | 'failed' | 'unknown' | undefined => {
   const summary = report.split(REPORT_MARK)[0]!
@@ -248,7 +256,7 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
         ...(result.ending ? { ending: result.ending } : {}),
         ...(structured.check ? { check: structured.check } : {}),
         files: (result.files ?? []).map(file => relativeTo(cwd, file)),
-        summary: headText(result.text).slice(0, SUMMARY_CHARS),
+        summary: headSummary(result.text).slice(0, SUMMARY_CHARS),
         ...(structured.data !== undefined ? { data: structured.data } : {}),
         ...(structured.dataErrors ? { dataErrors: structured.dataErrors } : {}),
         ...(reportPath ? { reportPath } : {}),
