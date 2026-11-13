@@ -24,9 +24,9 @@ test('passes the temp folder in the filesystem profile and TMPDIR in the round e
   const args = codexArgs({ prompt: 'do it', model: 'gpt-6-luna', maxTurns: 40, cwd: CWD, addDirs: [], filesystem })
   expect(args.join(' ')).toContain(TEMP)
   expect(args).toContain(`permissions.hydra.filesystem=${filesystem}`)
-  expect(codexEnv(TEMP)).toEqual({ TMPDIR: `${TEMP}/` })
+  expect(codexEnv(TEMP)).toEqual({ TMPDIR: `${TEMP}/`, TMPPREFIX: `${TEMP}/zsh` })
   // The person's own environment stays, and TMPDIR wins in the Head.
-  expect(codexEnv(TEMP, { FOO: 'bar', TMPDIR: '/tmp' })).toEqual({ FOO: 'bar', TMPDIR: `${TEMP}/` })
+  expect(codexEnv(TEMP, { FOO: 'bar', TMPDIR: '/tmp' })).toEqual({ FOO: 'bar', TMPDIR: `${TEMP}/`, TMPPREFIX: `${TEMP}/zsh` })
 })
 
 test('removes only folders Hydra named, never a foreign path', async () => {

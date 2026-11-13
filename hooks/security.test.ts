@@ -3,11 +3,12 @@
  * @since 15/10/26
  */
 import { expect, test } from 'claude-code/testing'
+import type { EngineInterface } from 'claude-code'
 
 import { failureReason } from './engines/agy'
 import { buddyFailureText, buddySecretDeny, buddySettings, isSignedOutRow } from './engines/codebuddy'
 import { isQuotaFailure } from './lib/accounts'
-import { CODEX_PLAN_MODEL, CODEX_PLAN_REFUSAL, codexFilesystem, foldCodexRow, newCodexState } from './engines/codex'
+import { CODEX_PLAN_MODEL, CODEX_PLAN_REFUSAL, codexFilesystem, foldCodexRow, newCodexState, worktreeGitDirs } from './engines/codex'
 import { headSettings, secretReadDeny } from './engines/commandcode'
 import { REPORT_HEAD, reportContext, reportNotice } from './lib/format'
 import { SECRET_PATHS, guardCommand, holdsSecret, homeHeadRefusal, isSecretPath, parseHomeReadDirs, secretDirRefusal } from './lib/safety'
@@ -94,6 +95,32 @@ test('keeps credential paths closed even when a grant covers or names them', asy
   expect(profile).toContain('"/Users/me/brief"="read"')
   // The toolchain list reads .config/git, and its credentials file stays denied by the more specific rule.
   expect(codexFilesystem('/Users/me/app', { addDirs: [], shell: true }, '/Users/me', ['.config/git'])).toContain('"/Users/me/.config/git/credentials"="none"')
+})
+
+test('opens a linked worktree\'s git folders to a Codex Head, read-only', async () => {
+  const files: Record<string, string> = {
+    '/p/wt/.git': 'gitdir: /p/main/.git/worktrees/wt\n',
+    '/p/main/.git/worktrees/wt/commondir': '../..\n',
+  }
+  const $ = { fs: { read: async (path: string) => {
+    if (files[path] === undefined) throw new Error(`no ${path}`)
+    return files[path]!
+  } } } as unknown as EngineInterface
+  const dirs = await worktreeGitDirs($, '/p/wt')
+  expect(dirs).toEqual(['/p/main/.git/worktrees/wt', '/p/main/.git'])
+  const profile = codexFilesystem('/p/wt', { addDirs: [], writeDirs: [], shell: true }, '/home/me', [], '', dirs)
+  expect(profile).toContain('"/p/main/.git/worktrees/wt"="read"')
+  expect(profile).toContain('"/p/main/.git"="read"')
+  expect(profile).not.toContain('"/p/main/.git"="write"')
+  // A normal checkout has a `.git` folder, not a file, and needs nothing extra.
+  const plain = { fs: { read: async () => { throw new Error('is a directory') } } } as unknown as EngineInterface
+  expect(await worktreeGitDirs(plain, '/p/app')).toEqual([])
+})
+
+test('keeps a secret path under home denied even when a worktree grants it', async () => {
+  const profile = codexFilesystem('/p/app', { addDirs: [], shell: true }, '/home/me', [], '', ['/home/me/.ssh/keys'])
+  expect(profile).toContain('"/home/me/.ssh"="none"')
+  expect(profile).not.toContain('"/home/me/.ssh/keys"="read"')
 })
 
 test('names each path once in a Codex profile, the stricter access winning', async () => {

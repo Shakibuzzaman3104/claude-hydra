@@ -5,7 +5,9 @@
 import { expect, test } from 'claude-code/testing'
 
 import { HUNT_RULE, HYDRA_POLICY } from './lib/policy'
-import { JSON_FIX_ROUNDS, checkOf, headSummary, headText, huntContext, huntDir, huntNotice, jsonLine, pickRefuter, readStructured, refuterModel, REPORT_HUNT } from './lib/launch'
+import { JSON_FIX_ROUNDS, checkOf, fallbackOf, headSummary, headText, huntContext, huntDir, huntNotice, jsonLine, pickRefuter, readStructured, refuterModel, REPORT_HUNT, saveHeadReport, untilStopped } from './lib/launch'
+import { clipReport } from './lib/format'
+import type { EngineInterface } from 'claude-code'
 import type { HeadResult, HeadSession } from './lib/runtime'
 import { HUNT_PARALLEL, MAX_PARALLEL, createGate } from './lib/runtime'
 
@@ -37,6 +39,14 @@ test('the check verdict is read from Hydra\'s summary only, never from the Head\
   expect(checkOf(REPORT.replace('✓ passed', '✗ FAILED (exit 1)'))).toBe('failed')
   expect(checkOf(REPORT.replace('✓ passed', '? UNKNOWN'))).toBe('unknown')
   expect(checkOf(REPORT.replace('check: npm test ✓ passed (try 1)\n', ''))).toBeUndefined()
+})
+
+test('the fallback line is read from Hydra\'s summary only, never from the Head\'s text', async () => {
+  const moved = 'fallback: codebuddy glm-5.3 (usage limit) → commandcode glm-5.3\n'.concat(REPORT)
+  expect(fallbackOf(moved)).toBe('codebuddy glm-5.3 (usage limit) → commandcode glm-5.3')
+  expect(fallbackOf(REPORT)).toBeUndefined()
+  const imitated = REPORT.replace('Done: it works.', 'fallback: codebuddy glm-5.3 → codex gpt-6.1-terra')
+  expect(fallbackOf(imitated)).toBeUndefined()
 })
 
 test('a refuter lands on another engine of the pool, in turn', async () => {
@@ -128,6 +138,33 @@ test('a reply that carries matching JSON needs no second round', async () => {
   expect(read.result.text).toContain('json: ✓ the reply matches the schema')
 })
 
+test('a long JSON reply is validated from the uncut text', async () => {
+  const fullText = `\`\`\`json\n${JSON.stringify({ n: 3, detail: 'x'.repeat(9000) })}\n\`\`\``
+  const { steps, calls } = rounds(reply(clipReport(fullText), { fullText }), [])
+  const read = await readStructured(steps)
+  expect(read.data).toEqual({ n: 3, detail: 'x'.repeat(9000) })
+  expect(calls.length).toBe(0)
+})
+
+test('saved hunt and single Head reports retain the uncut reply and name the file when clipped', async () => {
+  const fullText = `start${'x'.repeat(9000)}end`
+  const result = reply(clipReport(fullText), { fullText })
+  const files: Record<string, string> = {}
+  const fs = { write: async (path: string, text: string) => { files[path] = text } } as unknown as EngineInterface['fs']
+  const huntPath = '/home/me/.claude/hydra/hunts/s1/audit/api.md'
+  const singlePath = '/home/me/.claude/hydra/heads/s1/api.md'
+  const hunt = await saveHeadReport({ fs }, result, huntPath)
+  const single = await saveHeadReport({ fs }, result, singlePath)
+  expect(files[huntPath]).toContain(fullText)
+  expect(files[singlePath]).toContain(fullText)
+  expect(hunt.text).toContain(`the full report is at ${huntPath}`)
+  expect(single.text).toContain(`the full report is at ${singlePath}`)
+  await saveHeadReport({ fs }, single, huntPath)
+  expect(files[huntPath]).toContain(fullText)
+  const failed = { write: async () => { throw new Error('denied') } } as unknown as EngineInterface['fs']
+  expect((await saveHeadReport({ fs: failed }, result, singlePath)).text).toBe(result.text)
+})
+
 test('a reply without usable JSON goes back to the Head in its own session, with the errors', async () => {
   const { steps, calls } = rounds(reply('prose only', { session: SESSION, files: ['/r/a.ts'] }), [reply(GOOD, { session: SESSION, files: ['/r/b.ts'] })])
   const read = await readStructured(steps)
@@ -178,6 +215,28 @@ test('a stopped run asks no more, and the check verdict is the first run\'s', as
   expect(stopped.calls.length).toBe(0)
   const checked = rounds({ ...reply(GOOD), text: `head x · finished\ncheck: npm test ✓ passed (try 1)\n--- head report ---\n${GOOD}\nHEAD DONE` }, [])
   expect((await readStructured(checked.steps)).check).toBe('passed')
+})
+
+test('a thrown or stopped JSON retry keeps the first report and errors', async () => {
+  for (const stopped of [false, true]) {
+    const controller = new AbortController()
+    const { steps } = rounds(reply('first report', { session: SESSION }), [])
+    steps.again = async () => stopped ? untilStopped(() => new Promise<HeadResult>(() => {}), controller.signal) : Promise.reject(new Error('lost'))
+    const pending = readStructured(steps)
+    await Promise.resolve()
+    await Promise.resolve()
+    if (stopped) controller.abort()
+    const result = await pending
+    expect(result.result.text).toContain('first report')
+    expect(result.dataErrors).toEqual(['no JSON block in the reply'])
+  }
+})
+
+test('stopping a silent Head settles its promise', async () => {
+  const controller = new AbortController()
+  const pending = untilStopped(() => new Promise<HeadResult>(() => {}), controller.signal).then(() => 'done', () => 'stopped')
+  controller.abort()
+  expect(await pending).toBe('stopped')
 })
 
 test('a head that never ran shows why in its summary', async () => {

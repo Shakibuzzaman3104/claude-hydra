@@ -656,5 +656,5 @@ async function runOpenCodeRounds($: EngineInterface, head: OpenCodeHead, env: Re
     writeDirs: head.writeDirs, engine: 'opencode', tokens: state.usd > 0 ? `${tokens} · $${state.usd.toFixed(4)}` : tokens, warnings, startedAt, endedAt,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
+  return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
 }

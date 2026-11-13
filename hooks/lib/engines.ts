@@ -16,6 +16,7 @@ export const DEFAULT_ENGINE: Engine = 'commandcode'
  * Gemini Flash and Gemini 4 Argon each have their own weekly one (no 5-hour window), so one pool's limit leaves the others free.
  */
 export const AGY_MODELS = {
+  'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], pool: 'gemini' },
   'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], pool: 'gemini' },
   'gemini-4-argon': { levels: ['low', 'medium', 'high'], pool: 'argon' },
   'claude-sonnet-5-5': { levels: ['low', 'medium', 'high'], pool: 'claude' },
@@ -24,30 +25,32 @@ export const AGY_MODELS = {
 } as const satisfies Record<string, { levels: readonly string[]; pool: string }>
 export type AgyModel = keyof typeof AGY_MODELS
 export type AgyPool = (typeof AGY_MODELS)[AgyModel]['pool']
-export const AGY_POOL_LABEL: Record<AgyPool, string> = { gemini: 'Gemini Flash', argon: 'Gemini 4 Argon', claude: 'Claude + GPT-OSS' }
-/** Antigravity Heads' default model: the cheap, fast one. */
-export const AGY_MODEL: AgyModel = 'gemini-3.8-flash'
+export const AGY_POOL_LABEL: Record<AgyPool, string> = { gemini: 'Gemini (Hydrogen, Flash)', argon: 'Gemini 4 Argon', claude: 'Claude + GPT-OSS' }
+/** Antigravity Heads' default model. */
+export const AGY_MODEL: AgyModel = 'gemini-4-hydrogen'
 /** `gemini-4-argon-high` or `google/gemini-4-argon` is `gemini-4-argon`; undefined when Antigravity has no such model. */
 export const agyBaseOf = (model: string): AgyModel | undefined => {
-  const base = model.replace(/^google\//i, '').replace(/-(low|medium|high)$/i, '').toLowerCase()
+  const base = model.replace(/^google\//i, '').replace(/-(low|medium|high|xhigh)$/i, '').toLowerCase()
   return Object.hasOwn(AGY_MODELS, base) ? (base as AgyModel) : undefined
 }
-/** The id `agy --model` takes: the base with its level built in (agy refuses `--effort` beside it); no level is `low`, and one the model lacks is its middle one. */
+/** The id `agy --model` takes: the base with its level built in (agy refuses `--effort` beside it, and a bare id). No level is `low`; `max` is the model's top level, and a level it lacks rounds down to its nearest. */
 export const agyModelId = (model: string, effort?: string) => {
   const base = agyBaseOf(model) ?? AGY_MODEL
   const levels: readonly string[] = AGY_MODELS[base].levels
-  const wanted = !effort || effort === 'off' || effort === 'auto' ? 'low' : effort === 'xhigh' || effort === 'max' ? 'high' : effort
-  const level = wanted && levels.includes(wanted) ? wanted : levels.includes('medium') ? 'medium' : levels[0]!
+  const order = ['low', 'medium', 'high', 'xhigh']
+  const wanted = !effort || effort === 'off' || effort === 'auto' ? 'low' : effort === 'max' ? 'xhigh' : effort
+  const level = order.slice(0, order.indexOf(wanted) + 1).reverse().find(each => levels.includes(each)) ?? levels[0]!
   return `${base}-${level}`
 }
 export const agyPoolOf = (model: string): AgyPool => AGY_MODELS[agyBaseOf(model) ?? AGY_MODEL].pool
 /** What an Antigravity Head moves to when its model's pool is at its limit: the nearest model in each other pool. */
 const AGY_ALTERNATES: Record<AgyModel, readonly AgyModel[]> = {
+  'gemini-4-hydrogen': ['gemini-4-argon', 'claude-sonnet-5-5'],
   'gemini-3.8-flash': ['gemini-4-argon', 'claude-sonnet-5-5'],
-  'gemini-4-argon': ['claude-sonnet-5-5', 'gemini-3.8-flash'],
-  'claude-sonnet-5-5': ['gemini-4-argon', 'gemini-3.8-flash'],
-  'claude-opus-5-5': ['gemini-4-argon', 'gemini-3.8-flash'],
-  'gpt-oss-120b': ['gemini-3.8-flash', 'gemini-4-argon'],
+  'gemini-4-argon': ['claude-sonnet-5-5', 'gemini-4-hydrogen'],
+  'claude-sonnet-5-5': ['gemini-4-argon', 'gemini-4-hydrogen'],
+  'claude-opus-5-5': ['gemini-4-argon', 'gemini-4-hydrogen'],
+  'gpt-oss-120b': ['gemini-4-hydrogen', 'gemini-4-argon'],
 }
 /** Where Antigravity keeps the sign-in token, relative to the home folder. */
 export const AGY_TOKEN = '.gemini/antigravity-cli/antigravity-oauth-token'

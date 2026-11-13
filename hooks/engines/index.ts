@@ -194,11 +194,21 @@ async function runResumed($: EngineInterface, head: HeadSpec, session: HeadSessi
   return startHead($, { ...head, engine: session.engine, model: session.model }, account?.dir ? account : undefined, outer, id)
 }
 
+/**
+ * The change a new attempt makes to the run record before it starts: its turns are its own, and so is its usage. The caller
+ * that moved the Head (`runRoutes`, `runOnAccounts`, `runChecked`) adds the earlier attempts' tokens back once it ends, so a
+ * route that reports none leaves the total as it was rather than keeping or recounting the last route's.
+ */
+export const attemptStart = (before: HeadRun | undefined): Partial<HeadRun> => ({
+  ...(before && before.turns > 0 ? { earlierTurns: (before.earlierTurns ?? 0) + before.turns, turns: 0 } : {}),
+  tokens: undefined,
+})
+
 /** Starts one Head run on `account` (undefined: the CLI's own config): its engine's run function, with the account's env or token folder. */
 async function startHead($: EngineInterface, head: HeadSpec, account: Account | undefined, outer: AbortSignal, id: string): Promise<HeadResult> {
   // A fix round or a move to another account starts the engine again: its turns and files add to the Head's, they do not replace them.
   const before = (await readRuns($)).find(run => run.id === id)
-  if (before && before.turns > 0) await setRun($, id, { earlierTurns: (before.earlierTurns ?? 0) + before.turns, turns: 0 })
+  if (before) await setRun($, id, attemptStart(before))
   const ran = await startOn($, head, account, outer, id)
   const earlier = before?.files ?? []
   if (earlier.length > 0) await setRun($, id, run => ({ files: [...new Set([...earlier, ...(run.files ?? [])])] }))
@@ -322,6 +332,8 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSig
   const accounts = await accountsOf($, engine)
   const pool = usagePoolOf(engine, model)
   const named = (name: string) => accounts.find(account => accountId(account) === name)
+  // This route starts its own usage record, even when no account is free to start it; `runRoutes` adds the routes before it back.
+  await setRun($, id, { tokens: undefined })
   // Each account's run reports its own tokens; a Head that switched used every one of them.
   let spent: string | undefined
   const tokensNow = async () => (await readRuns($)).find(run => run.id === id)?.tokens

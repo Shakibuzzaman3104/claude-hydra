@@ -20,6 +20,34 @@ test('warns about the edits it put back to the committed version and the ones it
   expect(text).toContain('⚠ changed files that already had uncommitted edits before this Head started: src/c.ts')
 })
 
+test('leads with probable damage when an unfinished Head emptied a tracked file', () => {
+  const text = report({ finished: false, ending: 'blocked', files: ['/p/src/app.ts'], stats: { 'src/app.ts': '+0 −305' }, finalText: 'I could not finish.' })
+  const lines = text.split('\n')
+  expect(lines[0]).toBe('⚠ probable damage: src/app.ts lost 305 lines and gained none (restore: git checkout -- src/app.ts)')
+  expect(lines[1]!.startsWith('head head-b')).toBe(true)
+})
+
+test('does not call a small loss, a real edit or a finished Head damage', () => {
+  expect(report({ finished: false, ending: 'blocked', files: ['/p/a.ts'], stats: { 'a.ts': '+0 −4' } })).not.toContain('probable damage')
+  expect(report({ finished: false, ending: 'blocked', files: ['/p/a.ts'], stats: { 'a.ts': '+3 −305' } })).not.toContain('probable damage')
+  expect(report({ finished: true, files: ['/p/a.ts'], stats: { 'a.ts': '+0 −305' } })).not.toContain('probable damage')
+})
+
+test('warns when the Head says it changed nothing but files changed, whatever the ending', () => {
+  const blocked = report({ finished: false, ending: 'blocked', files: ['/p/a.ts'], finalText: 'No files were changed.' })
+  expect(blocked).toContain('⚠ the Head says it changed nothing, but files changed: a.ts')
+  expect(report({ files: ['/p/b.ts'], finalText: 'No changes.' })).toContain('⚠ the Head says it changed nothing, but files changed: b.ts')
+  expect(report({ files: ['/p/c.ts'], finalText: 'Changed: none' })).toContain('⚠ the Head says it changed nothing, but files changed: c.ts')
+  expect(report({ files: [], finalText: 'No files were changed.' })).not.toContain('changed nothing')
+})
+
+test('a finished Head that reports its work normally gets no damage warning', () => {
+  const text = report({ files: ['/p/a.ts'], stats: { 'a.ts': '+12 −3' }, finalText: 'Done. HEAD DONE' })
+  expect(text).not.toContain('⚠ probable damage')
+  expect(text).not.toContain('changed nothing')
+  expect(text.startsWith('head head-b')).toBe(true)
+})
+
 test('names every file put back to the committed version on the line the Lead reads first', () => {
   const text = report({ reverted: ['/p/dates.dart'] })
   expect(text).toContain('⚠ put back to the committed version during this Head (uncommitted edits there are gone): dates.dart')

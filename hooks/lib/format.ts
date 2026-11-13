@@ -437,11 +437,11 @@ const REPORT_HEAD_CHARS = 5_000
 const REPORT_TAIL_CHARS = 3_000
 
 /** A Head's own report, cut in the middle when it is long: a report leads with what matters and ends with what is left. */
-export const clipReport = (text: string) => {
+export const clipReport = (text: string, path?: string) => {
   const report = text.trim()
   if (report.length <= REPORT_HEAD_CHARS + REPORT_TAIL_CHARS) return report
   const cut = report.length - REPORT_HEAD_CHARS - REPORT_TAIL_CHARS
-  return `${report.slice(0, REPORT_HEAD_CHARS)}\n[… ${cut} characters cut by Hydra …]\n${report.slice(-REPORT_TAIL_CHARS)}`
+  return `${report.slice(0, REPORT_HEAD_CHARS)}\n[… ${cut} characters cut by Hydra${path ? `; the full report is at ${path}` : ''} …]\n${report.slice(-REPORT_TAIL_CHARS)}`
 }
 
 /** Engines whose Heads the Lead can continue with `resume`. Antigravity keeps a conversation in the Head's own HOME, which is removed when it ends. */
@@ -454,6 +454,30 @@ export const editedLine = (cwd: string, files: readonly string[], stats: Readonl
     return stats[relative] ? `${relative} (${stats[relative]})` : relative
   }
   return files.length > 0 ? `edited (${files.length}): ${files.map(edited).join(', ')}` : 'edited: nothing'
+}
+
+/** Stats that lost lines and gained none, as `parseDiffStat` writes them: `+0 −305`. */
+const LOST_LINES = /^\+0\s+−(\d+)$/
+
+/** A report that says nothing changed, in the words Heads use for it. */
+const NOTHING_CHANGED = /no files? (?:were |was |have been )?(?:changed|created|modified|added|deleted)|changed:?\s*none|^\W*no changes\W*$/im
+
+const DAMAGE_MIN_LINES = 5
+
+/** The lines a report leads with when a Head that did not finish may have damaged its files. */
+const damageLines = (head: { finished: boolean; cwd: string; files: readonly string[]; stats?: Readonly<Record<string, string>>; finalText: string }) => {
+  const lines: string[] = []
+  if (!head.finished) {
+    for (const file of [...new Set(head.files)]) {
+      const relative = relativeTo(head.cwd, file)
+      const lost = LOST_LINES.exec(head.stats?.[relative] ?? '')
+      if (lost && Number(lost[1]) >= DAMAGE_MIN_LINES) lines.push(`⚠ probable damage: ${relative} lost ${lost[1]} lines and gained none (restore: git checkout -- ${relative})`)
+    }
+  }
+  if (head.files.length > 0 && NOTHING_CHANGED.test(head.finalText)) {
+    lines.push(`⚠ the Head says it changed nothing, but files changed: ${[...new Set(head.files)].map(file => relativeTo(head.cwd, file)).join(', ')}`)
+  }
+  return lines
 }
 
 const REPORT_MARKER = '\n--- head report ---'
@@ -544,6 +568,7 @@ export const formatReport = (head: {
 }) => {
   const took = head.startedAt !== undefined && head.endedAt !== undefined ? ` · ${clockOf(head.endedAt - head.startedAt)}` : ''
   const lines = [
+    ...damageLines(head),
     `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}${took}`,
     `session ${head.sessionId ?? 'none'} (${resumeCommand(head.engine ?? DEFAULT_ENGINE)} ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]

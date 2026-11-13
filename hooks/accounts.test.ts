@@ -43,6 +43,7 @@ test('recognises usage and rate limit wording in a CLI failure', async () => {
     'The 5 hour limit reached',
     'Please try again in 20 minutes',
     'usage exceeds frequency limit',
+    'error: Your AI credits balance is too low to continue.',
   ]) expect(isQuotaFailure(text)).toBe(true)
 })
 

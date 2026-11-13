@@ -4,14 +4,16 @@
  */
 import { expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
+import type { HeadRun } from '../types'
 
 import {
   SIGNED_OUT_COOLDOWN_MS, accountsOf, addAccount, cooldownFrom, coolingLines, isModelUnavailable, isQuotaFailure, isSignedOutFailure, readAccountNames, removeAccount,
   rotateAccounts, signedInOf, timeOf,
 } from './lib/accounts'
 import { ENGINES, FALLBACK_ORDER, isModelFor, modelAlternates, modelOn, usagePoolOf } from './lib/engines'
+import { addTokens } from './lib/format'
 import { agyBlockedUntil, parseAgyUsage } from './engines/agy'
-import { fallbackRoutes } from './engines/index'
+import { attemptStart, fallbackRoutes } from './engines/index'
 
 const MIN = 60_000
 const NOW = Date.parse('2026-10-23T06:00:00Z')
@@ -45,7 +47,7 @@ test('each CodeBuddy model and each Antigravity pool is its own usage pool; othe
 })
 
 test('a model cut off moves to a model in another pool on the same engine first', async () => {
-  expect(modelAlternates('agy', 'gemini-4-argon')).toEqual(['claude-sonnet-5-5', 'gemini-3.8-flash'])
+  expect(modelAlternates('agy', 'gemini-4-argon')).toEqual(['claude-sonnet-5-5', 'gemini-4-hydrogen'])
   expect(modelAlternates('agy', 'claude-opus-5-5')).not.toContain('claude-sonnet-5-5')
   expect(modelAlternates('codebuddy', 'deepseek-v4.1-flash')).toEqual(['glm-5.3', 'kimi-k3', 'minimax-m3.1-flash'])
   expect(modelAlternates('codex', 'gpt-6.1-sol')).toEqual([])
@@ -62,7 +64,7 @@ test('picks the model each engine runs when a Head moves to it', async () => {
   expect(modelOn('codex', undefined, 'deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash')).toBe('gpt-6.1-terra')
   expect(modelOn('codebuddy', undefined, 'deepseek/deepseek-v4.1-flash', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
   expect(modelOn('agy', 'gemini-4-argon-high', 'gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash')).toBe('gemini-4-argon')
-  expect(modelOn('agy', 'kimi-k3', 'gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash')).toBe('gemini-3.8-flash')
+  expect(modelOn('agy', 'kimi-k3', 'gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash')).toBe('gemini-4-hydrogen')
   expect(modelOn('commandcode', 'gpt-6.1-sol', 'gpt-6.1-sol', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek/deepseek-v4.1-flash')
 })
 
@@ -83,7 +85,23 @@ test('fallback routes: same-engine models first, then other engines in order, in
   // A lost sign-in is the account's, not the model's: no other model of the same engine.
   expect(fallbackRoutes('codebuddy', { engine: 'codebuddy', model: 'deepseek-v4.1-flash' }, 'signed out', routing)[0]).toEqual({ engine: 'workbuddy', model: 'deepseek-v4.1-flash' })
   const pinned = fallbackRoutes('codex', { engine: 'codex', model: 'gpt-6.1-sol' }, 'quota', { ...routing, pool: ['codex', 'agy'] })
-  expect(pinned).toEqual([{ engine: 'agy', model: 'gemini-3.8-flash' }])
+  expect(pinned).toEqual([{ engine: 'agy', model: 'gemini-4-hydrogen' }])
+})
+
+test('each route records its own usage, so a moved Head adds them up instead of keeping or recounting one', async () => {
+  const run = (extra: Partial<HeadRun>): HeadRun => ({ id: 'a', task: 't', model: 'm', state: 'running', turns: 0, activity: '', cwd: '/p', engine: 'codebuddy', addDirs: [], writeDirs: [], shell: false, ...extra })
+  expect(attemptStart(run({ turns: 3, earlierTurns: 1, tokens: '0 in / 0 out' }))).toEqual({ earlierTurns: 4, turns: 0, tokens: undefined })
+  expect(attemptStart(undefined)).toEqual({ tokens: undefined })
+  // The route that stopped at a limit reported nothing, then the next one reported nothing either: no usage, not a stale zero.
+  let tokens: string | undefined = '0 in / 0 out'
+  const spent = addTokens(undefined, tokens)
+  tokens = attemptStart(run({ tokens })).tokens
+  expect(addTokens(spent, tokens)).toBeUndefined()
+  // A later route that reports no tokens leaves the earlier route's total alone rather than counting it twice.
+  tokens = '12k in / 1.5k out'
+  const earlier = addTokens(undefined, tokens)
+  tokens = attemptStart(run({ tokens })).tokens
+  expect(addTokens(earlier, tokens)).toBe('12k in / 1.5k out')
 })
 
 // ---- Antigravity's own quota report ----
@@ -246,4 +264,19 @@ test('names the engines and pools whose every account is at its limit', async ()
     `codex: every account at its limit until ${timeOf(NOW + 30 * MIN)}`,
   ])
   expect(SIGNED_OUT_COOLDOWN_MS).toBe(10 * MIN)
+})
+
+test('a WorkBuddy model cooling on every account is listed per model, like an Antigravity pool', async () => {
+  const { $ } = withDisk({
+    'accounts-v1': { workbuddy: ['w'] },
+    'cooldowns-v1': {
+      'workbuddy/default#glm-5.3': NOW + 45 * MIN,
+      'workbuddy/w#glm-5.3': NOW + 15 * MIN,
+      // Only one account is cooling for this model, so the other can still run it: no line.
+      'workbuddy/default#kimi-k3': NOW + 60 * MIN,
+    },
+  })
+  expect(await coolingLines($, ['workbuddy'])).toEqual([
+    `workbuddy glm-5.3: every account at its limit until ${timeOf(NOW + 15 * MIN)}`,
+  ])
 })

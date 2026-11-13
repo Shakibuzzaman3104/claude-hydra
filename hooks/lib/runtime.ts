@@ -250,6 +250,8 @@ Rules for this run:
 - Work through tool calls. A reply with text alone ends your turn, so never send one until you are finished or blocked.
 - A denied tool call stays denied: do not retry it or work around it. If the task cannot be done without it, you are blocked.
 - You may have no way to build, run or test here (no shell, no network, a missing toolchain). That is expected, and the Lead verifies your work: never wait for results or ask for them. Finish the code and list what you could not check under "Unverified".
+- Write and change files with your file tools (apply_patch, write or edit), never through shell redirection or here-documents.
+- Do the work yourself: start no subagents, swarms or background agents.
 - Stay inside the task: do not refactor, rename or reformat what it does not name, and never delete code another file still uses.
 - When the work is finished, end with a short report, most important first, and then the line ${DONE_MARK}:
   Done: what now works, in a few lines.
@@ -359,6 +361,7 @@ export const gate = createGate(MAX_PARALLEL)
  */
 export type HeadResult = {
   text: string
+  fullText?: string
   isDone: boolean
   /** What the CLI itself reported as the reason a Head stopped (its error output), not the model's report: the only text `isQuotaFailure` reads. */
   failure?: string

@@ -148,7 +148,7 @@ export const register: Register = (on, options) => {
           resume: { type: 'string', description: 'Name of an ended Head to continue in its own session, on its engine, model and account, with what it already read and did: for feedback on its work, the next step of the same job, or a Head that ran out of turns or time (raise maxTurns or maxMinutes). `task` is then just the follow-up. Cheaper and better informed than a new Head. Not for Antigravity Heads, nor for unrelated work.' },
           cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
           engine: { type: 'string', enum: [...ENGINES], description: 'The engine this Head runs on. Required in auto mode; in a fixed-engine session it defaults to that engine, and naming another ready one sends just this Head there. Pick by the task: see the routing guide in the Hydra policy. If the engine is at its usage limit or signed out, Hydra moves the Head to another model or engine on its own, and the report says where it ran.' },
-          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-terra (default) for coding, including hard or multi-file work, gpt-6.1-sol for work that is not code, gpt-6-luna for mechanical or small tasks. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-3.8-flash (default, bulk), gemini-4-argon (research and search) or claude-sonnet-5-5 (normal work), claude-opus-5-5 (hard work), gpt-oss-120b (simple edits, retiring 2 November 2026); Claude + GPT-OSS, Gemini and Argon draw on separate usage limits. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
+          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-terra (default) for coding, including hard or multi-file work, gpt-6.1-sol for work that is not code, gpt-6-luna for mechanical or small tasks. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-4-hydrogen (default, low to xhigh), gemini-3.8-flash (bulk, cheaper on the shared Gemini pool), gemini-4-argon (research and search) or claude-sonnet-5-5 (normal work), claude-opus-5-5 (hard work), gpt-oss-120b (simple edits, retiring 2 November 2026); Claude + GPT-OSS, Gemini and Argon draw on separate usage limits. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
           files: { type: 'array', items: { type: 'string' }, description: 'The files this Head must create or change, relative to cwd, as the task names them. Hydra measures the Head against them: the band shows files written of files named, and the report flags a named file it never changed and any file it changed beyond them. Leave out for a reading job.' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 100; 200 on Codex and Antigravity, where a turn is one tool call). It stops a runaway Head; a Head that hits it writes a handoff. Raise it for wide reads and audits.' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
@@ -178,6 +178,7 @@ export const register: Register = (on, options) => {
             items: { type: 'object', properties: { task: { type: 'string' }, name: { type: 'string' }, engine: { type: 'string', enum: [...ENGINES] }, model: { type: 'string' }, effort: { type: 'string', enum: [...HEAD_EFFORTS] }, files: { type: 'array', items: { type: 'string' } }, check: { type: 'string' }, checkMinutes: { type: 'number' }, shell: { type: 'boolean' }, cwd: { type: 'string' }, addDirs: { type: 'array', items: { type: 'string' } }, writeDirs: { type: 'array', items: { type: 'string' } }, maxTurns: { type: 'number' }, maxMinutes: { type: 'number' } }, required: ['task'] },
           },
           shared: { type: 'string', description: 'Text put before every Head\'s task: the project, the hard rules, what a finding must be. Write it once here, not in each task.' },
+          cwd: { type: 'string', description: 'Default working folder for Heads that do not set their own cwd.' },
           schema: { type: 'object', description: 'One JSON Schema (root type object, with properties) every Head\'s result must match. Give one whenever you will merge, count or compare the results.' },
           refute: { description: 'true, or { lenses: ["correctness", "edge cases"], fix: true }: after a Head finishes, one Head per lens (at most 3) on another engine tries to break its result and answers holds, broken or unsure. A broken result goes back to its author once (unless fix is false) and is refuted once more. A refuter that fails counts as no verdict, never as broken.' },
           fresh: { type: 'boolean', description: 'Run every Head again, ignoring results saved under this name.' },
@@ -448,7 +449,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: HUNT_TOOL }, async ($, e, next) => {
     const hydra = await readMode($)
     if (!hydra?.isOn) return { deny: 'Hydra is off. The person turns it on with /hydra.' }
-    const parsed = parseHunt(e as Record<string, unknown>)
+    const parsed = parseHunt(e as Record<string, unknown>, await $.session.root())
     if ('deny' in parsed) return { deny: parsed.deny }
     const { plan } = parsed
     if (huntControllers.has(plan.name)) return { deny: `A hunt named "${plan.name}" is still running. Wait for it, stop it with ${CONTROL_TOOL} (id: "${plan.name}"), or pick another name.` }
@@ -472,13 +473,13 @@ export const register: Register = (on, options) => {
     if (e.background === true) {
       huntJobs.push({ plan, launch })
 
-      return { result: `Hunt ${plan.name} started in the background with ${plan.heads.length} Head(s). Its merged result arrives as a message from the hydra plugin when every Head has ended.` }
+      return { result: [`Hunt ${plan.name} started in the background with ${plan.heads.length} Head(s). Its merged result arrives as a message from the hydra plugin when every Head has ended.`, ...(parsed.notes ?? [])].join('\n') }
     }
     const { box, reply } = createReplyBox<string>(next.signal)
     huntJobs.push({ plan, launch, reply })
     const text = await waitForResult(box, next.signal, () => pauseOneSecond($))
 
-    return { result: text ?? `Hunt ${plan.name} keeps running in the background after the call was interrupted; its merged result arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} (id: "${plan.name}") if it is no longer wanted.` }
+    return { result: [text ?? `Hunt ${plan.name} keeps running in the background after the call was interrupted; its merged result arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} (id: "${plan.name}") if it is no longer wanted.`, ...(parsed.notes ?? [])].join('\n') }
   }).catch(($, e, next) => ({ deny: `Hydra: the hunt could not run (${next.error.message ?? next.error.kind}). Run /hydra to check the setup.` }))
 
   on('tool.describe', { tool: CONTROL_TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))

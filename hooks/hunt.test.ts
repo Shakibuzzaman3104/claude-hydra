@@ -5,6 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { DEFAULT_LENS, HUNT_MAX_HEADS, VERDICT_SCHEMA, fixTask, formatHunt, headKey, parseHunt, refuteTask, runHunt, statusOf, verdictOf } from './lib/hunt'
+import { untilStopped } from './lib/launch'
 import type { HeadCall, HeadOutcome, HeadRan, HuntPlan, HuntSteps } from './lib/hunt'
 
 const ran = (extra: Partial<HeadRan> = {}): HeadRan => ({ engine: 'author', isDone: true, files: [], summary: 'done', isResumable: true, ...extra })
@@ -50,6 +51,16 @@ test('the parser copies usable fields and handles refute and fresh', async () =>
   expect(parseHunt({ name: 'x', heads: [{ task: 'x' }], refute: 1 })).toEqual({ deny: '`refute` must be true or { lenses, fix }.' })
   expect(parseHunt({ name: 'x', heads: [{ task: 'x' }], refute: { lenses: ['a', 'b', 'c', 'd'] } })).toEqual({ deny: '`refute.lenses` takes at most 3.' })
   expect(parseHunt({ name: 'x', heads: [{ task: 'x' }], schema: 2 })).toEqual({ deny: '`schema`: schema must be an object.' })
+})
+
+test('hunt cwd defaults Heads and root folders are refused before launch', async () => {
+  expect(parseHunt({ name: 'x', heads: [{ task: 'a' }, { task: 'b', cwd: '/repo' }] }, '/')).toEqual({ deny: 'Heads x-1: / is the root of the disk; pass a project folder in cwd.' })
+  expect(parseHunt({ name: 'x', cwd: '/repo', heads: [{ task: 'a' }, { task: 'b', cwd: '/other' }] }, '/')).toMatchObject({ plan: { heads: [{ cwd: '/repo' }, { cwd: '/other' }] } })
+})
+
+test('paths outside all Head folders produce notes', async () => {
+  const result = parseHunt({ name: 'x', shared: 'Read /brief/spec.md and /repo/a', heads: [{ task: 'See /assets/icon.png', addDirs: ['/assets'] }] }, '/repo')
+  expect(result).toMatchObject({ notes: ["note: /brief/spec.md is outside every Head's folders; pass it in addDirs to let them read it"] })
 })
 
 test('job keys are stable and include the task context schema and engine', async () => {
@@ -114,6 +125,17 @@ test('failures are isolated and only done results are saved', async () => {
   expect(f.saved.length).toBe(1)
 })
 
+test('a stopped silent Head does not hold up the hunt', async () => {
+  const controller = new AbortController()
+  const f = fake(plan())
+  f.steps.runHead = () => untilStopped(() => new Promise<HeadRan>(() => {}), controller.signal)
+  const pending = runHunt(f.steps)
+  controller.abort()
+  const result = await pending
+  expect(result.missing).toEqual(['one'])
+  expect(result.outcomes[0]?.status).toBe('failed')
+})
+
 test('cache hits skip calls while fresh and broken entries run again', async () => {
   const p = plan()
   const key = headKey(p, p.heads[0]!)
@@ -171,6 +193,36 @@ test('the formatter reports counts data errors and review findings', async () =>
   expect(text).toContain('no usable JSON: bad\nreport')
   expect(text).toContain('⚠ a refuter changed files though told not to: oops')
   expect(text).toContain('open problems:\n- [high] a:2: wrong')
+})
+
+test('a fallback route carries into the merged result', async () => {
+  const fallback = 'codebuddy glm-5.3 (usage limit) → commandcode glm-5.3'
+  const f = fake(plan(), { one: ran({ engine: 'commandcode', model: 'glm-5.3', fallback }) })
+  const result = await runHunt(f.steps)
+  expect(result.outcomes[0]?.fallback).toBe(fallback)
+  expect(formatHunt(result)).toContain(`  fallback: ${fallback}`)
+})
+
+test('a moved Head shows what it was asked for and why it moved', async () => {
+  const text = formatHunt({
+    name: 'x',
+    outcomes: [outcome({ engine: 'commandcode', model: 'glm-5.3', cost: '$0.0123', fallback: 'codebuddy glm-5.3 (usage limit) → commandcode glm-5.3' })],
+    missing: [],
+  })
+  expect(text).toContain('  asked: codebuddy · glm-5.3')
+  expect(text).toContain('  fallback: codebuddy glm-5.3 (usage limit) → commandcode glm-5.3')
+  expect(text).toContain('· $0.0123')
+  const model = formatHunt({ name: 'x', outcomes: [outcome({ engine: 'codebuddy', model: 'glm-5.3', fallback: 'codebuddy deepseek-v4.1-flash (usage limit) → codebuddy glm-5.3' })], missing: [] })
+  expect(model).toContain('  asked: codebuddy · deepseek-v4.1-flash')
+  // A Head asked for an engine only: its model was Hydra's pick, so the asked line names no model.
+  const engineOnly = formatHunt({ name: 'x', outcomes: [outcome({ engine: 'commandcode', model: 'glm-5.3', fallback: 'codebuddy deepseek-v4.1-flash (usage limit) → commandcode glm-5.3', asked: { engine: 'codebuddy' } })], missing: [] })
+  expect(engineOnly).toContain('  asked: codebuddy\n')
+})
+
+test('a Head that stayed where it started shows no asked line', async () => {
+  const text = formatHunt({ name: 'x', outcomes: [outcome({ engine: 'codebuddy', model: 'glm-5.3', fallback: 'codebuddy glm-5.3 (usage limit) (no other engine or model is free)' })], missing: [] })
+  expect(text).toContain('  fallback: codebuddy glm-5.3 (usage limit) (no other engine or model is free)')
+  expect(text).not.toContain('asked:')
 })
 
 test('long formatted results fit and point to the full report', async () => {

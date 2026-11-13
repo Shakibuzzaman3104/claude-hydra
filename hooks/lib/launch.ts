@@ -10,7 +10,7 @@ import { withSummary } from './check'
 import { isHeadEffort } from './effort'
 import { ENGINE_LABEL, engineOf, headModelFor, isAuto, isEngine, isModelFor, modelAlternates, poolOf, resolveHeadEngine } from './engines'
 import type { Engine, Routing } from './engines'
-import { RESUMABLE, headName, relativeTo, resumeTarget, strings } from './format'
+import { RESUMABLE, clipReport, headName, relativeTo, resumeTarget, strings } from './format'
 import { formatHunt, runHunt } from './hunt'
 import type { HeadCall, HeadOutcome, HeadRan, HuntPlan } from './hunt'
 import { homeOf } from './platform'
@@ -91,6 +91,9 @@ export const checkOf = (report: string): 'passed' | 'failed' | 'unknown' | undef
   return /^check: .* \? UNKNOWN/m.test(summary) ? 'unknown' : undefined
 }
 
+/** The route trail a moved Head's report starts with, after the `fallback:` label; never a line from the Head's own text. */
+export const fallbackOf = (report: string) => /^fallback: (.+)$/m.exec(report.split(REPORT_MARK)[0]!)?.[1]
+
 export const JSON_FIX_ROUNDS = 2
 
 export type Structured = { result: HeadResult; data?: unknown; dataErrors?: string[]; check?: 'passed' | 'failed' | 'unknown' }
@@ -115,35 +118,50 @@ export async function readStructured(steps: ReplySteps): Promise<Structured> {
   let result = await steps.first()
   const check = checkOf(result.text)
   if (!result.isDone) return { result, check }
-  let reply = readReply(steps.schema, headText(result.text))
+  let reply = readReply(steps.schema, result.fullText ?? headText(result.text))
   for (let round = 1; round <= JSON_FIX_ROUNDS && 'errors' in reply && !steps.isAborted(); round++) {
     const session = result.session && RESUMABLE.has(result.session.engine) ? result.session : undefined
     const files: string[] = result.files ?? []
     if (!session && files.length > 0) break
-    const next = await steps.again(round, schemaFixNote(reply.errors), session, files)
+    let next: HeadResult
+    try { next = await steps.again(round, schemaFixNote(reply.errors), session, files) } catch { break }
     if (!next.isDone) break
     result = { ...next, files: [...new Set([...files, ...(next.files ?? [])])] }
-    reply = readReply(steps.schema, headText(next.text))
+    reply = readReply(steps.schema, next.fullText ?? headText(next.text))
   }
   const errors = 'errors' in reply ? reply.errors : undefined
 
   return { result: { ...result, text: withSummary(result.text, [jsonLine(errors)]) }, check, ...(errors ? { dataErrors: errors } : { data: (reply as { data: unknown }).data }) }
 }
 
+/** Settles even when a stopped engine never returns. */
+export async function untilStopped<T>(run: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new Error('stopped')
+  let stop: () => void = () => {}
+  const stopped = new Promise<never>((_, reject) => { stop = () => reject(new Error('stopped')); signal.addEventListener('abort', stop, { once: true }) })
+  try { return await Promise.race([run(), stopped]) } finally { signal.removeEventListener('abort', stop) }
+}
+
 /** Runs a Head and, given a `schema`, the rounds that get its JSON result (`readStructured`). */
-export async function runStructured($: EngineInterface, prepared: Prepared, signal: AbortSignal, schema?: Schema): Promise<Structured> {
+export async function runStructured($: EngineInterface, prepared: Prepared, signal: AbortSignal, schema?: Schema, reportDir?: string): Promise<Structured> {
   const { headModel, id, engine, routing } = prepared
+  const home = reportDir ? undefined : await homeOf($)
+  const dir = reportDir ?? (home ? `${home}/.claude/hydra/heads/${await $.session.id()}` : undefined)
+  const save = async (result: HeadResult, name: string) => {
+    if (!dir) return result
+    return saveHeadReport($, result, `${dir}/${name}.md`)
+  }
   if (!schema) {
-    const result = await runHead($, prepared.input, headModel, signal, id, engine, routing)
+    const result = await save(await untilStopped(() => runHead($, prepared.input, headModel, signal, id, engine, routing), signal), id)
 
     return { result, check: checkOf(result.text) }
   }
   const task = String(prepared.input.task ?? '')
   const base = { ...prepared.input, task: task + schemaNote(schema) }
 
-  return readStructured({
+  const structured = await readStructured({
     schema,
-    first: () => runHead($, base, headModel, signal, id, engine, routing),
+    first: async () => save(await untilStopped(() => runHead($, base, headModel, signal, id, engine, routing), signal), id),
     again: async (round, note, session, files) => {
       const fixId = headName(`${id.slice(0, 14)}-json${round > 1 ? round : ''}`, task, new Set([...usedNames, ...(await readRuns($)).map(run => run.id)]))
       usedNames.add(fixId)
@@ -151,10 +169,34 @@ export async function runStructured($: EngineInterface, prepared: Prepared, sign
         ? { ...base, task: note, check: undefined, files: undefined, model: session.model, resumeSession: session, resumeFiles: files }
         : { ...base, task: `${base.task}\n\nAn earlier attempt at this task ended without a usable result. ${note}`, check: undefined }
 
-      return runHead($, input, session?.model ?? headModel, signal, fixId, session?.engine ?? engine, routing)
+      const controller = new AbortController()
+      const stop = () => controller.abort(signal.reason)
+      if (signal.aborted) stop()
+      else signal.addEventListener('abort', stop, { once: true })
+      controllers.set(fixId, controller)
+      try { return await save(await untilStopped(() => runHead($, input, session?.model ?? headModel, controller.signal, fixId, session?.engine ?? engine, routing), controller.signal), fixId) }
+      finally { controllers.delete(fixId); signal.removeEventListener('abort', stop) }
     },
     isAborted: () => signal.aborted,
   })
+  return { ...structured, result: await save(structured.result, id) }
+}
+
+/** Saves the complete report and adds its location to a clipped copy. */
+export async function saveHeadReport($: Pick<EngineInterface, 'fs'>, result: HeadResult, path: string): Promise<HeadResult> {
+  const marker = result.text.indexOf(REPORT_MARK)
+  const start = marker + REPORT_MARK.length
+  const plain = result.fullText === undefined ? undefined : clipReport(result.fullText) || '(no final report)'
+  const named = result.fullText && result.fullText.trim().length > 8000 ? /^.{5000}\n\[… \d+ characters cut by Hydra; the full report is at [^\n]* …\]\n[\s\S]{3000}/s.exec(result.text.slice(start))?.[0] : undefined
+  const clipped = named ?? plain
+  const found = clipped !== undefined && marker >= 0 && result.text.slice(start, start + clipped.length) === clipped
+  const full = found ? result.text.slice(0, start) + (result.fullText!.trim() || '(no final report)') + result.text.slice(start + clipped.length) : result.text
+  try {
+    await $.fs.write(path, full)
+  } catch {
+    return result
+  }
+  return found ? { ...result, text: result.text.slice(0, start) + (clipReport(result.fullText!, path) || '(no final report)') + result.text.slice(start + clipped.length) } : result
 }
 
 /** Who refutes best first: a wide reader, then the cheap coders; the costly engine and the one with no search come last. */
@@ -233,7 +275,7 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
       controllers.set(prepared.id, controller)
       let structured: Structured
       try {
-        structured = await runStructured($, prepared, controller.signal, schema)
+        structured = await runStructured($, prepared, controller.signal, schema, dir)
       } finally {
         controllers.delete(prepared.id)
         signal.removeEventListener('abort', stop)
@@ -242,12 +284,15 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
       const { result } = structured
       const cwd = typeof prepared.input.cwd === 'string' && prepared.input.cwd ? prepared.input.cwd : await $.session.root()
       const reportPath = dir ? `${dir}/${prepared.id}.md` : undefined
-      if (reportPath) await $.fs.write(reportPath, result.text).catch(() => undefined)
       const run = (await readRuns($)).find(entry => entry.id === prepared.id)
       if (!REFUTER_NAME.test(call.name) && !resume) authors.set(call.name, { engine: run?.engine ?? prepared.engine, ...(run?.model ? { model: run.model } : {}) })
       const canContinue = result.session !== undefined && RESUMABLE.has(result.session.engine)
       if (!asked.has(call.name)) asked.set(call.name, { call, canContinue })
-      const cost = run?.tokens ?? (typeof run?.costUsd === 'number' && run.costUsd > 0 ? `$${run.costUsd.toFixed(4)}` : undefined)
+      const usd = typeof run?.costUsd === 'number' && run.costUsd > 0 ? `$${run.costUsd.toFixed(4)}` : undefined
+      const cost = run?.tokens ? (usd ? `${run.tokens} · ${usd}` : run.tokens) : usd
+      const fallback = fallbackOf(result.text)
+      // What the Lead named, not what Hydra picked for it: the fallback line shows the route it actually started on.
+      const askedFor = { engine: typeof head.engine === 'string' && head.engine ? head.engine : prepared.engine, ...(typeof head.model === 'string' && head.model ? { model: head.model } : {}) }
 
       return {
         engine: run?.engine ?? prepared.engine,
@@ -261,6 +306,8 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
         ...(structured.dataErrors ? { dataErrors: structured.dataErrors } : {}),
         ...(reportPath ? { reportPath } : {}),
         ...(cost ? { cost } : {}),
+        ...(fallback ? { fallback } : {}),
+        ...(fallback ? { asked: askedFor } : {}),
         // A Head that changed nothing can always be asked again: from its session, or from the start.
         isResumable: canContinue || (result.files ?? []).length === 0,
       }
@@ -297,10 +344,12 @@ export async function sweepHunts($: EngineInterface) {
   }
   const home = await homeOf($)
   if (!home) return
-  const folder = `${home}/.claude/hydra/hunts`
-  const entries = await $.fs.list(folder).catch(() => [])
-  const old = entries.filter(entry => entry.kind === 'dir' && /^[A-Za-z0-9-]+$/.test(entry.name) && entry.name !== own.slice(HUNT_STORE.length, -1) && now - entry.mtimeMs > HUNT_KEEP_MS)
-  if (old.length > 0) await $.process.run(['/bin/rm', '-rf', ...old.map(entry => `${folder}/${entry.name}`)]).catch(() => undefined)
+  for (const kind of ['hunts', 'heads']) {
+    const folder = `${home}/.claude/hydra/${kind}`
+    const entries = await $.fs.list(folder).catch(() => [])
+    const old = entries.filter(entry => entry.kind === 'dir' && (kind === 'hunts' ? /^[A-Za-z0-9-]+$/ : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).test(entry.name) && entry.name !== own.slice(HUNT_STORE.length, -1) && now - entry.mtimeMs > HUNT_KEEP_MS)
+    if (old.length > 0) await $.process.run(['/bin/rm', '-rf', ...old.map(entry => `${folder}/${entry.name}`)]).catch(() => undefined)
+  }
 }
 
 export const REPORT_HUNT = /^Hydra Hunt (\S+) finished/

@@ -174,7 +174,7 @@ export const timeOf = (ms: number) => {
 const QUOTA_WORDING = [
   /rate[\s_-]?limit/i, /usage[\s_-]?limit/i, /\bquota\b/i, /too many requests/i, /\b429\b/, /insufficient_quota/i,
   /exceeded your current/i, /limit reached/i, /out of credits/i, /credits? (?:are |is |have been )?exhausted/i, /try again in/i, /resource_exhausted/i,
-  /provider\.(?:rate-limit|quota)/i, /insufficient[\s_-]?credits/i, /credits?[\s_-]exhausted/i, /frequency[\s_-]?limit/i,
+  /provider\.(?:rate-limit|quota)/i, /insufficient[\s_-]?credits/i, /credits?[\s_-]exhausted/i, /frequency[\s_-]?limit/i, /credits? balance is too low/i,
 ]
 
 /**
