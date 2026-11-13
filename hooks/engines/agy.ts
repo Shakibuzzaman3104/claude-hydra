@@ -497,5 +497,5 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
     writeDirs: head.writeDirs, engine: 'agy', tokens,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone, failure: isDone ? undefined : round.errors, files, ending }
+  return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending }
 }

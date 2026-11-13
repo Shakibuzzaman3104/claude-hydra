@@ -120,8 +120,9 @@ const tomlString = (value: string) => JSON.stringify(value)
  * not matter.
  *
  * A project that is the home folder itself, or holds it, cannot have its home denied; `homeHeadRefusal` stops those first.
+ * `extraRead` holds folders the Head needs only to read, such as a linked worktree's git folders.
  */
-export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRead: readonly string[] = [], tempDir = '') => {
+export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRead: readonly string[] = [], tempDir = '', extraRead: readonly string[] = []) => {
   const homeDir = home ? trimSlash(home) : ''
   const isSecret = (dir: string) => {
     const rel = homeDir ? homeRelative(dir, homeDir) : undefined
@@ -129,12 +130,14 @@ export const codexFilesystem = (cwd: string, head: HeadNeeds, home = '', homeRea
   }
   const writable = [cwd, ...(head.writeDirs ?? [])].map(trimSlash).filter(dir => dir === trimSlash(cwd) || !isSecret(dir))
   const readable = head.addDirs.map(trimSlash).filter(dir => !isSecret(dir) && !writable.some(root => isWithin(dir, root)))
-  const roots = union(writable, readable)
+  const readOnly = extraRead.map(trimSlash).filter(dir => dir !== '' && !isSecret(dir) && !writable.some(root => isWithin(dir, root)))
+  const roots = union(union(writable, readable), readOnly)
   const isHomeClosed = homeDir !== '' && !writable.some(dir => isWithin(homeDir, dir))
   const entries: [string, string][] = [
     ['/', 'read'],
     ...(isHomeClosed ? [[homeDir, 'none'] as [string, string], ...homeRead.map((dir): [string, string] => [`${homeDir}/${dir}`, 'read'])] : []),
     ...readable.map((dir): [string, string] => [dir, 'read']),
+    ...readOnly.map((dir): [string, string] => [dir, 'read']),
     ...writable.map((dir): [string, string] => [dir, 'write']),
     ...(tempDir ? [[trimSlash(tempDir), 'write'] as [string, string]] : []),
     ...roots.flatMap((dir): [string, string][] => [[`${dir}/**/.env`, 'none'], [`${dir}/**/.env.*`, 'none']]),
@@ -231,6 +234,30 @@ async function gitReadDirs($: EngineInterface, cwd: string, home: string): Promi
   return dirs.filter(dir => !isWithin(dir, cwd) && !(home && isWithin(home, dir)))
 }
 
+/** A path made absolute against `base`, with `.` and `..` folded in. */
+const absolutePath = (base: string, path: string) => {
+  const parts = (path.startsWith('/') ? path : `${trimSlash(base)}/${path}`).split('/')
+  const out: string[] = []
+  for (const part of parts) {
+    if (part === '' || part === '.') continue
+    if (part === '..') out.pop()
+    else out.push(part)
+  }
+  return `/${out.join('/')}`
+}
+
+/**
+ * The git folders of a linked worktree, which Codex's sandbox must read: `<cwd>/.git` is a file naming its gitdir, and
+ * the gitdir's `commondir` names the shared `.git` folder (usually `../..`). Empty for a normal checkout.
+ */
+export async function worktreeGitDirs($: EngineInterface, cwd: string): Promise<string[]> {
+  const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(await $.fs.read(`${trimSlash(cwd)}/.git`).catch(() => ''))?.[1]
+  if (!gitdir) return []
+  const resolved = absolutePath(cwd, gitdir)
+  const common = (await $.fs.read(`${resolved}/commondir`).catch(() => '')).trim()
+  return common ? [resolved, absolutePath(resolved, common)] : [resolved]
+}
+
 /** How Codex refuses a model the person's ChatGPT plan does not include. */
 export const CODEX_PLAN_REFUSAL = /not supported when using Codex with a ChatGPT account/i
 
@@ -278,8 +305,9 @@ export async function sweepCodexTemps($: EngineInterface) {
 /**
  * A Codex Head's environment: the person's own for the engine, and `TMPDIR` at the Head's private folder. macOS's
  * `/usr/bin/git` is an xcrun shim that needs a writable temp folder, and the sandbox writes nowhere else in `/tmp`.
+ * zsh puts here-documents under `TMPPREFIX` (default `/tmp/zsh`), not `TMPDIR`, so that points there too.
  */
-export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => ({ ...env, TMPDIR: `${tempDir}/` })
+export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => ({ ...env, TMPDIR: `${tempDir}/`, TMPPREFIX: `${tempDir}/zsh` })
 
 /** The top-level `openai_base_url` of a Codex config (an API-key gateway), which `--ignore-user-config` would drop. */
 export const codexBaseUrl = (config: string) => /^[ \t]*openai_base_url[ \t]*=[ \t]*"([^"]+)"/m.exec(config.split(/^[ \t]*\[/m)[0] ?? '')?.[1]
@@ -305,8 +333,9 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
   const repoDirs = await gitReadDirs($, realCwd!, realHome)
+  const worktreeDirs = await worktreeGitDirs($, realCwd!)
   const tempDir = await makeCodexTemp($, id)
-  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead, tempDir)
+  const filesystem = codexFilesystem(realCwd!, { addDirs: union(await realPaths($, head.addDirs), repoDirs), writeDirs, shell: true, guarded: head.guarded }, realHome, homeRead, tempDir, worktreeDirs)
   const baseUrl = codexBaseUrl(await $.fs.read(`${head.env?.CODEX_HOME ?? `${realHome}/.codex`}/config.toml`).catch(() => ''))
   try {
     return await runCodexRounds($, head, filesystem, baseUrl, tempDir, outer, id)
@@ -381,5 +410,5 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
     writeDirs: head.writeDirs, engine: 'codex', tokens, warnings, startedAt, endedAt,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
+  return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
 }

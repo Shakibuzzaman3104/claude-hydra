@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0 — 2026-11-13
+- **Antigravity Heads run Gemini 4 Hydrogen by default.** `gemini-4-hydrogen` replaces `gemini-3.8-flash` as the default model and is the first Antigravity model with `xhigh`: `xhigh` and `max` run as `gemini-4-hydrogen-xhigh`, so a failed check can climb one more level. Flash stays available for bulk work, where it spends far less of the Gemini pool the two share. Models without `xhigh` still run `xhigh` and `max` at `high`. When the Gemini pool is spent, a Hydrogen Head moves to Argon, then Claude Sonnet.
+- Antigravity's "Your AI credits balance is too low" now counts as a usage limit, so the Head moves on instead of failing.
+- **Codex Heads can write with here-documents.** zsh puts a here-document's temp file under `TMPPREFIX` (default `/tmp/zsh`), which the sandbox denies, so `cat <<EOF > file` failed and could leave the target empty. Codex Heads now get `TMPPREFIX` inside their private temp folder, next to `TMPDIR`.
+- Heads are told to write files with their file tools, never shell redirection or here-documents, and to start no subagents or swarms (Antigravity 1.5 has both).
+- **JSON results and reports are read whole.** A Head's JSON is parsed from its uncut reply, so a long result no longer fails as `Unterminated string` after Hydra clipped it. Every Head, single ones included, saves its full report (`~/.claude/hydra/heads/<session>/<head>.md`, or the hunt folder), and a clipped report names that file. Old report folders are swept after a week.
+- **A hunt always delivers.** A Head that is stopped, or whose run never settles, ends the hunt's wait for it; a JSON retry that fails or is stopped keeps the first reply and its errors. Hunts take a default `cwd`, refuse up front a Head whose folder would be `/`, and note any absolute path in the brief that no Head can read.
+- **The hunt block says where a Head really ran.** A moved Head shows `asked:` and its `fallback:` trail, and its tokens add up every route it ran on instead of `0 in / 0 out`.
+- **Probable damage is flagged.** A Head that did not finish and left a file with lines removed and none added gets a warning with the restore command at the top of its report, and so does any Head that says it changed nothing while files changed.
+
 ## 2.1.1 — 2026-11-11
 - **A waved-off keyword comes back when you type it again.** After backspace or Option+W turned `rampage` or `chimera` off for a draft, retyping a letter of the word, typing or pasting another keyword, or recalling a different prompt lights it again. Before, the whole draft had to be deleted. Deleting text never brings it back by accident.
 - A hunt's merged result now says why a Head did not run (for example a session opened at `/` with no `cwd` given) instead of "(no final report)".

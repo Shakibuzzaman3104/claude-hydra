@@ -17,8 +17,10 @@ export type Problem = { file?: string; line?: number; problem: string; severity:
 export type Verdict = 'holds' | 'broken' | 'unsure' | 'none'
 export type HeadStatus = 'done' | 'blocked' | 'unfinished' | 'failed' | 'invalid'
 export type HeadCall = HuntHead & { schema?: Schema; resume?: string }
-export type HeadRan = { engine: string; model?: string; isDone: boolean; ending?: string; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; isResumable: boolean }
-export type HeadOutcome = { name: string; engine: string; model?: string; status: HeadStatus; isCached: boolean; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; refute?: { verdict: Verdict; by: string[]; problems: Problem[]; fixRounds: number; edited: string[] } }
+/** What a Head was asked to run on, before Hydra moved it. */
+export type HeadAsked = { engine: string; model?: string }
+export type HeadRan = { engine: string; model?: string; isDone: boolean; ending?: string; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; isResumable: boolean }
+export type HeadOutcome = { name: string; engine: string; model?: string; status: HeadStatus; isCached: boolean; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; refute?: { verdict: Verdict; by: string[]; problems: Problem[]; fixRounds: number; edited: string[] } }
 export type HuntResult = { name: string; outcomes: HeadOutcome[]; missing: string[] }
 export type HuntSteps = { plan: HuntPlan; cache: Readonly<Record<string, HeadOutcome>>; runHead: (call: HeadCall) => Promise<HeadRan>; refuterEngine: (author: string, index: number) => string | undefined; save: (key: string, outcome: HeadOutcome) => Promise<void>; isAborted: () => boolean }
 
@@ -26,7 +28,7 @@ const object = (value: unknown): value is Record<string, unknown> => typeof valu
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean) : []
 const slug = (value: string, max: number) => value.length <= max && /^[a-z0-9][a-z0-9-]*$/.test(value)
 
-export const parseHunt = (input: Readonly<Record<string, unknown>>): { plan: HuntPlan } | { deny: string } => {
+export const parseHunt = (input: Readonly<Record<string, unknown>>, root?: string): { plan: HuntPlan; notes?: string[] } | { deny: string } => {
   const name = typeof input.name === 'string' ? input.name.trim().toLowerCase() : ''
   if (!slug(name, 30)) return { deny: 'A hunt needs a `name`: lowercase letters, digits and dashes, up to 30 (it names the Heads and the cache).' }
   if (Array.isArray(input.heads) && input.heads.length > HUNT_MAX_HEADS) return { deny: `A hunt takes at most ${HUNT_MAX_HEADS} Heads; split it into two hunts.` }
@@ -42,9 +44,17 @@ export const parseHunt = (input: Readonly<Record<string, unknown>>): { plan: Hun
     for (const key of ['engine', 'model', 'effort', 'check', 'cwd'] as const) if (typeof entry[key] === 'string' && entry[key].trim()) head[key] = entry[key].trim()
     for (const key of ['files', 'addDirs', 'writeDirs'] as const) { const values = strings(entry[key]); if (values.length) head[key] = values }
     for (const key of ['checkMinutes', 'maxTurns', 'maxMinutes'] as const) { const value = entry[key]; if (typeof value === 'number' && Number.isFinite(value) && value > 0) head[key] = value }
+    if (!head.cwd && typeof input.cwd === 'string' && input.cwd.trim()) head.cwd = input.cwd.trim()
     if (entry.shell === true) head.shell = true
     heads.push(head)
   }
+  const normalize = (path: string) => '/' + path.split('/').reduce<string[]>((parts, part) => { if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part); return parts }, []).join('/')
+  const absolute = (path: string, base: string) => normalize(path.startsWith('/') ? path : `${base}/${path}`)
+  const rootHeads = heads.filter(head => (head.cwd || root) && absolute(head.cwd || root!, root || '/') === '/')
+  if (rootHeads.length) return { deny: `Heads ${rootHeads.map(head => head.name).join(', ')}: / is the root of the disk; pass a project folder in cwd.` }
+  const folders = heads.flatMap(head => { const cwd = absolute(head.cwd || root || '/', root || '/'); return [cwd, ...(head.addDirs ?? []).map(dir => absolute(dir, cwd)), ...(head.writeDirs ?? []).map(dir => absolute(dir, cwd))] })
+  const paths = `${typeof input.shared === 'string' ? input.shared : ''}\n${heads.map(head => head.task).join('\n')}`.match(/(?:^|[\s`"'(])\/(?!\/)[^\s`"'(),;:]+/g) ?? []
+  const notes = [...new Set(paths.map(path => path.trim().replace(/^[`"'(]/, '').replace(/[.!?]+$/, '')).filter(path => !folders.some(folder => folder === '/' || normalize(path) === folder || normalize(path).startsWith(`${folder}/`))))].map(path => `note: ${path} is outside every Head's folders; pass it in addDirs to let them read it`)
   let schema: Schema | undefined
   if (input.schema !== undefined && input.schema !== null) {
     const problem = schemaProblem(input.schema)
@@ -58,7 +68,7 @@ export const parseHunt = (input: Readonly<Record<string, unknown>>): { plan: Hun
     if (lenses.length > HUNT_MAX_LENSES) return { deny: `\`refute.lenses\` takes at most ${HUNT_MAX_LENSES}.` }
     refute = { lenses: lenses.length ? lenses : [DEFAULT_LENS], fix: input.refute.fix !== false }
   } else if (input.refute !== undefined && input.refute !== null && input.refute !== false) return { deny: '`refute` must be true or { lenses, fix }.' }
-  return { plan: { name, shared: typeof input.shared === 'string' ? input.shared.trim() : '', ...(schema !== undefined ? { schema } : {}), heads, ...(refute ? { refute } : {}), fresh: input.fresh === true } }
+  return { plan: { name, shared: typeof input.shared === 'string' ? input.shared.trim() : '', ...(schema !== undefined ? { schema } : {}), heads, ...(refute ? { refute } : {}), fresh: input.fresh === true }, ...(notes.length ? { notes } : {}) }
 }
 
 export const headKey = (plan: HuntPlan, head: HuntHead): string => {
@@ -106,7 +116,7 @@ export const verdictOf = (answers: readonly unknown[]): { verdict: Verdict; prob
 }
 
 const union = (a: string[], b: string[]) => [...new Set([...a, ...b])]
-const outcomeOf = (name: string, ran: HeadRan, hasSchema: boolean): HeadOutcome => ({ name, engine: ran.engine, ...(ran.model !== undefined ? { model: ran.model } : {}), status: statusOf(ran, hasSchema), isCached: false, ...(ran.check !== undefined ? { check: ran.check } : {}), files: ran.files, summary: ran.summary, ...(ran.data !== undefined ? { data: ran.data } : {}), ...(ran.dataErrors !== undefined ? { dataErrors: ran.dataErrors } : {}), ...(ran.reportPath !== undefined ? { reportPath: ran.reportPath } : {}), ...(ran.cost !== undefined ? { cost: ran.cost } : {}) })
+const outcomeOf = (name: string, ran: HeadRan, hasSchema: boolean): HeadOutcome => ({ name, engine: ran.engine, ...(ran.model !== undefined ? { model: ran.model } : {}), status: statusOf(ran, hasSchema), isCached: false, ...(ran.check !== undefined ? { check: ran.check } : {}), files: ran.files, summary: ran.summary, ...(ran.data !== undefined ? { data: ran.data } : {}), ...(ran.dataErrors !== undefined ? { dataErrors: ran.dataErrors } : {}), ...(ran.reportPath !== undefined ? { reportPath: ran.reportPath } : {}), ...(ran.cost !== undefined ? { cost: ran.cost } : {}), ...(ran.fallback !== undefined ? { fallback: ran.fallback } : {}), ...(ran.asked !== undefined ? { asked: ran.asked } : {}) })
 
 export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
   const { plan } = steps
@@ -140,6 +150,9 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
             updated.engine = ran.engine
             if (ran.model !== undefined) updated.model = ran.model
             else delete updated.model
+            // The fix continues the author's session, so the route that moved it is the author's too.
+            if (ran.fallback !== undefined) updated.fallback = ran.fallback
+            if (ran.asked !== undefined) updated.asked = ran.asked
             updated.files = union(ran.files, fixed.files)
             if (ran.cost !== undefined && fixed.cost !== undefined) updated.cost = `${ran.cost} + ${fixed.cost}`
             else if (ran.cost !== undefined) updated.cost = ran.cost
@@ -156,6 +169,13 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
   return { name: plan.name, outcomes, missing: outcomes.filter(outcome => outcome.status !== 'done').map(outcome => outcome.name) }
 }
 
+/** The engine and model a Head started on, read from the first route of its `fallback:` trail (`engine model (why) → …`). */
+const askedOf = (fallback: string) => {
+  const first = fallback.split(' → ')[0]!.replace(/\s*\(.*\)$/, '').trim()
+  const [engine, ...model] = first.split(/\s+/)
+  return engine ? { engine, model: model.join(' ') || undefined } : undefined
+}
+
 export const formatHunt = (result: HuntResult, limit = 14000): string => {
   const done = result.outcomes.filter(outcome => outcome.status === 'done').length
   const cached = result.outcomes.filter(outcome => outcome.isCached).length
@@ -165,6 +185,11 @@ export const formatHunt = (result: HuntResult, limit = 14000): string => {
   const blocks = result.outcomes.map(outcome => {
     const refute = outcome.refute
     const lines = [`## ${outcome.name} · ${outcome.engine || 'no engine'} · ${outcome.status}${outcome.isCached ? ' (cached)' : ''}${outcome.check ? ` · check ${outcome.check}` : ''}${refute ? ` · refute: ${refute.verdict}${refute.by.length ? ` by ${refute.by.join(', ')}` : ''}${refute.fixRounds ? ' after a fix' : ''}` : ''}${outcome.cost ? ` · ${outcome.cost}` : ''}`]
+    if (outcome.fallback) {
+      const asked = outcome.asked ?? askedOf(outcome.fallback)
+      if (asked && (asked.engine !== outcome.engine || (asked.model !== undefined && asked.model !== outcome.model))) lines.push(`  asked: ${asked.engine}${asked.model !== undefined ? ` · ${asked.model}` : ''}`)
+      lines.push(`  fallback: ${outcome.fallback}`)
+    }
     if (outcome.files.length) lines.push(`edited: ${outcome.files.slice(0, 12).join(', ')}${outcome.files.length > 12 ? ` and ${outcome.files.length - 12} more` : ''}`)
     if (refute?.edited.length) lines.push(`⚠ a refuter changed files though told not to: ${refute.edited.join(', ')}`)
     if (refute?.problems.length) lines.push('open problems:', ...refute.problems.map(p => `- [${p.severity}] ${p.file ? `${p.file}${p.line ? `:${p.line}` : ''}: ` : ''}${p.problem}`))
