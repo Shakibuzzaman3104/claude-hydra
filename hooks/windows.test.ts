@@ -37,6 +37,11 @@ const windows = (files: Record<string, string> = {}, python = true) => {
         runs.push(argv)
         if (argv.includes('--version')) return python ? { exitCode: 0, stdout: 'Python 3.12.0\n', stderr: '' } : { exitCode: 9009, stdout: '', stderr: '' }
         if (argv[0] === 'git') return { exitCode: 0, stdout: 'C:/Users/me/app/.git/info/exclude\n', stderr: '' }
+        if (argv.includes('-c') && argv.some(arg => arg.includes('os.replace'))) {
+          const [from, to] = argv.slice(-2) as [string, string]
+          files[to] = files[from]!
+          delete files[from]
+        }
         if (argv[0]?.startsWith('/') || argv[0] === 'find') throw new Error(`${argv[0]} does not exist on Windows`)
         return { exitCode: 0, stdout: '', stderr: '' }
       },
@@ -120,6 +125,10 @@ test('writeRules on Windows writes the policy and strict settings, with no POSIX
   expect(policy.home).toBe('C:/Users/me')
   expect(files[`${CWD}/.git/info/exclude`]?.split('\n')).toEqual(expect.arrayContaining(['.commandcode/settings.local.json', '.commandcode/hydra-guard.json']))
   expect(runs.some(argv => argv[0] === 'find' || argv[0]?.startsWith('/'))).toBe(false)
+  // Both files arrive by Python's os.replace, so the guard never reads half a policy; no temporary file is left.
+  const replaced = runs.filter(argv => argv.some(arg => arg.includes('os.replace'))).map(argv => argv[argv.length - 1])
+  expect(replaced).toEqual([POLICY, RULES])
+  expect(Object.keys(files).filter(path => path.endsWith('.tmp'))).toEqual([])
   resetPlatform()
 })
 

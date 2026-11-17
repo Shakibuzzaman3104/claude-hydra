@@ -13,7 +13,7 @@ import { compareChangedFiles, pump, refreshHeads, refreshStatus, setRun, snapsho
 import type { Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, strictGuardCommand, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
-import { homeOf, isWindowsPath, platformOf, pythonOf, removeFile, runScript } from '../lib/platform'
+import { homeOf, isWindowsPath, platformOf, pythonOf, removeFile, runScript, writeAtomically } from '../lib/platform'
 import { baseName } from '../lib/protect'
 import type { Guarded } from '../lib/protect'
 import { readMode } from '../lib/state'
@@ -213,8 +213,24 @@ export const RULES_TAKEN = `${RULES_FILE} holds your own Command Code rules, and
 /**
  * Writes the project's rules for the Heads running in it, from this session and any other, and deletes the file
  * once none is left, so the person's own Command Code runs never inherit them. Returns why it refused, if it did.
+ * Calls for one project run one at a time: each reads the file, awaits slow checks, then rewrites it, so Heads of a
+ * hunt starting together would otherwise read each other's half-written file or write over each other's entries.
  */
-export async function writeRules($: EngineInterface, cwd: string): Promise<string | undefined> {
+export function writeRules($: EngineInterface, cwd: string): Promise<string | undefined> {
+  const key = rulesPath(cwd)
+  const next = (rulesWrites.get(key) ?? Promise.resolve()).then(() => writeRulesNow($, cwd))
+  const settled = next.catch(() => undefined)
+  rulesWrites.set(key, settled)
+  void settled.then(() => {
+    if (rulesWrites.get(key) === settled) rulesWrites.delete(key)
+  })
+  return next
+}
+
+/** The last `writeRules` queued per rules file; the next one waits for it. */
+const rulesWrites = new Map<string, Promise<unknown>>()
+
+async function writeRulesNow($: EngineInterface, cwd: string): Promise<string | undefined> {
   const path = rulesPath(cwd)
   const strict = (await platformOf($)) === 'windows'
   let inFile: HeadEntry[] = []
@@ -244,7 +260,7 @@ export async function writeRules($: EngineInterface, cwd: string): Promise<strin
     const python = await pythonOf($)
     if (!python) return 'Python 3 is missing, and on Windows the write guard (a Python script) is the whole lockdown. Install it from python.org, then run the Head again.'
     searchOff.set(cwd, WINDOWS_SEARCH_OFF)
-    await $.fs.write(policyPath(cwd), JSON.stringify(guardPolicy(cwd, heads, home), null, 2) + '\n')
+    await writeAtomically($, policyPath(cwd), JSON.stringify(guardPolicy(cwd, heads, home), null, 2) + '\n')
     settings = headSettings(heads, [], true, strictGuardCommand($.plugin.root, policyPath(cwd), python), home, true)
   } else {
     const envFile = (await findEnvFile($, [cwd, ...heads.reduce<string[]>((dirs, head) => union(dirs, head.addDirs), []), ...writeDirs])) ?? guardedOf(heads)[0]
@@ -253,7 +269,7 @@ export async function writeRules($: EngineInterface, cwd: string): Promise<strin
     const outsideDeny = await outsideDenyRules($, [cwd, ...writeDirs])
     settings = headSettings(heads, outsideDeny, Boolean(envFile), guardCommand($.plugin.root, cwd, writeDirs), home)
   }
-  await $.fs.write(path, JSON.stringify({ ...settings, hydraHeads: heads }, null, 2) + '\n')
+  await writeAtomically($, path, JSON.stringify({ ...settings, hydraHeads: heads }, null, 2) + '\n')
   const exclude = await $.process.run(['git', '-C', cwd, 'rev-parse', '--git-path', 'info/exclude']).catch(() => null)
   if (exclude?.exitCode === 0) {
     const file = exclude.stdout.trim().replace(/\\/g, '/')
@@ -275,19 +291,21 @@ export const windowsPathRefusal = (cwd: string) =>
     ? `${cwd} is a Windows path, and Command Code cannot deny writes to one (its rules cannot name a drive), so Hydra cannot lock a Head into it. Run Claude Code under WSL instead.`
     : undefined
 
-async function joinProject($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, minutes: number) {
+export async function joinProject($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, minutes: number) {
   const unsupported = (await platformOf($)) === 'windows' ? undefined : windowsPathRefusal(cwd)
   if (unsupported) return unsupported
-  const heads = projects.get(cwd) ?? new Map<string, HeadEntry>()
   const until = (await $.clock.now()) + minutes * 60_000 + UNTIL_SLACK_MS
-  heads.set(id, { ...needs, key: `${await $.session.id()}/${id}`, until })
+  const key = `${await $.session.id()}/${id}`
+  // Looked up after the awaits, with no await before the set: Heads joining at once must share one map.
+  const heads = projects.get(cwd) ?? new Map<string, HeadEntry>()
+  heads.set(id, { ...needs, key, until })
   projects.set(cwd, heads)
   const refusal = await writeRules($, cwd).catch(error => `Hydra could not write ${RULES_FILE} (${String(error).slice(0, 160)}). Check that the project folder is writable, then run the Head again.`)
   if (refusal) heads.delete(id)
   return refusal
 }
 
-async function leaveProject($: EngineInterface, cwd: string, id: string) {
+export async function leaveProject($: EngineInterface, cwd: string, id: string) {
   projects.get(cwd)?.delete(id)
   await writeRules($, cwd).catch(() => undefined)
 }

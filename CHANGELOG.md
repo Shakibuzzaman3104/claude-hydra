@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.2.1 — 2026-11-17
+- **Fix: Heads starting together no longer corrupt `.commandcode/settings.local.json` (#32).** A hunt of 5 or more Command Code Heads could leave the file truncated or mixed, and every later Head then failed with `not valid JSON`. Rules for one project are now written one call at a time, and the file (and the Windows guard policy) is written to a temporary file and renamed into place, so neither another session nor Command Code starting a Head ever reads half of it. Heads joining a project at the same moment were also dropped from Hydra's list, so the file could name only one of them and be deleted while the others still ran; every Head is now kept.
+
 ## 2.2.0 — 2026-11-13
 - **Antigravity Heads run Gemini 4 Hydrogen by default.** `gemini-4-hydrogen` replaces `gemini-3.8-flash` as the default model and is the first Antigravity model with `xhigh`: `xhigh` and `max` run as `gemini-4-hydrogen-xhigh`, so a failed check can climb one more level. Flash stays available for bulk work, where it spends far less of the Gemini pool the two share. Models without `xhigh` still run `xhigh` and `max` at `high`. When the Gemini pool is spent, a Hydrogen Head moves to Argon, then Claude Sonnet.
 - Antigravity's "Your AI credits balance is too low" now counts as a usage limit, so the Head moves on instead of failing.

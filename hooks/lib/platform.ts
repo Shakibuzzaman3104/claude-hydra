@@ -105,6 +105,38 @@ export async function removeFile($: EngineInterface, path: string, isDir = false
   return $.process.run([...python, '-I', '-c', REMOVE, path, isDir ? 'dir' : 'file'], { timeoutMs: 10_000 })
 }
 
+const REPLACE = 'import os,sys\nos.replace(sys.argv[1], sys.argv[2])'
+
+/** Renames `from` over `to` in one step: `/bin/mv -f` on macOS and Linux, Python's `os.replace` on Windows. */
+async function replaceFile($: EngineInterface, from: string, to: string) {
+  let argv: string[]
+  if ((await platformOf($)) !== 'windows') argv = ['/bin/mv', '-f', from, to]
+  else {
+    const python = await pythonOf($)
+    if (!python) throw new Error('Python 3 is missing')
+    argv = [...python, '-I', '-c', REPLACE, from, to]
+  }
+  const ran = await $.process.run(argv, { timeoutMs: 10_000 })
+  if (ran.exitCode !== 0) throw new Error(`could not move ${from} to ${to}: ${ran.stderr.trim().slice(0, 160)}`)
+}
+
+let tempCount = 0
+
+/**
+ * Writes `text` to a file next to `path`, then renames it over `path`, so a reader (another session, Command Code
+ * starting a Head) sees the old file or the new one, never a half-written one, and two writers never mix their bytes.
+ */
+export async function writeAtomically($: EngineInterface, path: string, text: string) {
+  const temp = `${path}.${await $.session.id()}-${++tempCount}.tmp`
+  await $.fs.write(temp, text)
+  try {
+    await replaceFile($, temp, path)
+  } catch (error) {
+    await removeFile($, temp).catch(() => undefined)
+    throw error
+  }
+}
+
 /** Waits about a second through a host process, which a hook's 10 s budget does not count: `sleep`, or `ping` on Windows. */
 export async function pauseOneSecond($: EngineInterface) {
   const argv = (await platformOf($)) === 'windows' ? ['ping.exe', '-n', '2', '127.0.0.1'] : ['/bin/sleep', '1']
