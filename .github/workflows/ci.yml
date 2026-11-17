@@ -21,6 +21,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ['3.9', '3.13']
+        # ubuntu-latest is Ubuntu 26.04 from 19/10/26, which has no Python 3.9 build: keep 3.9 on 24.04.
+        exclude:
+          - os: ubuntu-latest
+            python: '3.9'
+        include:
+          - os: ubuntu-24.04
+            python: '3.9'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
