@@ -90,13 +90,12 @@ async function buddySignedIn($: EngineInterface, dir?: string): Promise<boolean 
 
 /**
  * Whether an Antigravity account has a sign-in: an extra account's own token file, or the person's. A newer agy keeps the
- * sign-in in the macOS keychain instead, which Hydra does not read: `undefined` there, and `false` elsewhere.
+ * person's sign-in in the system keyring instead (the macOS keychain, the Secret Service on Linux), which Hydra does not read.
  */
 async function agySignedIn($: EngineInterface, home: string, dir?: string): Promise<boolean | undefined> {
   const path = dir ? agyTokenOf(dir) : `${home}/${AGY_TOKEN}`
   if (await $.fs.exists(path).catch(() => false)) return true
-  if (dir || (await platformOf($)) !== 'darwin') return false
-  return undefined
+  return dir ? false : undefined
 }
 
 /**

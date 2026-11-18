@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.2 — 2026-11-19
+- **Fix: Antigravity Heads run on Linux when agy keeps its sign-in in the system keyring.** agy 1.5.6 on Linux stores its Google sign-in in the keyring (the Secret Service) rather than in `~/.gemini/antigravity-cli/antigravity-oauth-token`. Hydra checked only for that file, so on Linux it refused every Antigravity Head with "Antigravity is not signed in", even though `agy` itself worked and running it again changed nothing. Hydra now starts the Head and lets agy find its own sign-in, as it already did with the macOS keychain. If agy really is signed out, the first round fails and the report still says "Antigravity is not signed in" with the fix.
+- The Antigravity preflight check on Linux now warns that it cannot see the keyring instead of refusing, and `/hydra accounts` shows the default Antigravity account as `· sign-in not checked` rather than `✗ not signed in`. Extra accounts always have their own token file and are checked as before.
+
 ## 2.2.1 — 2026-11-17
 - **Fix: Heads starting together no longer corrupt `.commandcode/settings.local.json` (#32).** A hunt of 5 or more Command Code Heads could leave the file truncated or mixed, and every later Head then failed with `not valid JSON`. Rules for one project are now written one call at a time, and the file (and the Windows guard policy) is written to a temporary file and renamed into place, so neither another session nor Command Code starting a Head ever reads half of it. Heads joining a project at the same moment were also dropped from Hydra's list, so the file could name only one of them and be deleted while the others still ran; every Head is now kept.
 

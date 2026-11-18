@@ -11,7 +11,7 @@ import type { Account } from './lib/accounts'
 import { AGY_TOKEN } from './lib/engines'
 import { formatReport } from './lib/format'
 import { resetPlatform } from './lib/platform'
-import { preflight } from './lib/runtime'
+import { preflight, resetPreflight } from './lib/runtime'
 
 const HOME = '/Users/me'
 const TOKEN = `${HOME}/${AGY_TOKEN}`
@@ -64,12 +64,13 @@ test('links the macOS keychain into the Head\'s HOME when agy keeps no token fil
   expect(settings.permissions.deny).toContain(`write_file(${dir}/Library)`)
 })
 
-test('refuses to set up an Antigravity Head elsewhere with no token file', async () => {
+test('starts an Antigravity Head on Linux with no token file, leaving agy to find its keyring sign-in', async () => {
   resetPlatform()
-  const { $ } = agyHome([], 'linux')
-  const message = await writeAgyHome($, '/p/app', 'h1', NEEDS).then(() => '', (error: Error) => error.message)
-  expect(message).toBe(AGY_NOT_SIGNED_IN)
-  expect(message).toContain('not signed in')
+  const { $, runs } = agyHome([], 'linux')
+  const dir = await writeAgyHome($, '/p/app', 'h1', NEEDS)
+  expect(dir).toBe('/Users/me/.claude/hydra/heads/agy-s1-h1')
+  // No token to copy and no keychain to link: the Secret Service is reached over D-Bus, whatever HOME is.
+  expect(runs.some(argv => argv[0] === '/bin/cp' || argv[0] === '/bin/ln')).toBe(false)
 })
 
 test('denies an Antigravity Head its own Library folder, with a shell too', async () => {
@@ -89,26 +90,21 @@ test('reads an Antigravity sign-in from the token file, or says it cannot check 
   resetPlatform()
   expect(await signedInOf(agyHome([], 'darwin').$, account, true)).toBeUndefined()
   resetPlatform()
-  expect(await signedInOf(agyHome([], 'linux').$, account, true)).toBe(false)
+  expect(await signedInOf(agyHome([], 'linux').$, account, true)).toBeUndefined()
+  resetPlatform()
+  expect(await signedInOf(agyHome([], 'linux').$, { engine: 'agy', name: 'work', dir: '/Users/me/.claude/hydra/accounts/agy/work' }, true)).toBe(false)
 })
 
-test('stops an Antigravity Head before it starts where a missing token file means signed out', async () => {
-  resetPlatform()
-  const { $ } = agyHome([], 'linux')
-  const check = await preflight($, 'agy')
-  expect(check.problems).toContain('Antigravity is not signed in. Run `agy` once in a terminal (choose Google OAuth), then try again.')
-  expect(check.warnings).toEqual([])
-})
-
-// Last: a preflight that passes is kept for the session, so a later test could not read this warning again.
-test('warns, rather than refusing, when macOS may hold the Antigravity sign-in in its keychain', async () => {
-  resetPlatform()
-  const { $ } = agyHome([], 'darwin')
-  const check = await preflight($, 'agy')
-  expect(check.problems).toEqual([])
-  expect(check.warnings).toEqual([
-    'Antigravity keeps its sign-in in the macOS keychain here, so Hydra cannot check it before a Head starts. If a Head stops with "not signed in", run `agy` once in a terminal.',
-  ])
+test('warns, rather than refusing, when the system keyring may hold the Antigravity sign-in', async () => {
+  for (const [platform, keyring] of [['linux', 'the system keyring'], ['darwin', 'the macOS keychain']] as const) {
+    resetPlatform()
+    resetPreflight()
+    const check = await preflight(agyHome([], platform).$, 'agy')
+    expect(check.problems).toEqual([])
+    expect(check.warnings).toEqual([
+      `Antigravity keeps its sign-in in ${keyring} here, so Hydra cannot check it before a Head starts. If a Head stops with "not signed in", run \`agy\` once in a terminal.`,
+    ])
+  }
 })
 
 test('says plainly that Antigravity is not signed in when a round fails that way', async () => {

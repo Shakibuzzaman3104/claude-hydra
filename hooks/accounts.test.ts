@@ -250,7 +250,7 @@ test('keeps Antigravity limits per usage pool: one pool cooling leaves the other
   const { $, kept } = withHome({ 'accounts-v1': { agy: ['work'] }, 'cooldowns-v1': { 'agy/work#argon': 1_000_000 + 30 * MIN, 'agy/default#claude': 1_000_000 + 20 * MIN } })
   const [agy] = await accountOverview($, ['agy'])
   expect(agy!.rows).toEqual([
-    { name: 'default', signedIn: false, pools: [{ pool: 'claude', until: 1_000_000 + 20 * MIN }] },
+    { name: 'default', signedIn: undefined, pools: [{ pool: 'claude', until: 1_000_000 + 20 * MIN }] },
     { name: 'work', signedIn: false, pools: [{ pool: 'argon', until: 1_000_000 + 30 * MIN }] },
   ])
   expect(rowText(agy!.rows[1]!)).toContain(`Gemini 4 Argon cooling until ${timeOf(1_000_000 + 30 * MIN)}`)
@@ -274,13 +274,13 @@ test('lists accounts with sign-in and cooling state, and says which engines keep
   const { $ } = withHome({ 'accounts-v1': { agy: ['work'] }, 'cooldowns-v1': { 'agy/default': 1_000_000 + 30 * MIN } })
   const overview = await accountOverview($, ['agy', 'commandcode'])
   expect(overview).toEqual([
-    { engine: 'agy', isSupported: true, rows: [{ name: 'default', signedIn: false, until: 1_000_000 + 30 * MIN }, { name: 'work', signedIn: false }] },
+    { engine: 'agy', isSupported: true, rows: [{ name: 'default', signedIn: undefined, until: 1_000_000 + 30 * MIN }, { name: 'work', signedIn: false }] },
     { engine: 'commandcode', isSupported: false, rows: [] },
   ])
   const text = accountsText(overview, 'fill')
   expect(text).toContain('strategy: fill')
   expect(text).toContain('commandcode (Command Code): one account (no switch supported)')
-  expect(text).toContain(`✗ not signed in · cooling until ${timeOf(1_000_000 + 30 * MIN)}`)
+  expect(text).toContain(`· sign-in not checked · cooling until ${timeOf(1_000_000 + 30 * MIN)}`)
   expect(rowText({ name: 'x', signedIn: true })).toBe('✓ signed in')
   expect(rowText({ name: 'x' })).toBe('· sign-in not checked')
 })

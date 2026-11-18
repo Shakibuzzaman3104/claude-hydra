@@ -365,7 +365,8 @@ async function findEnvFiles($: EngineInterface, roots: readonly string[]): Promi
 /**
  * Makes this Head's `HOME`: its own `settings.json` (the permission rules) and its sign-in, under Hydra's folder in `~/.claude`,
  * owner-only. The sign-in is the account's token file, or the person's own; an agy that keeps it in the macOS keychain instead
- * gets a link to the keychain (`Library/Keychains`), which the rules deny the model's tools. Removed when the Head ends.
+ * gets a link to the keychain (`Library/Keychains`), which the rules deny the model's tools. Elsewhere (Linux) agy finds its
+ * keyring sign-in itself, and a missing one fails the first round as `AGY_NOT_SIGNED_IN`. Removed when the Head ends.
  * Returns the folder.
  */
 export async function writeAgyHome($: EngineInterface, cwd: string, id: string, needs: HeadNeeds, tokenDir?: string): Promise<string> {
@@ -380,7 +381,7 @@ export async function writeAgyHome($: EngineInterface, cwd: string, id: string, 
   else if ((await platformOf($)) === 'darwin') {
     await $.process.run(['/bin/mkdir', '-p', `${dir}/Library`])
     await $.process.run(['/bin/ln', '-s', `${real}/Library/Keychains`, `${dir}/Library/Keychains`])
-  } else throw new Error(AGY_NOT_SIGNED_IN)
+  }
   await writeAgySettings($, dir, cwd, needs)
   return dir
 }

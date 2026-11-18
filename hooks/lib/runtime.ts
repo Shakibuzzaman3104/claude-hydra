@@ -87,6 +87,9 @@ export type Preflight = { problems: string[]; warnings: string[] }
 
 const preflightPassed = new Set<Engine>()
 
+/** Forgets which engines passed preflight (for tests). */
+export const resetPreflight = () => preflightPassed.clear()
+
 /** How to install each engine's CLI and sign in, as one line the person can act on. */
 export const INSTALL_HINT: Record<Engine, string> = {
   commandcode: 'The Command Code CLI is not installed. Run `npm i -g command-code`, then `commandcode` once in a terminal to sign in.',
@@ -128,9 +131,9 @@ export async function preflight($: EngineInterface, engine: Engine = DEFAULT_ENG
     problems.push('Codex is not signed in. Run `codex login` in a terminal (`codex login --device-auth` on a remote machine), then try again.')
   }
   if (engine === 'agy' && problems.length === 0 && !(home && (await $.fs.exists(`${home}/${AGY_TOKEN}`).catch(() => false)))) {
-    // A newer agy keeps the sign-in in the macOS keychain, where nothing on disk says whether it is there: a Head may still start.
-    if ((await platformOf($)) === 'darwin') warnings.push('Antigravity keeps its sign-in in the macOS keychain here, so Hydra cannot check it before a Head starts. If a Head stops with "not signed in", run `agy` once in a terminal.')
-    else problems.push('Antigravity is not signed in. Run `agy` once in a terminal (choose Google OAuth), then try again.')
+    // A newer agy keeps the sign-in in the system keyring, where nothing on disk says whether it is there: a Head may still start.
+    const keyring = (await platformOf($)) === 'darwin' ? 'the macOS keychain' : 'the system keyring'
+    warnings.push(`Antigravity keeps its sign-in in ${keyring} here, so Hydra cannot check it before a Head starts. If a Head stops with "not signed in", run \`agy\` once in a terminal.`)
   }
   const isSignedIn = engine !== 'commandcode' || (home ? await $.fs.exists(`${home}/.commandcode/auth.json`).catch(() => false) : false)
   if (!isSignedIn && problems.length === 0) warnings.push('Command Code looks signed out: run `commandcode` once in a terminal to sign in, or Heads will fail.')
