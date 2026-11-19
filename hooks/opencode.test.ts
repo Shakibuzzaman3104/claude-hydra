@@ -398,3 +398,9 @@ test('tells a stored sign-in from an API key in the environment', async () => {
   expect(opencodeProviders('[]')).toEqual({ any: false, stored: false })
   expect(opencodeProviders('No authenticated integrations')).toEqual({ any: false, stored: false })
 })
+
+test('a patch that changes several files names each one on its completed event', () => {
+  const state = newOpenCodeState(CWD)
+  const events = foldOpenCodeRow({ type: 'tool_use', part: { id: 'p1', tool: 'apply_patch', state: { status: 'completed', input: { patchText: '*** Add File: one.txt\n*** Add File: two.txt\n' } } } }, state)
+  expect(events.find(event => event.type === 'tool_completed')?.files).toEqual([`${CWD}/one.txt`, `${CWD}/two.txt`])
+})

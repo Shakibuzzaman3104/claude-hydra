@@ -423,7 +423,7 @@ export const foldOpenCodeRow = (row: OpenCodeRow, state: OpenCodeState): StreamE
     events.push(
       { type: 'tool_queued', toolCallId: id, toolName: tool, input },
       { type: 'tool_running', toolCallId: id, toolName: tool },
-      { type: isDenied ? 'tool_denied' : 'tool_completed', toolCallId: id, toolName: tool, isError },
+      { type: isDenied ? 'tool_denied' : 'tool_completed', toolCallId: id, toolName: tool, isError, ...(patched.length > 1 && !isDenied ? { files: patched.map(file => absoluteIn(state.cwd, file)) } : {}) },
     )
   }
   return events
