@@ -261,7 +261,8 @@ Rules for this run:
   Changed: each file and what changed in it.
   Unverified: what you could not build, run or test (or "nothing").
   Notes: what the Lead must know or decide (leave out if nothing).
-- If you cannot finish (a missing file, a contradiction in the task, access you need was denied), do not guess: say what you finished, what stops you and what you need, then end with the line ${BLOCKED_MARK}.`
+- If you cannot finish (a missing file, a contradiction in the task, access you need was denied), do not guess: say what you finished, what stops you and what you need, then end with the line ${BLOCKED_MARK}.
+- ${BLOCKED_MARK} is only for access you lack or a decision you cannot make. A partial audit, turns still left, or leftover temp or build files you could not delete are not blockers: keep working, or finish and list them under Notes.`
 
 const deniedNote = (denied: readonly string[]) =>
   denied.length > 0 ? `These calls were denied and will stay denied, so do not retry them: ${denied.join('; ')}.` : ''
@@ -565,6 +566,16 @@ export async function changedFiles($: EngineInterface, since: number, dirs: read
     return JSON.parse(ran.stdout) as string[]
   } catch {
     return []
+  }
+}
+
+/** Modification times of changed files under the given folders since the run began. */
+export async function changedFileTimes($: EngineInterface, since: number, dirs: readonly string[]): Promise<Record<string, number>> {
+  try {
+    const ran = await runScript($, 'changed-files.py', ['--times', String(since), ...dirs])
+    return JSON.parse(ran.stdout) as Record<string, number>
+  } catch {
+    return {}
   }
 }
 

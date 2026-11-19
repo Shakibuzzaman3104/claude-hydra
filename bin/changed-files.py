@@ -5,8 +5,8 @@ Codex's stream names only some edits (patches), not what a shell command wrote, 
 In a git repository the candidates are the modified and the new, non-ignored files; elsewhere a walk that skips
 .git and dependency or build folders. Prints a JSON list of absolute paths, at most 500.
 
-`--snapshot <dir>...` prints the uncommitted files under the folders and their sha1, at most 500 and skipping files
-over 5 MB, so a Head's report can tell its own edits from ones that were already there. `--compare <snapshot-file>
+`--snapshot <dir>...` prints the uncommitted files under the folders and their sha1 (empty for files over 5 MB),
+at most 500, so a Head's report can tell its own edits from ones that were already there. `--compare <snapshot-file>
 <since-ms> <dir>...` prints the snapshot files that changed and still differ from git (`overwritten`), and the ones
 that are back to the committed version or gone (`reverted`), and the tracked files written since `since` that match
 the committed version now (`restored`): rewritten during the run, maybe with no change, maybe undoing an edit.
@@ -74,6 +74,8 @@ def snapshot(roots):
                 sha = digest(path)
                 if sha is not None:
                     hashes[path] = sha
+                elif os.path.isfile(path):
+                    hashes[path] = ''
     return hashes
 
 
@@ -112,6 +114,19 @@ def compare(snapshot_path, since_ms, roots):
 
 def main():
     args = sys.argv[1:]
+    if args[:1] == ['--times']:
+        since = float(args[1]) / 1000
+        times = {}
+        for root in args[2:]:
+            for path in candidates(root):
+                try:
+                    stat = os.stat(path)
+                    if os.path.isfile(path) and stat.st_mtime >= since:
+                        times[path] = stat.st_mtime_ns
+                except OSError:
+                    continue
+        print(json.dumps(times))
+        return
     if args[:1] == ['--snapshot']:
         print(json.dumps(snapshot(args[1:])))
         return

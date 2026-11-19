@@ -1,5 +1,64 @@
 # Changelog
 
+## 2.3.0 — 2026-11-19
+Fixes for the problems logged while running Hydra on real projects. Unit-tested throughout; the Command Code fixes were also run live.
+
+**Reports you can trust**
+- **Command Code Heads no longer swap reports.** When a run ended without reporting its session, Hydra used to find it by the first 100 characters of the task. In a hunt every task starts with the same `shared` text, so Heads in one folder got each other's report, edits and cost. Each Head now takes its session id from its own `run_start` event. Run live: two Heads in one folder with the same 140-character opening each got their own session and report. A Head that times out keeps its session, so it can be resumed and its cost is counted.
+- **`edited:` lists only what the Head changed.**
+  - Hydra's own lockdown files (`.commandcode/`, `.codebuddy/` and the like) are never listed.
+  - Files written while the check ran go on a separate `check wrote:` line.
+  - Files that changed in the folder but not through the Head's file tools (another Head, the Lead, a Codex shell write) go on a `changed in the folder during the run…` line.
+  - A file that already had edits before the Head started is marked `had edits before` instead of showing the whole diff or `(new)`.
+- **A report keeps every round.** After a check sends a Head back, its report keeps the main round's report and its `fallback:` line, adds each fix round below it, and shows any raised effort (`effort: high → xhigh`).
+- **A JSON retry no longer overwrites the original report.** The original header, edited list and counts stay, with each retry appended below it.
+- A successful Command Code edit is no longer listed as denied.
+- A Head that wrote its named files under other names gets a hint pairing the files.
+- A Head's own JSON retries no longer appear as other Heads in its warnings.
+
+**Hunts**
+- New status `partial`: a Head that did not finish but returned schema-valid JSON keeps its `data` and is not listed as missing.
+- A Head out of turns or time, stalled or blocked whose check passed counts as `done` (with the reason) and is not listed as missing.
+- A blocked Head that edited files is now checked. A pass counts as done; a failure is reported without fix rounds.
+- `hunt.md` holds every block uncut. A Head whose own report file is missing points there, and the closing line no longer names files that do not exist.
+- Path notes only flag paths that exist on disk, and read paths with spaces whole. `/**`, URL routes and regex flags are no longer flagged.
+- A Head name ending in `-fix`, `-rN` or `-jsonN` is renamed with `-h` and a note, instead of the hunt being refused.
+- In a refute fix round, a reading Head is told to revise only its result. If it changes files anyway, the warning heads its block.
+- Before a hunt starts, Hydra reads the Antigravity quotas (free) and lists the limits in force. Routes that "could not start here" are also listed, with the engine's own error line.
+
+**Resume and routing**
+- `resume` keeps the earlier Head's effort and schema unless the call sets its own.
+- A resume that hits a usage limit no longer just ends. It starts fresh on the next route, with the first task and the follow-up.
+- Every Head is told its name, and `{name}` or `<your-head-name>` in a task is filled in.
+- A research Head moved off Antigravity Argon gets a warning that it lost web search.
+- The background start message names the model the Head actually runs.
+- A single Head's report folder is created before its first save, so the copy on disk is never lost. `control list` names the report folder.
+- Background results say when they were sent, so a late one can be told from a new one.
+
+**Engines**
+- **Antigravity:**
+  - A Head without `shell: true` really has no shell now: its command tool is denied.
+  - The shell commands a Head ran are listed in its report.
+  - A denied call names its command.
+  - A run that is silent for 10 minutes ends as stalled and names the call it hung on.
+  - The prompt lists untracked files, which agy's file search can miss.
+- **CodeBuddy:**
+  - Glob and Grep work in `addDirs` folders.
+  - A resumed run counts only its own tokens.
+  - Cached input is shown apart (`20410k in (19800k cached)`).
+- **Command Code:** `.env.example`, `.env.sample`, `.env.template` and `.env.dist` no longer turn the search tool off. Their reads stay denied, because Command Code's deny rules win over any allow rule.
+- **Codex:** `GOCACHE` and `GOTMPDIR` point into the Head's private temp folder, so Go builds work.
+- **Folders a Head may read:** `addDirs` may now name `~/.claude/hydra/hunts/…`, `~/.claude/hydra/heads/…` and `~/.claude/plugins/cache/…`. These are earlier hunts' reports and installed plugins; the rest of `~/.claude` stays refused.
+- **Check output:** a long check output keeps the lines that name failing tests, not only the runner's summary.
+
+**Rules for Heads and the Lead**
+- Heads are told that `HEAD BLOCKED` is only for missing access or a decision they cannot make. A partial audit or leftover temp files is not a blocker.
+- The Lead policy now covers four cases:
+  - Send reading jobs with a schema to Codex or CodeBuddy before Command Code.
+  - In Chimera, use `refute: true` hunts when Agent calls are denied.
+  - Codex's sandbox keeps `.env.*` templates from Heads.
+  - Git fails for Codex in a linked worktree.
+
 ## 2.2.2 — 2026-11-19
 - **Fix: Antigravity Heads run on Linux when agy keeps its sign-in in the system keyring.** agy 1.5.6 on Linux stores its Google sign-in in the keyring (the Secret Service) rather than in `~/.gemini/antigravity-cli/antigravity-oauth-token`. Hydra checked only for that file, so on Linux it refused every Antigravity Head with "Antigravity is not signed in", even though `agy` itself worked and running it again changed nothing. Hydra now starts the Head and lets agy find its own sign-in, as it already did with the macOS keychain. If agy really is signed out, the first round fails and the report still says "Antigravity is not signed in" with the fix.
 - The Antigravity preflight check on Linux now warns that it cannot see the keyring instead of refusing, and `/hydra accounts` shows the default Antigravity account as `· sign-in not checked` rather than `✗ not signed in`. Extra accounts always have their own token file and are checked as before.

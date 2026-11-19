@@ -7,23 +7,35 @@ import type { EngineInterface } from 'claude-code'
 
 import {
   ACCOUNT_SUPPORT, COOLDOWN_DEFAULT_MS, COOLDOWN_MAX_MS, accountEnv, accountOverview, accountsLine, accountsOf, accountsText, addAccount, allCoolingText,
-  cooldownFrom, isAccountName, isQuotaFailure, loginInstructions, parseAccountsArgs, pickAccount, readAccountNames, readCooldowns, recordCooldown,
-  removeAccount, rotateAccounts, rowText, supportsAccounts, switchNote, timeOf, withEnv,
+  cooldownFrom, coolingLines, isAccountName, isQuotaFailure, loginInstructions, parseAccountsArgs, pickAccount, readAccountNames, readCooldowns, recordCooldown,
+  recordUnavailable, refreshLimits, removeAccount, rotateAccounts, rowText, supportsAccounts, switchNote, timeOf, withEnv,
 } from './lib/accounts'
 import type { Account } from './lib/accounts'
 import { parseHydraArgs, HYDRA_HELP, HYDRA_POLICY } from './lib/policy'
 
 /** A `$` with an in-memory store, a home folder, a clock and a file system that records writes: what the accounts code touches. */
-const withHome = (entries: Record<string, unknown> = {}, now = 1_000_000) => {
+const withHome = (entries: Record<string, unknown> = {}, now = 1_000_000, spawn: (options: { env?: Record<string, string> }) => unknown = () => { throw new Error('no process') }) => {
   const kept = new Map(Object.entries(entries))
   const written: string[] = []
   const $ = {
     store: { get: async (key: string) => kept.get(key), set: async (key: string, value: unknown) => void kept.set(key, JSON.parse(JSON.stringify(value))) },
     env: { get: async (name: string) => (name === 'HOME' ? '/home/me' : undefined) },
-    clock: { now: async () => now },
+    clock: { now: async () => now, sleep: async () => new Promise<never>(() => undefined) },
     fs: { write: async (path: string) => void written.push(path), list: async () => [], exists: async () => false },
+    process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }), spawn },
   } as unknown as EngineInterface
   return { $, kept, written }
+}
+
+/** A child that prints `output` and exits 0, as `pump` reads it. */
+const childOf = (output: string) => {
+  const lines = output.split('\n')
+  let index = 0
+  return {
+    next: async () => (index < lines.length ? { done: false as const, value: { stream: 'stdout' as const, text: `${lines[index++]!}\n` } } : { done: true as const, value: undefined }),
+    return: async () => ({ code: 0 }),
+    result: Promise.resolve({ code: 0 }),
+  }
 }
 
 const NOW = Date.parse('2026-10-15T12:00:00Z')
@@ -268,6 +280,42 @@ test('records a cooldown and drops the ones that have lapsed', async () => {
   const { $, kept } = withHome({ 'cooldowns-v1': { 'codex/old': 10, 'codex/live': 5_000_000 } }, 1_000_000)
   await recordCooldown($, 'codex/work', 4_000_000)
   expect(kept.get('cooldowns-v1')).toEqual({ 'codex/live': 5_000_000, 'codex/work': 4_000_000 })
+})
+
+test('reads Antigravity\'s quota before a hunt and records the spent buckets', async () => {
+  const reset = new Date(1_000_000 + 90 * MIN).toISOString()
+  const usage = JSON.stringify({ event: 'command_result', command: { name: 'usage', data: { groups: [
+    { name: 'Claude and GPT', buckets: [{ window: '5h', remaining_fraction: 0, reset_time: reset }] },
+    { name: 'Gemini', buckets: [{ window: '5h', remaining_fraction: 0.7, reset_time: reset }] },
+  ] } } })
+  // Only an extra account's run gets a HOME in its env: the default account reads nothing here.
+  const { $, kept } = withHome({ 'accounts-v1': { agy: ['quota-read'] } }, 1_000_000, options => childOf(options.env?.HOME ? usage : ''))
+  await refreshLimits($, ['agy', 'codex'])
+  expect(kept.get('cooldowns-v1')).toEqual({ 'agy/quota-read#claude': 1_000_000 + 90 * MIN })
+})
+
+test('a quota read that fails never stops a hunt', async () => {
+  const { $, kept } = withHome({ 'accounts-v1': { agy: ['quota-broken'] } }, 1_000_000, () => { throw new Error('agy is missing') })
+  await expect(refreshLimits($, ['agy'])).resolves.toBeUndefined()
+  expect(kept.get('cooldowns-v1')).toBeUndefined()
+})
+
+test('lists a partly cooling engine and a model that could not start here', async () => {
+  const { $ } = withHome({ 'accounts-v1': { codex: ['work'] } }, 1_000_000)
+  await recordCooldown($, 'codex/work', 1_000_000 + 20 * MIN)
+  await recordUnavailable($, 'agy', 'gemini-4-hydrogen', 'RESOURCE_EXHAUSTED: quota exceeded in this region')
+  const lines = await coolingLines($, ['codex', 'agy'])
+  expect(lines).toContain(`codex: 1 of 2 accounts at its limit until ${timeOf(1_000_000 + 20 * MIN)}`)
+  expect(lines).toContain(`agy gemini-4-hydrogen: could not start here at ${timeOf(1_000_000 + 30 * MIN)} (RESOURCE_EXHAUSTED: quota exceeded in this region)`)
+  // An engine the Lead did not ask about is left out.
+  expect(await coolingLines($, ['codex'])).toEqual([`codex: 1 of 2 accounts at its limit until ${timeOf(1_000_000 + 20 * MIN)}`])
+})
+
+test('keeps only the first 120 characters of a "could not start here" reason', async () => {
+  const { $ } = withHome({}, 1_000_000)
+  await recordUnavailable($, 'codebuddy', 'glm', 'x'.repeat(200))
+  const [line] = await coolingLines($, ['codebuddy'])
+  expect(line).toBe(`codebuddy glm: could not start here at ${timeOf(1_000_000 + 30 * MIN)} (${'x'.repeat(120)})`)
 })
 
 test('lists accounts with sign-in and cooling state, and says which engines keep one', async () => {

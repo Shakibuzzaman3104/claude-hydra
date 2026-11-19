@@ -5,14 +5,14 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { HeadRun } from '../../types'
-import { accountEnv, accountId, accountsOf, cooldownKey, markUsed, pickAccount, pickUsable, readCooldowns, recordCooldown, recordSignedOut, rotateAccounts, switchNote } from '../lib/accounts'
+import { accountEnv, accountId, accountsOf, cooldownKey, markUsed, pickAccount, pickUsable, readCooldowns, recordCooldown, recordSignedOut, recordUnavailable, rotateAccounts, switchNote } from '../lib/accounts'
 import type { Account, EngineBound, Picked } from '../lib/accounts'
 import { isHeadEffort } from '../lib/effort'
 import { AGY_MODEL, DEFAULT_ENGINE, ENGINE_LABEL, FALLBACK_ORDER, agyBaseOf, modelAlternates, modelFor, modelOn, usagePoolOf, workbuddyEnv } from '../lib/engines'
 import type { Engine, Routing } from '../lib/engines'
 import { checkHead, checkMinutesOf, checkNote, runCheck, withSummary } from '../lib/check'
-import { RESUMABLE, addTokens, editedCount, expectedFiles, formatReport, overlappingHeads, relativeTo, scopeLines, strings, withEditStats, withEdits } from '../lib/format'
-import { DEFAULT_MINUTES, diffStat, forgetChangedFiles, gate, hasConsent, keepOwnEdits, notStarted, preflight, realPaths, refreshStatus, setRun, stopReason } from '../lib/runtime'
+import { RESUMABLE, addTokens, attributeFiles, editedCount, expectedFiles, formatReport, overlappingHeads, priorEditStats, relativeTo, scopeLines, strings, withEditStats, withEdits, withOtherWrites } from '../lib/format'
+import { DEFAULT_MINUTES, changedFileTimes, diffStat, forgetChangedFiles, gate, hasConsent, keepOwnEdits, notStarted, preflight, realPaths, refreshStatus, setRun, snapshotChangedFiles, stopReason } from '../lib/runtime'
 import type { HeadResult, HeadSession } from '../lib/runtime'
 import { homeOf } from '../lib/platform'
 import { guardedPaths, ignoreChangedLine, ignoreChanges, snapshotIgnoreFiles } from '../lib/protect'
@@ -32,6 +32,13 @@ const MAX_MARKS = 12
 // Codex and Antigravity number no model messages, so their turns are tool calls: a Head needs more of them for the same work.
 // The cap is there to stop a runaway Head, not to size the task: one Head in twenty hit the old caps of 60 and 150 mid-work.
 export const turnsOn = (engine: Engine, given: unknown) => Number(given ?? (engine === 'codex' || engine === 'agy' ? 200 : 100))
+
+/** The first task of each session a Head started, by session id: what a resume that hits a usage limit starts again from. */
+const firstTasks = new Map<string, string>()
+
+/** The task with `{name}` and `<your-head-name>` filled in, and a line telling the Head the name Hydra tracks it by. */
+export const withHeadName = (task: string, id: string) =>
+  `Your Head name in this run is "${id}".\n\n${task.replace(/\{name\}|<your-head-name>/g, id)}`
 
 /** An earlier Head's session, as the Head tool's hook resolved it from the Lead's `resume`. */
 const sessionOf = (value: unknown): HeadSession | undefined => {
@@ -73,7 +80,18 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
   await setRun($, id, { state: 'running', startedAt, activity: 'starting' })
   await updateTick($, () => startedAt)
   try {
-    const result = await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, turnsGiven: input.maxTurns, resume, since: resume ? startedAt : undefined }, signal, id, routing)
+    const dirs = [cwd, ...writeDirs]
+    const before = await snapshotChangedFiles($, id, dirs)
+    const checked: Record<string, number> = {}
+    const ran = await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, turnsGiven: input.maxTurns, resume, since: resume ? startedAt : undefined }, signal, id, routing, checked)
+    const times = await changedFileTimes($, startedAt, dirs)
+    const entry = (await readRuns($)).find(run => run.id === id)
+    const relativeTimes = Object.fromEntries(Object.entries(times).map(([file, time]) => [relativeTo(cwd, file), time]))
+    const relativeChecked = Object.fromEntries(Object.entries(checked).map(([file, time]) => [relativeTo(cwd, file), time]))
+    const attributed = attributeFiles(cwd, entry?.touched ?? [], [...Object.keys(times), ...(ran.files ?? [])], relativeTimes, relativeChecked)
+    const stats = priorEditStats(cwd, await diffStat($, cwd, attributed.edits), before)
+    await setRun($, id, { files: attributed.edits, touched: attributed.edits, stats })
+    const result = { ...ran, files: attributed.edits, text: withOtherWrites(withEdits(ran.text, cwd, attributed.edits, stats), attributed.check, attributed.folder) }
     // A Head that never got to write says nothing about the files it was given.
     const beside = expected.length > 0 ? overlappingHeads(await readRuns($), { id, cwd, startedAt, endedAt: await $.clock.now() }) : []
     const scope = result.isDone || (result.files?.length ?? 0) > 0 ? scopeLines(cwd, expected, result.files ?? [], beside) : []
@@ -95,6 +113,7 @@ async function runHeadInside(
   outer: AbortSignal,
   id: string,
   routing?: Routing,
+  checked: Record<string, number> = {},
 ) {
   const { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, turnsGiven, resume, since } = head
   const home = await homeOf($)
@@ -114,12 +133,25 @@ async function runHeadInside(
     await refreshStatus($)
     return notStarted(id, model, cwd, guarded.refusal, engine)
   }
-  const spec: HeadSpec = { task: check ? task + checkNote(check) : task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded, resume, since }
+  const named = withHeadName(task, id)
+  const spec: HeadSpec = { task: check ? named + checkNote(check) : named, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded, resume, since }
   // A resumed Head stays where its session lives; a fresh one may move across accounts and engines.
-  const run = (head: HeadSpec) => (head.resume ? runResumed($, head, head.resume, outer, id) : runRoutes($, head, turnsGiven, routing, outer, id))
+  const run = async (head: HeadSpec): Promise<HeadResult> => {
+    if (!head.resume) {
+      const fresh = await runRoutes($, head, turnsGiven, routing, outer, id)
+      if (fresh.session && !firstTasks.has(fresh.session.id)) firstTasks.set(fresh.session.id, task)
+      return fresh
+    }
+    const resumed = await runResumed($, head, head.resume, outer, id)
+    const original = firstTasks.get(head.resume.id)
+    if (resumed.isDone || !resumed.engineBound || !routing?.fallback || !original || outer.aborted) return resumed
+    // The session cannot move off its engine, so the work starts again elsewhere from the first brief and this follow-up.
+    const moved = await runRoutes($, { ...head, resume: undefined, task: `${withHeadName(original, id)}\n\nFollow-up from the Lead, after your earlier session on ${ENGINE_LABEL[head.resume.engine]} stopped ${BOUND_WHY[resumed.engineBound]}:\n${head.task.replace(/^Your Head name in this run is "[^"]*"\.\n\n/, '')}` }, turnsGiven, routing, outer, id)
+    return { ...moved, text: `fallback: resumed ${head.resume.engine} ${head.resume.model} session (${BOUND_TEXT[resumed.engineBound]}) → a fresh run with the first task\n${moved.text}` }
+  }
   // Not every engine can stop a delete or a new spelling, so every run ends by comparing each `.hydraignore` with how it started.
   const before = await snapshotIgnoreFiles($, guarded.ignoreFiles)
-  const result = check ? await runChecked($, spec, check, checkMinutes, run, outer, id) : await run(spec)
+  const result = check ? await runChecked($, spec, check, checkMinutes, run, outer, id, checked) : await run(spec)
   const changed = ignoreChanges(before, await snapshotIgnoreFiles($, guarded.ignoreFiles))
   return changed.length > 0 ? { ...result, text: withSummary(result.text, [ignoreChangedLine(changed)]) } : result
 }
@@ -133,6 +165,7 @@ async function runChecked(
   run: (head: HeadSpec) => Promise<HeadResult>,
   outer: AbortSignal,
   id: string,
+  checked: Record<string, number>,
 ): Promise<HeadResult> {
   // Each fix round reports its own tokens; the Head used all of them.
   let spent: string | undefined
@@ -163,7 +196,14 @@ async function runChecked(
     },
     runCheck: async () => {
       await markPhase('check')
-      return runCheck($, check, spec.cwd, checkMinutes)
+      const dirs = [spec.cwd, ...spec.writeDirs]
+      const before = await changedFileTimes($, 0, dirs)
+      try {
+        return await runCheck($, check, spec.cwd, checkMinutes)
+      } finally {
+        const after = await changedFileTimes($, 0, dirs)
+        for (const [file, time] of Object.entries(after)) if (before[file] !== time) checked[file] = time
+      }
     },
     now: () => $.clock.now(),
     isAborted: () => outer.aborted,
@@ -210,6 +250,9 @@ async function startHead($: EngineInterface, head: HeadSpec, account: Account | 
   const before = (await readRuns($)).find(run => run.id === id)
   if (before) await setRun($, id, attemptStart(before))
   const ran = await startOn($, head, account, outer, id)
+  if (head.engine === 'commandcode' || head.engine === 'codebuddy' || head.engine === 'workbuddy') {
+    await setRun($, id, run => ({ touched: [...new Set([...(run.touched ?? []), ...(ran.files ?? []).map(file => relativeTo(head.cwd, file))])] }))
+  }
   const earlier = before?.files ?? []
   if (earlier.length > 0) await setRun($, id, run => ({ files: [...new Set([...earlier, ...(run.files ?? [])])] }))
   const files = ran.files ?? []
@@ -241,6 +284,9 @@ async function startOn($: EngineInterface, head: HeadSpec, account: Account | un
 const BOUND_TEXT: Record<EngineBound, string> = { quota: 'usage limit', 'signed out': 'not signed in', unavailable: 'could not start here' }
 const BOUND_WHY: Record<EngineBound, string> = { quota: 'at a usage limit', 'signed out': 'because its sign-in failed', unavailable: 'because it could not start there' }
 
+/** The engine's own first error line for a route that could not start, cut for the fallback line. */
+export const unavailableWhy = (failure: string | undefined) => (failure ?? '').split('\n').map(line => line.trim()).find(Boolean)?.slice(0, 120) ?? ''
+
 export type Route = { engine: Engine; model: string }
 const routeKey = (route: Route) => `${route.engine}:${route.model}`
 const routeText = (route: Route) => `${route.engine} ${route.model}`
@@ -265,7 +311,9 @@ async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown
   let ending = ''
   while (!result.isDone && !outer.aborted && result.engineBound && routing?.fallback) {
     for (const file of result.files ?? []) if (!edited.includes(file)) edited.push(file)
-    trail.push(`${routeText(current)} (${BOUND_TEXT[result.engineBound]})`)
+    const why = result.engineBound === 'unavailable' ? unavailableWhy(result.failure) : ''
+    if (result.engineBound === 'unavailable') await recordUnavailable($, current.engine, current.model, why || 'no reason given').catch(() => undefined)
+    trail.push(`${routeText(current)} (${BOUND_TEXT[result.engineBound]}${why ? `: ${why}` : ''})`)
     const next = tried.size < MAX_ROUTES ? await nextRoute($, head, current, result.engineBound, routing, tried) : undefined
     if (!next) {
       ending = tried.size < MAX_ROUTES ? 'no other engine or model is free' : `stopped after ${MAX_ROUTES} routes`
@@ -286,8 +334,12 @@ async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown
   if (all.length > editedCount(result.text)) result = { ...result, files: all, text: withEdits(result.text, head.cwd, all, await diffStat($, head.cwd, all)) }
   if (trail.length === 0) return result
   const line = `fallback: ${trail.join(' → ')}${ending ? ` (${ending})` : ` → ${routeText(current)}`}`
-  return { ...result, text: `${line}\n${result.text}` }
+  const offline = lostSearch(head, current) ? `\n⚠ asked for ${routeText(head)}, which searches the web; it ran on ${routeText(current)}, which cannot: check any sources it cites` : ''
+  return { ...result, text: `${line}${offline}\n${result.text}` }
 }
+
+/** A Head asked for Antigravity's search model (Argon) that ended on a route with no web search. */
+export const lostSearch = (asked: Route, ran: Route) => asked.engine === 'agy' && /argon/i.test(asked.model) && !(ran.engine === 'agy' && /argon/i.test(ran.model))
 
 /** Where a Head may go next, nearest first, before any check: `current`'s models in other pools (not for a lost sign-in), then the engines in `first`'s fallback order. */
 export const fallbackRoutes = (first: Engine, current: Route, bound: EngineBound, routing: Routing): Route[] => {

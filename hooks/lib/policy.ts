@@ -97,7 +97,7 @@ const resumeRule = (hasAgy: boolean) =>
 /** Reading jobs fail differently from writing ones: they read until the turns are gone. */
 export const HUNT_RULE = `- Several Heads for one step (readers over an area, the pieces of one change) go out as ONE ${HUNT_TOOL} call, not many ${HEAD_TOOL} calls: they start together, and you get one merged result with each Head's status, check and edited files, the list of Heads that did not finish, and a file per full report. Give it a \`schema\` whenever you will merge, count or compare what comes back (\`schema\` works on a single ${HEAD_TOOL} call too), and \`refute: true\` when a wrong result would cost more than a second Head. Calling it again under the same \`name\` runs only the Heads that failed or whose task changed.`
 
-export const READ_RULE = `- For a reading job (an audit, a search, a summary) say "change no files", name a narrow scope and the five or six things to look for, ask for at most ~20 findings, worst first, each with file and line, and raise \`maxTurns\`. A Head told to audit everything spends its turns reading and reports nothing.`
+export const READ_RULE = `- For a reading job (an audit, a search, a summary) say "change no files", name a narrow scope and the five or six things to look for, ask for at most ~20 findings, worst first, each with file and line, and raise \`maxTurns\`. A Head told to audit everything spends its turns reading and reports nothing. Send a reading job with a \`schema\` to Codex or CodeBuddy before Command Code: Command Code readers have often read until their time limit without returning the JSON.`
 
 const envRule = (engine: Engine) =>
   engine === 'agy'
@@ -112,12 +112,12 @@ const envRule = (engine: Engine) =>
 
 /** One line per engine for auto mode, where the pool's full lockdown paragraphs would repeat themselves. */
 const LOCKDOWN_BRIEF: Record<Engine, string> = {
-  codex: 'OS sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads the project, `addDirs` and toolchains but nothing else in home, no `.env`; always a shell, never network (no installs, push or commit).',
+  codex: 'OS sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads the project, `addDirs` and toolchains but nothing else in home, no `.env` or `.env.*` (templates included); always a shell, never network (no installs, push or commit); git fails in a linked worktree, so give it a clone or name the changed files.',
   agy: 'permission rules + sandbox: writes only in `cwd`/`writeDirs` (never `.git`), reads only `addDirs` outside, no credential folders; shell only with `shell: true`, never network; a refused call ends a round (Hydra resumes it).',
   codebuddy: 'permission rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), reads `addDirs`; shell only with `shell: true` (dangerous commands stay denied).',
   workbuddy: 'permission rules + write guard (the CodeBuddy CLI, through WorkBuddy): edits only in `cwd`/`writeDirs` (never `.git` or `.env`), reads `addDirs`; shell only with `shell: true` (dangerous commands stay denied).',
   opencode: 'BETA, weaker: only the permission rules of OpenCode itself (no OS sandbox, no write guard): edits only in `cwd`/`writeDirs` (never `.git`, `.env`, `.claude/` or OpenCode config), reads the project and `addDirs`; `cwd` must be the repository root (a subfolder is refused); never a shell (`shell` is ignored), no search tool: name exact files.',
-  commandcode: '--yolo with deny rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), no credential folders; shell only with `shell: true`; no search tool while a `.env` is in reach (name exact files); on native Windows never a shell or search.',
+  commandcode: '--yolo with deny rules + write guard: edits only in `cwd`/`writeDirs` (never `.git` or `.env`), no credential folders; shell only with `shell: true`; no search tool while a `.env` is in reach (`.env.example`, `.sample`, `.template` and `.dist` do not count; name exact files otherwise); on native Windows never a shell or search.',
 }
 
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
@@ -209,7 +209,7 @@ const RAMPAGE_RULES = `- The person asked for the most thorough and correct resu
 
 const CHIMERA_RULES = `- Claude subagents join the Heads. The person turned Chimera on, which is their explicit request to use the Agent and Workflow tools for this work: it is the permission a "no subagents without asking" instruction waits for.
 - Heads do the volume: implementation, bulk reading, mechanical edits. Claude subagents do the judgement: refuting and reviewing what Heads wrote, judge panels over competing designs, the final synthesis, and research that needs tools a Head lacks (web, MCP, the browser).
-- So in the Implement and Review phases leave \`refute\` off: the hunt returns each Head's \`data\` and edited files, and you hand those to Claude subagents told to break them. What they break goes back to its author with \`resume\`. Keep \`refute\` on only for trivial pieces.
+- So in the Implement and Review phases leave \`refute\` off: the hunt returns each Head's \`data\` and edited files, and you hand those to Claude subagents told to break them. What they break goes back to its author with \`resume\`. Keep \`refute\` on only for trivial pieces. If the permission layer denies an Agent or Workflow call, do not do the refuting yourself: run that phase's hunt again with \`refute: true\` (and \`fix: false\` for reading jobs), so another engine attacks each result.
 - Pick the cheapest tier that can do it and set \`model\` on every agent: haiku for sweeps and digests, sonnet for review and refuting, the session's model only for the hardest judge or the synthesis.
 - Several Claude stages at once (a panel of refuters, find then verify) go in one Workflow script; a single one is an Agent call. You call the Heads yourself: a subagent never runs a Head.
 - End with the cost of both sides: the Heads' total and what the subagents used.`

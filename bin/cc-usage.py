@@ -136,9 +136,11 @@ def session_report(session_id, since_ms=0.0):
                 elif block.get("type") == "tool_result":
                     name, target = calls.get(block.get("tool_use_id"), ("", ""))
                     text = result_text(block.get("content"))
-                    if any(mark in text.lower() for mark in DENIAL_MARKS):
+                    lower = text.lower().strip()
+                    failure = block.get("is_error") is True or lower.startswith(("error", "permission denied", "requires permissions", "denied by", "not allowed", "blocked by", "deny rule", "outside workspace"))
+                    if failure and any(mark in lower for mark in DENIAL_MARKS):
                         denied.append({"tool": name, "target": target, "text": text[:200]})
-                    elif name in EDIT_TOOLS and not text.lower().startswith("error") and target and target not in files:
+                    elif not failure and name in EDIT_TOOLS and target and target not in files:
                         files.append(target)
     return {"usd": round(usd, 4), "files": files, "denied": denied[-12:], "toolCalls": count}
 

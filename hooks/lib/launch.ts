@@ -24,7 +24,9 @@ import { readMode, readRuns, updateMode } from './state'
 /** What the session is set to, as `register` read it from the options. */
 export type Launch = { defaultEngine: Engine; defaultHead: string; isFallbackOn: boolean }
 
-export type Prepared = { input: Record<string, unknown>; headModel: string; id: string; engine: Engine; routing: Routing; /** The Head whose session this one continues. */ continues?: string }
+export type Prepared = { input: Record<string, unknown>; headModel: string; id: string; engine: Engine; routing: Routing; schema?: Schema; /** The Head whose session this one continues. */ continues?: string }
+
+const headOptions = new Map<string, { effort?: string; schema?: Schema }>()
 
 /** Everything the Head tool settles before a Head starts: its engine, consent, folders, model and name. */
 export async function prepareHead($: EngineInterface, hydra: HydraMode, e: Readonly<Record<string, unknown>>, launch: Launch): Promise<Prepared | { deny: string }> {
@@ -54,13 +56,17 @@ export async function prepareHead($: EngineInterface, hydra: HydraMode, e: Reado
   const resumed = earlier
     ? { cwd, model: earlier.model, addDirs: e.addDirs ?? earlier.addDirs, shell: e.shell ?? earlier.shell, resumeSession: { id: earlier.sessionId, engine, model: earlier.model, account: earlier.account }, resumeFiles: earlier.files ?? [] }
     : {}
-  const input = { ...e, writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}), ...resumed }
+  const prior = earlier ? headOptions.get(earlier.id) : undefined
+  const effort = typeof e.effort === 'string' ? e.effort : prior?.effort ?? earlier?.effort
+  const schema = (e.schema as Schema | undefined) ?? prior?.schema
+  const input = { ...e, ...(effort ? { effort } : {}), writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}), ...resumed }
   const routing = { headModel: hydra.headModel, configured: defaultHead, model: asked, pool: isAuto(hydra) && hydra.pinned ? poolOf(hydra) : undefined, fallback: isFallbackOn }
   const taken = new Set([...usedNames, ...(await readRuns($)).map(run => run.id)])
   const id = headName(e.name ?? earlier?.id, String(e.task ?? ''), taken)
   usedNames.add(id)
+  headOptions.set(id, { effort, schema })
 
-  return { input, headModel, id, engine, routing, ...(earlier ? { continues: earlier.id } : {}) }
+  return { input, headModel, id, engine, routing, ...(schema ? { schema } : {}), ...(earlier ? { continues: earlier.id } : {}) }
 }
 
 const REPORT_MARK = '\n--- head report ---\n'
@@ -108,6 +114,7 @@ export type ReplySteps = {
   /** Asks again with `note`: in `session` when the Head's can be continued, else from the start. */
   again: (round: number, note: string, session: HeadSession | undefined, files: readonly string[]) => Promise<HeadResult>
   isAborted: () => boolean
+  retryId?: (round: number) => string
 }
 
 /**
@@ -116,22 +123,29 @@ export type ReplySteps = {
  */
 export async function readStructured(steps: ReplySteps): Promise<Structured> {
   let result = await steps.first()
+  const original = result
+  const retries: string[] = []
   const check = checkOf(result.text)
-  if (!result.isDone) return { result, check }
   let reply = readReply(steps.schema, result.fullText ?? headText(result.text))
+  if (!result.isDone) {
+    const errors = 'errors' in reply ? reply.errors : undefined
+    const line = errors ? 'json: ✗ none (the Head did not finish; read its handoff below)' : 'json: ✓ the reply matches the schema (the Head did not finish)'
+    return { result: { ...result, text: withSummary(result.text, [line]) }, check, ...(errors ? { dataErrors: errors } : { data: (reply as { data: unknown }).data }) }
+  }
   for (let round = 1; round <= JSON_FIX_ROUNDS && 'errors' in reply && !steps.isAborted(); round++) {
     const session = result.session && RESUMABLE.has(result.session.engine) ? result.session : undefined
     const files: string[] = result.files ?? []
     if (!session && files.length > 0) break
     let next: HeadResult
     try { next = await steps.again(round, schemaFixNote(reply.errors), session, files) } catch { break }
+    retries.push(`\n\n--- json retry ${round} (${steps.retryId?.(round) ?? `retry-${round}`}) ---\n${fullReport(next)}`)
     if (!next.isDone) break
     result = { ...next, files: [...new Set([...files, ...(next.files ?? [])])] }
     reply = readReply(steps.schema, next.fullText ?? headText(next.text))
   }
   const errors = 'errors' in reply ? reply.errors : undefined
 
-  return { result: { ...result, text: withSummary(result.text, [jsonLine(errors)]) }, check, ...(errors ? { dataErrors: errors } : { data: (reply as { data: unknown }).data }) }
+  return { result: { ...original, files: result.files, session: result.session, text: withSummary(original.text, [jsonLine(errors)]) + retries.join('') }, check, ...(errors ? { dataErrors: errors } : { data: (reply as { data: unknown }).data }) }
 }
 
 /** Settles even when a stopped engine never returns. */
@@ -145,8 +159,11 @@ export async function untilStopped<T>(run: () => Promise<T>, signal: AbortSignal
 /** Runs a Head and, given a `schema`, the rounds that get its JSON result (`readStructured`). */
 export async function runStructured($: EngineInterface, prepared: Prepared, signal: AbortSignal, schema?: Schema, reportDir?: string): Promise<Structured> {
   const { headModel, id, engine, routing } = prepared
+  schema = schema ?? prepared.schema
+  headOptions.set(id, { effort: typeof prepared.input.effort === 'string' ? prepared.input.effort : undefined, schema })
   const home = reportDir ? undefined : await homeOf($)
   const dir = reportDir ?? (home ? `${home}/.claude/hydra/heads/${await $.session.id()}` : undefined)
+  if (dir) await $.process.run(['/bin/mkdir', '-p', dir]).catch(() => undefined)
   const save = async (result: HeadResult, name: string) => {
     if (!dir) return result
     return saveHeadReport($, result, `${dir}/${name}.md`)
@@ -159,12 +176,14 @@ export async function runStructured($: EngineInterface, prepared: Prepared, sign
   const task = String(prepared.input.task ?? '')
   const base = { ...prepared.input, task: task + schemaNote(schema) }
 
+  const retryIds = new Map<number, string>()
   const structured = await readStructured({
     schema,
     first: async () => save(await untilStopped(() => runHead($, base, headModel, signal, id, engine, routing), signal), id),
     again: async (round, note, session, files) => {
       const fixId = headName(`${id.slice(0, 14)}-json${round > 1 ? round : ''}`, task, new Set([...usedNames, ...(await readRuns($)).map(run => run.id)]))
       usedNames.add(fixId)
+      retryIds.set(round, fixId)
       const input = session
         ? { ...base, task: note, check: undefined, files: undefined, model: session.model, resumeSession: session, resumeFiles: files }
         : { ...base, task: `${base.task}\n\nAn earlier attempt at this task ended without a usable result. ${note}`, check: undefined }
@@ -178,12 +197,13 @@ export async function runStructured($: EngineInterface, prepared: Prepared, sign
       finally { controllers.delete(fixId); signal.removeEventListener('abort', stop) }
     },
     isAborted: () => signal.aborted,
+    retryId: round => retryIds.get(round) ?? `retry-${round}`,
   })
   return { ...structured, result: await save(structured.result, id) }
 }
 
-/** Saves the complete report and adds its location to a clipped copy. */
-export async function saveHeadReport($: Pick<EngineInterface, 'fs'>, result: HeadResult, path: string): Promise<HeadResult> {
+/** Restores the uncut Head text in a report. */
+const reportParts = (result: HeadResult) => {
   const marker = result.text.indexOf(REPORT_MARK)
   const start = marker + REPORT_MARK.length
   const plain = result.fullText === undefined ? undefined : clipReport(result.fullText) || '(no final report)'
@@ -191,12 +211,22 @@ export async function saveHeadReport($: Pick<EngineInterface, 'fs'>, result: Hea
   const clipped = named ?? plain
   const found = clipped !== undefined && marker >= 0 && result.text.slice(start, start + clipped.length) === clipped
   const full = found ? result.text.slice(0, start) + (result.fullText!.trim() || '(no final report)') + result.text.slice(start + clipped.length) : result.text
+  return { full, found, start, clipped }
+}
+
+/** Restores the complete report for a retry. */
+const fullReport = (result: HeadResult) => reportParts(result).full
+
+/** Saves the complete report and adds its location to a clipped copy. */
+export async function saveHeadReport($: Pick<EngineInterface, 'fs'>, result: HeadResult, path: string): Promise<HeadResult> {
+  const { full, found, start, clipped } = reportParts(result)
   try {
     await $.fs.write(path, full)
+    if (!(await $.fs.exists(path))) return result
   } catch {
     return result
   }
-  return found ? { ...result, text: result.text.slice(0, start) + (clipReport(result.fullText!, path) || '(no final report)') + result.text.slice(start + clipped.length) } : result
+  return found ? { ...result, text: result.text.slice(0, start) + (clipReport(result.fullText!, path) || '(no final report)') + result.text.slice(start + clipped!.length) } : result
 }
 
 /** Who refutes best first: a wide reader, then the cheap coders; the costly engine and the one with no search come last. */
@@ -257,6 +287,7 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
   // One engine is one account's rate limit: only a pool of several takes more Heads at once.
   if (pool.length > 1) gate.setLimit(HUNT_PARALLEL)
   try {
+    if (dir) await $.process.run(['/bin/mkdir', '-p', dir]).catch(() => undefined)
     const runOne = async (call: HeadCall): Promise<HeadRan> => {
       const hydra = await readMode($)
       if (!hydra?.isOn) throw new Error('Hydra was turned off')
@@ -275,7 +306,7 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
       controllers.set(prepared.id, controller)
       let structured: Structured
       try {
-        structured = await runStructured($, prepared, controller.signal, schema, dir)
+        structured = await runStructured($, prepared, controller.signal, schema ?? prepared.schema, dir)
       } finally {
         controllers.delete(prepared.id)
         signal.removeEventListener('abort', stop)
@@ -283,7 +314,8 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
       await announceEnding($, prepared.id).catch(() => undefined)
       const { result } = structured
       const cwd = typeof prepared.input.cwd === 'string' && prepared.input.cwd ? prepared.input.cwd : await $.session.root()
-      const reportPath = dir ? `${dir}/${prepared.id}.md` : undefined
+      const path = dir ? `${dir}/${prepared.id}.md` : undefined
+      const reportPath = path && await $.fs.exists(path).catch(() => false) ? path : undefined
       const run = (await readRuns($)).find(entry => entry.id === prepared.id)
       if (!REFUTER_NAME.test(call.name) && !resume) authors.set(call.name, { engine: run?.engine ?? prepared.engine, ...(run?.model ? { model: run.model } : {}) })
       const canContinue = result.session !== undefined && RESUMABLE.has(result.session.engine)
@@ -323,11 +355,17 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
       },
       isAborted: () => signal.aborted,
     })
+    if (dir) {
+      for (const outcome of result.outcomes) if (!outcome.reportPath || !(await $.fs.exists(outcome.reportPath).catch(() => false))) outcome.reportPath = `${dir}/hunt.md`
+      const path = `${dir}/hunt.md`
+      const saved = await $.fs.write(path, `${formatHunt(result, Number.POSITIVE_INFINITY)}\n`).then(() => $.fs.exists(path)).catch(() => false)
+      if (!saved) for (const outcome of result.outcomes) if (outcome.reportPath === path) delete outcome.reportPath
+    }
     const text = formatHunt(result)
-    if (dir) await $.fs.write(`${dir}/hunt.md`, `${text}\n`).catch(() => undefined)
     const stopped = signal.aborted ? '\n⚠ The hunt was stopped before it ended: Heads that had not finished are listed as missing.' : ''
 
-    return `${text}${stopped}${dir ? `\n\nEvery Head's full report is in ${dir}` : ''}`
+    const hasHunt = dir && await $.fs.exists(`${dir}/hunt.md`).catch(() => false)
+    return `${text}${stopped}${hasHunt ? `\n\nFull reports: ${dir} (hunt.md holds every block uncut)` : ''}`
   } finally {
     liveHunts = Math.max(0, liveHunts - 1)
     if (liveHunts === 0) gate.setLimit(MAX_PARALLEL)

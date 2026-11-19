@@ -276,11 +276,15 @@ async function codexTempRoot($: EngineInterface) {
 
 const CODEX_TEMP_PREFIX = 'hydra-codex-'
 
-/** Makes this Head's private temp folder, under the system temp folder and owner-only. Returns its path. */
-async function makeCodexTemp($: EngineInterface, id: string): Promise<string> {
+/** Go's build cache and temp folder, inside the Head's own temp folder because the sandbox writes nowhere else. */
+const CODEX_GO_DIRS = ['go-build', 'go-tmp'] as const
+
+/** Makes this Head's private temp folder and its Go folders, under the system temp folder and owner-only. Returns its path. */
+export async function makeCodexTemp($: EngineInterface, id: string): Promise<string> {
   const dir = `${await codexTempRoot($)}/${CODEX_TEMP_PREFIX}${await $.session.id()}-${id}`
-  await $.process.run(['/bin/mkdir', '-p', dir])
-  await $.process.run(['/bin/chmod', '700', dir])
+  const goDirs = CODEX_GO_DIRS.map(name => `${dir}/${name}`)
+  await $.process.run(['/bin/mkdir', '-p', dir, ...goDirs])
+  await $.process.run(['/bin/chmod', '700', dir, ...goDirs])
   return dir
 }
 
@@ -303,11 +307,14 @@ export async function sweepCodexTemps($: EngineInterface) {
 }
 
 /**
- * A Codex Head's environment: the person's own for the engine, and `TMPDIR` at the Head's private folder. macOS's
- * `/usr/bin/git` is an xcrun shim that needs a writable temp folder, and the sandbox writes nowhere else in `/tmp`.
- * zsh puts here-documents under `TMPPREFIX` (default `/tmp/zsh`), not `TMPDIR`, so that points there too.
+ * A Codex Head's environment: the person's own for the engine, `TMPDIR` at the Head's private folder, and Go's cache and
+ * temp folders inside it, since the sandbox writes nowhere else. macOS's `/usr/bin/git` is an xcrun shim that needs a
+ * writable temp folder, and the sandbox writes nowhere else in `/tmp`. zsh puts here-documents under `TMPPREFIX` (default
+ * `/tmp/zsh`), not `TMPDIR`, so that points there too. `GOMODCACHE` stays the person's, read-only.
  */
-export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => ({ ...env, TMPDIR: `${tempDir}/`, TMPPREFIX: `${tempDir}/zsh` })
+export const codexEnv = (tempDir: string, env: Record<string, string> = {}) => ({
+  ...env, TMPDIR: `${tempDir}/`, TMPPREFIX: `${tempDir}/zsh`, GOCACHE: `${tempDir}/go-build`, GOTMPDIR: `${tempDir}/go-tmp`,
+})
 
 /** The top-level `openai_base_url` of a Codex config (an API-key gateway), which `--ignore-user-config` would drop. */
 export const codexBaseUrl = (config: string) => /^[ \t]*openai_base_url[ \t]*=[ \t]*"([^"]+)"/m.exec(config.split(/^[ \t]*\[/m)[0] ?? '')?.[1]

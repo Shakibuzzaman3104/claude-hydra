@@ -4,7 +4,7 @@
  */
 import { expect, test } from 'claude-code/testing'
 
-import { DEFAULT_LENS, HUNT_MAX_HEADS, VERDICT_SCHEMA, fixTask, formatHunt, headKey, parseHunt, refuteTask, runHunt, statusOf, verdictOf } from './lib/hunt'
+import { DEFAULT_LENS, HUNT_MAX_HEADS, VERDICT_SCHEMA, fixTask, formatHunt, headKey, outsidePathNotes, parseHunt, refuteTask, runHunt, statusOf, verdictOf } from './lib/hunt'
 import { untilStopped } from './lib/launch'
 import type { HeadCall, HeadOutcome, HeadRan, HuntPlan, HuntSteps } from './lib/hunt'
 
@@ -38,7 +38,9 @@ test('head names are normalized unique and avoid reserved endings', async () => 
   expect(parseHunt({ name: 'x', heads: [{ task: 'x', name: 'bad!' }] })).toEqual({ deny: 'Head 1: `name` must be lowercase letters, digits and dashes, up to 20.' })
   expect(parseHunt({ name: 'x', heads: [{ task: 'x', name: 'X-1' }, { task: 'y' }] })).toEqual({ plan: { name: 'x', shared: '', heads: [{ name: 'x-1', task: 'x' }, { name: 'x-2', task: 'y' }], fresh: false } })
   expect(parseHunt({ name: 'x', heads: [{ task: 'x' }, { task: 'y', name: 'X-1' }] })).toEqual({ deny: 'Two Heads are named "x-1"; names must differ.' })
-  for (const name of ['a-fix', 'a-r12', 'a-json', 'a-json2']) expect(parseHunt({ name: 'x', heads: [{ name, task: 'x' }] })).toEqual({ deny: `Head 1: the name "${name}" ends like one of the hunt's own follow-up Heads (-fix, -r1, -json); pick another.` })
+  for (const name of ['a-fix', 'a-r12', 'a-json', 'a-json2']) expect(parseHunt({ name: 'x', heads: [{ name, task: 'x' }] })).toEqual({ plan: { name: 'x', shared: '', heads: [{ name: `${name}-h`, task: 'x' }], fresh: false }, notes: [`note: Head 1 renamed ${name} → ${name}-h (names ending -fix, -rN or -jsonN are kept for Hydra's follow-up Heads)`] })
+  expect(parseHunt({ name: 'x', heads: [{ name: 'abcdefghijklmnop-fix', task: 'x' }] })).toMatchObject({ plan: { heads: [{ name: 'abcdefghijklmnop-f-h' }] } })
+  expect(parseHunt({ name: 'x', heads: [{ name: 'a-fix', task: 'x' }, { name: 'a-fix', task: 'y' }] })).toMatchObject({ plan: { heads: [{ name: 'a-fix-h' }, { name: 'a-fix-2-h' }] } })
   expect(parseHunt({ name: 'abcdefghijklmnopq', heads: [{ task: 'x' }] })).toMatchObject({ plan: { heads: [{ name: 'abcdefghijklmnop-1' }] } })
 })
 
@@ -58,9 +60,23 @@ test('hunt cwd defaults Heads and root folders are refused before launch', async
   expect(parseHunt({ name: 'x', cwd: '/repo', heads: [{ task: 'a' }, { task: 'b', cwd: '/other' }] }, '/')).toMatchObject({ plan: { heads: [{ cwd: '/repo' }, { cwd: '/other' }] } })
 })
 
-test('paths outside all Head folders produce notes', async () => {
-  const result = parseHunt({ name: 'x', shared: 'Read /brief/spec.md and /repo/a', heads: [{ task: 'See /assets/icon.png', addDirs: ['/assets'] }] }, '/repo')
-  expect(result).toMatchObject({ notes: ["note: /brief/spec.md is outside every Head's folders; pass it in addDirs to let them read it"] })
+test('paths outside all Head folders produce notes only when they exist', async () => {
+  const p = plan({ shared: 'Read /brief/spec.md and /repo/a', heads: [{ name: 'one', task: 'See /assets/icon.png', addDirs: ['/assets'] }] })
+  const notes = await outsidePathNotes(p, '/repo', async path => path === '/brief/spec.md' || path === '/repo/a')
+  expect(notes).toEqual(["note: /brief/spec.md is outside every Head's folders; pass it in addDirs to let them read it"])
+})
+
+test('outside path notes skip globs and punctuation and follow spaces to a real file', async () => {
+  const p = plan({ shared: 'Use /** and /repo/*.ts and /v1/me/photo and /e and "/bin/sh" and /Volumes/My Files/x.' })
+  const paths = new Set(['/repo/*.ts', '/bin/sh', '/Volumes/My Files/x'])
+  expect(await outsidePathNotes(p, '/repo', async path => paths.has(path))).toEqual([
+    "note: /bin/sh is outside every Head's folders; pass it in addDirs to let them read it",
+    "note: /Volumes/My Files/x is outside every Head's folders; pass it in addDirs to let them read it",
+  ])
+})
+
+test('outside path notes report nothing for a path inside a Head folder', async () => {
+  expect(await outsidePathNotes(plan({ shared: 'Read /repo/a' }), '/repo', async () => true)).toEqual([])
 })
 
 test('job keys are stable and include the task context schema and engine', async () => {
@@ -79,6 +95,29 @@ test('status distinguishes all endings and invalid results', async () => {
   expect(statusOf(ran({ isDone: false, ending: 'blocked' }), false)).toBe('blocked')
   for (const ending of ['capped', 'timeout', 'stalled']) expect(statusOf(ran({ isDone: false, ending }), false)).toBe('unfinished')
   expect(statusOf(ran({ isDone: false }), false)).toBe('failed')
+  for (const ending of ['blocked', 'capped', 'timeout', 'stalled']) expect(statusOf(ran({ isDone: false, ending, data: {} }), true)).toBe('partial')
+})
+
+test('a Head that did not finish but passed its check is done with a note', async () => {
+  const notes = { blocked: 'said blocked, check passed', capped: 'out of turns, check passed', timeout: 'out of time, check passed', stalled: 'stalled, check passed' }
+  for (const [ending, note] of Object.entries(notes)) {
+    expect(statusOf(ran({ isDone: false, ending, check: 'passed' }), false)).toBe('done')
+    const result = await runHunt(fake(plan(), { one: ran({ isDone: false, ending, check: 'passed' }) }).steps)
+    expect(result.outcomes[0]).toMatchObject({ status: 'done', note })
+    expect(result.missing).toEqual([])
+    expect(formatHunt(result)).toContain(`done (${note})`)
+  }
+})
+
+test('partial Heads keep their data are not missing and are counted', async () => {
+  const p = plan({ heads: [{ name: 'one', task: 'a' }, { name: 'two', task: 'b' }] })
+  const result = await runHunt(fake(p, { one: ran({ isDone: false, ending: 'capped', data: { x: 1 } }), two: ran({ isDone: false, ending: 'timeout', data: { y: 2 } }) }).steps)
+  expect(result.outcomes.map(item => item.status)).toEqual(['partial', 'partial'])
+  expect(result.missing).toEqual([])
+  const text = formatHunt(result)
+  expect(text).toContain('· 2 partial')
+  expect(text).toContain('data: {"x":1}')
+  expect(text).toContain('data: {"y":2}')
 })
 
 test('verdicts require usable answers and concrete problems', async () => {
@@ -97,6 +136,8 @@ test('verdicts require usable answers and concrete problems', async () => {
 test('prompts describe the work and concrete review problems', async () => {
   expect(refuteTask({ name: 'a', task: 'work' }, 'context', ran({ files: ['a'], data: { x: 1 } }), 'security')).toContain('Context:\ncontext\n\nThe task it was given:\nwork')
   expect(fixTask(broken.problems)).toContain('- [high] a:2: wrong')
+  expect(fixTask(broken.problems)).not.toContain('reading job')
+  expect(fixTask(broken.problems, true)).toContain('This is a reading job: change no files')
 })
 
 test('heads run independently and return in plan order', async () => {
@@ -176,6 +217,18 @@ test('a broken result is fixed once and reviewed again', async () => {
   expect(f.calls.map(call => call.name)).toEqual(['one', 'one-r1', 'one-fix', 'one-r1b'])
   expect(f.calls[2]).toMatchObject({ resume: 'one', check: 'test' })
   expect(result.outcomes[0]).toMatchObject({ files: ['a', 'b'], cost: '1 + 2', refute: { verdict: 'broken', fixRounds: 1, by: ['reviewer'], edited: ['bad', 'bad2'] } })
+})
+
+test('a reading Head is told not to change files and a change is flagged first', async () => {
+  const p = plan({ heads: [{ name: 'one', task: 'work' }], refute: { lenses: ['x'], fix: true } })
+  const f = fake(p, { one: ran({ files: [] }), 'one-r1': ran({ data: broken }), 'one-fix': ran({ files: ['a'] }) })
+  const result = await runHunt(f.steps)
+  expect(f.calls.find(call => call.name === 'one-fix')?.task).toContain('This is a reading job: change no files')
+  expect(result.outcomes[0]?.readingChanged).toEqual(['a'])
+  const text = formatHunt(result)
+  const warning = '⚠ a reading Head changed files in its fix round: a'
+  expect(text).toContain(warning)
+  expect(text.indexOf(warning)).toBeLessThan(text.indexOf('edited: a'))
 })
 
 test('fixing requires permission and a resumable author', async () => {

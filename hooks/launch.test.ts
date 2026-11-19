@@ -5,8 +5,9 @@
 import { expect, test } from 'claude-code/testing'
 
 import { HUNT_RULE, HYDRA_POLICY } from './lib/policy'
-import { JSON_FIX_ROUNDS, checkOf, fallbackOf, headSummary, headText, huntContext, huntDir, huntNotice, jsonLine, pickRefuter, readStructured, refuterModel, REPORT_HUNT, saveHeadReport, untilStopped } from './lib/launch'
+import { JSON_FIX_ROUNDS, checkOf, fallbackOf, headSummary, headText, huntContext, huntDir, huntNotice, jsonLine, pickRefuter, prepareHead, readStructured, refuterModel, REPORT_HUNT, runHuntJob, saveHeadReport, untilStopped } from './lib/launch'
 import { clipReport } from './lib/format'
+import { headKey } from './lib/hunt'
 import type { EngineInterface } from 'claude-code'
 import type { HeadResult, HeadSession } from './lib/runtime'
 import { HUNT_PARALLEL, MAX_PARALLEL, createGate } from './lib/runtime'
@@ -82,6 +83,24 @@ test('a background hunt reaches the person as one line and Claude as marked cont
   expect(huntDir('/home/me', 's1', 'auth-audit')).toBe('/home/me/.claude/hydra/hunts/s1/auth-audit')
 })
 
+test('a hunt creates its folder and saves uncut blocks with a fallback for missing reports', async () => {
+  const plan = { name: 'audit', shared: '', heads: [{ name: 'api', task: 'inspect' }], fresh: false }
+  const outcome = { name: 'api', engine: 'codex', status: 'done', isCached: false, files: [], summary: 'x'.repeat(16000), reportPath: '/missing/api.md' }
+  const files: Record<string, string> = {}
+  let made = false
+  const fake = { state: { get: async () => ({ value: null, version: 1 }) }, session: { id: async () => 's1' }, env: { get: async (name: string) => name === 'HOME' ? '/home/me' : undefined },
+    store: { get: async () => ({ at: 0, outcomes: { [headKey(plan, plan.heads[0]!)]: outcome } }) },
+    process: { run: async (args: string[]) => { made = args[0] === '/bin/mkdir' && args[1] === '-p' } },
+    fs: { write: async (path: string, text: string) => { if (!made) throw new Error('missing folder'); files[path] = text }, exists: async (path: string) => path in files },
+  } as unknown as EngineInterface
+  const dir = huntDir('/home/me', 's1', 'audit')
+  const text = await runHuntJob(fake, { plan, launch: { defaultEngine: 'codex', defaultHead: 'm', isFallbackOn: false } }, new AbortController().signal)
+  expect(made).toBe(true)
+  expect(files[`${dir}/hunt.md`]).toContain('x'.repeat(16000))
+  expect(text).toContain(`… cut: read the full report at ${dir}/hunt.md`)
+  expect(text).toContain(`Full reports: ${dir} (hunt.md holds every block uncut)`)
+})
+
 test('a raised gate lets waiting Heads in at once, and a lowered one drains as they end', async () => {
   const gate = createGate(1)
   const started: number[] = []
@@ -150,7 +169,7 @@ test('saved hunt and single Head reports retain the uncut reply and name the fil
   const fullText = `start${'x'.repeat(9000)}end`
   const result = reply(clipReport(fullText), { fullText })
   const files: Record<string, string> = {}
-  const fs = { write: async (path: string, text: string) => { files[path] = text } } as unknown as EngineInterface['fs']
+  const fs = { write: async (path: string, text: string) => { files[path] = text }, exists: async (path: string) => path in files } as unknown as EngineInterface['fs']
   const huntPath = '/home/me/.claude/hydra/hunts/s1/audit/api.md'
   const singlePath = '/home/me/.claude/hydra/heads/s1/api.md'
   const hunt = await saveHeadReport({ fs }, result, huntPath)
@@ -163,6 +182,8 @@ test('saved hunt and single Head reports retain the uncut reply and name the fil
   expect(files[huntPath]).toContain(fullText)
   const failed = { write: async () => { throw new Error('denied') } } as unknown as EngineInterface['fs']
   expect((await saveHeadReport({ fs: failed }, result, singlePath)).text).toBe(result.text)
+  const missing = { write: async () => undefined, exists: async () => false } as unknown as EngineInterface['fs']
+  expect((await saveHeadReport({ fs: missing }, result, singlePath)).text).toBe(result.text)
 })
 
 test('a reply without usable JSON goes back to the Head in its own session, with the errors', async () => {
@@ -173,6 +194,26 @@ test('a reply without usable JSON goes back to the Head in its own session, with
   expect(calls[0]!.session).toEqual(SESSION)
   expect(calls[0]!.note).toContain('no JSON block in the reply')
   expect(read.result.files).toEqual(['/r/a.ts', '/r/b.ts'])
+  expect(read.result.text).toContain('prose only')
+  expect(read.result.text).toContain('--- json retry 1 (retry-1) ---')
+  expect(read.result.text).toContain(GOOD)
+})
+
+test('saving a JSON retry preserves the original header and appends the retry report', async () => {
+  const original = { ...reply('prose only', { session: SESSION }), text: REPORT.replace('{"ok": true}', '{"n": "bad"}') }
+  const retry = reply(GOOD, { session: SESSION })
+  const { steps } = rounds(original, [retry])
+  const read = await readStructured({ ...steps, retryId: () => 'api-json' })
+  const files: Record<string, string> = {}
+  const fs = { write: async (path: string, text: string) => { files[path] = text }, exists: async (path: string) => path in files } as unknown as EngineInterface['fs']
+  await saveHeadReport({ fs }, retry, '/reports/api-json.md')
+  await saveHeadReport({ fs }, read.result, '/reports/api.md')
+  expect(files['/reports/api.md']).toContain('9 turns · 12k in / 1k out')
+  expect(files['/reports/api.md']).toContain('edited (1): a.ts')
+  expect(files['/reports/api.md']).toContain('check: npm test ✓ passed')
+  expect(files['/reports/api.md']).toContain('json: ✓ the reply matches the schema')
+  expect(files['/reports/api.md']).toContain('--- json retry 1 (api-json) ---')
+  expect(files['/reports/api-json.md']).toContain(GOOD)
 })
 
 test('the retry stops after its rounds and reports why the result is unusable', async () => {
@@ -195,18 +236,43 @@ test('a Head that cannot be continued is asked again from the start only if it c
   expect(read.dataErrors).toEqual(['no JSON block in the reply'])
 })
 
-test('an unfinished Head is not asked for JSON, and a failed retry keeps the first result', async () => {
+test('an unfinished Head reads JSON without retrying, and a failed retry keeps the first result', async () => {
   const unfinished = rounds({ text: 'head x · NOT finished\n--- head report ---\nstuck', isDone: false, ending: 'blocked' }, [])
   const blocked = await readStructured(unfinished.steps)
   expect(unfinished.calls.length).toBe(0)
   expect(blocked.result.isDone).toBe(false)
   expect(blocked.data).toBeUndefined()
-  expect(blocked.dataErrors).toBeUndefined()
+  expect(blocked.dataErrors).toEqual(['no JSON block in the reply'])
+  expect(blocked.result.text).toContain('json: ✗ none (the Head did not finish; read its handoff below)')
+  const valid = rounds(reply(GOOD, { isDone: false }), [])
+  const read = await readStructured(valid.steps)
+  expect(read.data).toEqual({ n: 3 })
+  expect(read.result.text).toContain('json: ✓ the reply matches the schema (the Head did not finish)')
+  expect(valid.calls.length).toBe(0)
   const lost = rounds(reply('prose first', { session: SESSION }), [{ text: 'head x · NOT finished\n--- head report ---\nlimit', isDone: false }])
   const kept = await readStructured(lost.steps)
   expect(kept.result.isDone).toBe(true)
   expect(kept.result.text).toContain('prose first')
   expect(kept.dataErrors).toEqual(['no JSON block in the reply'])
+})
+
+test('a resumed Head inherits effort and schema, with explicit effort taking precedence', async () => {
+  const list = [{ id: 'resume-seed', task: 'work', model: 'm', state: 'done', turns: 1, cwd: '/repo', engine: 'codebuddy', sessionId: 's1' }]
+  const $ = { state: { get: async () => ({ value: list, version: 1 }) }, store: { get: async (key: string) => key === 'consent-v1:codebuddy' },
+    env: { get: async () => '' }, fs: { stat: async () => undefined },
+  } as unknown as EngineInterface
+  const hydra = { isOn: true, headModel: 'm', engine: 'codebuddy' }
+  const launch = { defaultEngine: 'codebuddy' as const, defaultHead: 'm', isFallbackOn: false }
+  const first = await prepareHead($, hydra, { task: 'first', resume: 'resume-seed', effort: 'high', schema: SCHEMA }, launch)
+  if ('deny' in first) throw new Error(first.deny)
+  list.push({ ...list[0]!, id: first.id })
+  const resumed = await prepareHead($, hydra, { task: 'continue', resume: first.id }, launch)
+  if ('deny' in resumed) throw new Error(resumed.deny)
+  expect(resumed.input.effort).toBe('high')
+  expect(resumed.schema).toEqual(SCHEMA)
+  const changed = await prepareHead($, hydra, { task: 'continue', resume: first.id, effort: 'max' }, launch)
+  if ('deny' in changed) throw new Error(changed.deny)
+  expect(changed.input.effort).toBe('max')
 })
 
 test('a stopped run asks no more, and the check verdict is the first run\'s', async () => {

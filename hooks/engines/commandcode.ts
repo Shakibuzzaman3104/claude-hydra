@@ -25,18 +25,8 @@ const OWNER = 'hydra'
 
 const WATCHED = new Set(['turn_end', 'thinking_start', 'tool_queued', 'tool_running', 'tool_completed', 'tool_denied'])
 
-/** The session a Head started, found from its transcript when the run ended before reporting it (a timeout, a kill). */
-async function findSession($: EngineInterface, since: number, task: string): Promise<string | undefined> {
-  try {
-    const ran = await runScript($, 'cc-usage.py', ['--find', String(since - 5_000), task.slice(0, 100)])
-    return (JSON.parse(ran.stdout) as { sessionId: string | null }).sessionId ?? undefined
-  } catch {
-    return undefined
-  }
-}
-
 /** A session's cost, edits and denials from its transcript; with `since`, only from then on: a Head that continues a session reports its own part. */
-async function sessionReport($: EngineInterface, sessionId: string, since?: number): Promise<SessionReport> {
+export async function sessionReport($: EngineInterface, sessionId: string, since?: number): Promise<SessionReport> {
   try {
     const ran = await runScript($, 'cc-usage.py', ['--report', sessionId, ...(since ? [String(since)] : [])])
     return JSON.parse(ran.stdout) as SessionReport
@@ -190,10 +180,11 @@ const searchOff = new Map<string, string>()
 const UNTIL_SLACK_MS = 5 * 60_000
 
 /** The first `.env` file under `dirs`, or why the check failed; a failed check counts as found. */
-async function findEnvFile($: EngineInterface, dirs: readonly string[]): Promise<string | undefined> {
+export async function findEnvFile($: EngineInterface, dirs: readonly string[]): Promise<string | undefined> {
   const found = await $.process.run([
     'find', ...dirs, '(', '-name', '.git', '-o', '-name', 'node_modules', ')', '-prune', '-o',
-    '-type', 'f', '(', '-name', '.env', '-o', '-name', '.env.*', ')', '-print', '-quit',
+    '-type', 'f', '(', '-name', '.env', '-o', '-name', '.env.*', ')',
+    '!', '-name', '.env.example', '!', '-name', '.env.sample', '!', '-name', '.env.template', '!', '-name', '.env.dist', '-print', '-quit',
   ]).catch(() => null)
   if (!found) return 'the .env check could not run'
   const first = found.stdout.split('\n')[0]?.trim()
@@ -310,11 +301,13 @@ export async function leaveProject($: EngineInterface, cwd: string, id: string) 
   await writeRules($, cwd).catch(() => undefined)
 }
 
-async function runRound(
+/** Runs one process and keeps its own streamed session and response. */
+export async function runRound(
   $: EngineInterface,
   argv: RoundArgs,
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => Promise<void>,
+  onSession: (sessionId: string) => Promise<void> = async () => undefined,
 ): Promise<Round> {
   const args = ['commandcode', '-p', argv.prompt, '-m', argv.model, '--max-turns', String(argv.maxTurns),
     '--output-format', 'json', '--skip-onboarding', '--yolo', '--trust']
@@ -322,10 +315,17 @@ async function runRound(
   if (argv.effort) args.push('--effort', argv.effort)
   if (argv.resume) args.push('--resume', argv.resume)
   let result: Record<string, unknown> | null = null
+  let started: string | undefined
+  let streamedText: string | undefined
   const { errors, exit } = await pump($, args, argv.cwd, signal, async line => {
     if (!line.trim().startsWith('{')) return false
     try {
-      const row = JSON.parse(line) as { type?: string; event?: StreamEvent }
+      const row = JSON.parse(line) as { type?: string; sessionId?: string; event?: StreamEvent & { sessionId?: string; result?: { finalText?: string } } }
+      if (!started && row.event?.type === 'run_start' && typeof row.event.sessionId === 'string' && row.event.sessionId) {
+        started = row.event.sessionId
+        await onSession(started)
+      }
+      if (row.event?.type === 'run_end' && typeof row.event.result?.finalText === 'string') streamedText = row.event.result.finalText
       if (row.type === 'result') result = row as Record<string, unknown>
       if (row.event && WATCHED.has(row.event.type)) await onEvent(row.event)
     } catch {
@@ -334,10 +334,12 @@ async function runRound(
     return false
   })
   const final = result as Record<string, unknown> | null
+  const own = started ?? argv.resume
+  const matched = own && final?.sessionId === own
   return {
-    finalText: String(final?.finalText ?? ''),
-    sessionId: typeof final?.sessionId === 'string' ? final.sessionId : undefined,
-    subtype: typeof final?.subtype === 'string' ? final.subtype : undefined,
+    finalText: streamedText ?? (matched ? String(final?.finalText ?? '') : ''),
+    sessionId: started,
+    subtype: matched && typeof final?.subtype === 'string' ? final.subtype : undefined,
     code: exit.code,
     signal: exit.signal,
     errors,
@@ -350,13 +352,14 @@ async function runRoundAt(
   argv: RoundArgs,
   signal: AbortSignal,
   onEvent: (event: StreamEvent) => Promise<void>,
+  onSession: (sessionId: string) => Promise<void>,
 ): Promise<Round & { effort?: string }> {
-  const round = await runRound($, argv, signal, onEvent)
+  const round = await runRound($, argv, signal, onEvent, onSession)
   if (round.sessionId || !argv.effort || signal.aborted) return { ...round, effort: argv.effort }
-  if (/no reasoning effort/i.test(round.errors)) return { ...(await runRound($, { ...argv, effort: undefined }, signal, onEvent)), effort: undefined }
+  if (/no reasoning effort/i.test(round.errors)) return { ...(await runRound($, { ...argv, effort: undefined }, signal, onEvent, onSession)), effort: undefined }
   const effort = /Unknown effort/i.test(round.errors) ? nearestEffort(argv.effort, supportedEfforts(round.errors)) : undefined
   if (!effort || effort === argv.effort) return { ...round, effort: argv.effort }
-  return { ...(await runRound($, { ...argv, effort }, signal, onEvent)), effort }
+  return { ...(await runRound($, { ...argv, effort }, signal, onEvent, onSession)), effort }
 }
 
 /** A Head on Command Code: the project's shared rules file, then rounds until it reports HEAD DONE. */
@@ -413,7 +416,7 @@ async function runLockedHead(
   const runRound = async (round: RoundSpec, signal: AbortSignal) => {
     const effort = await effortNow()
     await setRun($, id, { effort })
-    const ran = await runRoundAt($, { ...round, model, cwd, addDirs, effort }, signal, onEvent)
+    const ran = await runRoundAt($, { ...round, model, cwd, addDirs, effort }, signal, onEvent, sessionId => setRun($, id, { sessionId }))
     if (ran.effort !== effort) await setRun($, id, { effort: ran.effort })
     return ran
   }
@@ -425,7 +428,6 @@ async function runLockedHead(
     turns: () => turns,
     calls: () => counter.calls,
     denied: async sessionId => (await sessionReport($, sessionId)).denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`),
-    findSession: () => findSession($, startedAt, task),
     sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
     onStep: activity => setRun($, id, { activity }),
   })

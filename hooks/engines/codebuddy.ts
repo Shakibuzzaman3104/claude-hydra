@@ -28,6 +28,8 @@ const BUDDY_TOOLS: Record<string, string> = {
 /** How CodeBuddy words a refused call in headless mode, and how Hydra's write guard words its own. */
 const BUDDY_DENIAL = /has been denied|requires approval|permission prompts are not available|blocked by|outside the project|write guard/i
 
+type BuddyUsage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+
 /** What a CodeBuddy Head did, accumulated from its stream: the turns it took, files it edited, calls refused, tokens used. */
 export type BuddyState = {
   messages: Set<string>
@@ -35,20 +37,33 @@ export type BuddyState = {
   files: Set<string>
   denied: SessionReport['denied']
   inputTokens: number
+  /** The cached part of `inputTokens`, as the stream reported it. */
+  cachedInputTokens: number
   outputTokens: number
+  /** Whether this round's assistant messages carried usage, so the result row's whole-session total is not added too. */
+  sawUsage: boolean
 }
 
-export const newBuddyState = (): BuddyState => ({ messages: new Set(), calls: new Map(), files: new Set(), denied: [], inputTokens: 0, outputTokens: 0 })
+export const newBuddyState = (): BuddyState => ({ messages: new Set(), calls: new Map(), files: new Set(), denied: [], inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, sawUsage: false })
 
 type BuddyBlock = { type?: string; text?: string; id?: string; name?: string; input?: Record<string, unknown>; tool_use_id?: string; is_error?: boolean; content?: unknown }
 export type BuddyRow = {
   type?: string
   subtype?: string
   session_id?: string
-  message?: { id?: string; content?: unknown; usage?: { output_tokens?: number } }
-  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+  message?: { id?: string; content?: unknown; usage?: BuddyUsage }
+  usage?: BuddyUsage
   result?: string
   [key: string]: unknown
+}
+
+/** Adds one usage record: input is fresh plus cache-write plus cache-read tokens, as CodeBuddy reports them apart. */
+const addBuddyUsage = (usage: BuddyUsage | undefined, state: BuddyState) => {
+  if (!usage) return
+  const cached = usage.cache_read_input_tokens ?? 0
+  state.inputTokens += (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + cached
+  state.cachedInputTokens += cached
+  state.outputTokens += usage.output_tokens ?? 0
 }
 
 const blockText = (content: unknown): string =>
@@ -60,17 +75,28 @@ const blockText = (content: unknown): string =>
 
 /**
  * Folds one line of CodeBuddy's `stream-json` into `state` and returns the live-view events it stands for: a new model
- * message is a turn, a `tool_use` block a queued and running call, a `tool_result` a finished or refused one.
+ * message is a turn, a `tool_use` block a queued and running call, a `tool_result` a finished or refused one. Usage on a
+ * new message is that turn's own tokens, so a resumed session reports only what it spent; a result row's whole-session
+ * total is used only when no message carried usage.
  */
 export const foldBuddyRow = (row: BuddyRow, state: BuddyState): StreamEvent[] => {
   const events: StreamEvent[] = []
+  if (row.type === 'result') {
+    if (!state.sawUsage) addBuddyUsage(row.usage, state)
+    return events
+  }
   const content = row.message?.content
   if (!Array.isArray(content)) return events
   if (row.type === 'assistant') {
     const id = row.message?.id
-    if (id && !state.messages.has(id)) {
+    const isNew = !id || !state.messages.has(id)
+    if (id && isNew) {
       state.messages.add(id)
       events.push({ type: 'turn_end' })
+    }
+    if (isNew && row.message?.usage) {
+      state.sawUsage = true
+      addBuddyUsage(row.message.usage, state)
     }
     for (const block of content as BuddyBlock[]) {
       if (block.type === 'thinking') events.push({ type: 'thinking_start' })
@@ -134,14 +160,21 @@ export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string, home
   const readOnly = extra.filter(dir => !own.some(root => isWithin(dir, root)))
   return {
     permissions: {
-      allow: [...own.flatMap(root => [`Edit(${root}/**)`, `Write(${root}/**)`]), ...extra.map(dir => `Read(${dir}/**)`), ...(head.shell ? ['Bash'] : [])],
+      allow: [
+        ...own.flatMap(root => [`Edit(${root}/**)`, `Write(${root}/**)`]),
+        ...extra.flatMap(dir => [`Read(${dir}/**)`, `Glob(${dir}/**)`, `Grep(${dir}/**)`]),
+        ...(head.shell ? ['Bash'] : []),
+      ],
       deny: [
         ...own.flatMap(root => [
           `Edit(${root}/.git/**)`, `Write(${root}/.git/**)`, `Edit(${root}/**/.hydraignore)`, `Write(${root}/**/.hydraignore)`,
           `Edit(${root}/**/.env)`, `Edit(${root}/**/.env.*)`, `Write(${root}/**/.env)`, `Write(${root}/**/.env.*)`,
-          `Read(${root}/**/.env)`, `Read(${root}/**/.env.*)`,
+          `Read(${root}/**/.env)`, `Read(${root}/**/.env.*)`, `Glob(${root}/**/.env)`, `Glob(${root}/**/.env.*)`, `Grep(${root}/**/.env)`, `Grep(${root}/**/.env.*)`,
         ]),
-        ...readOnly.flatMap(dir => [`Edit(${dir}/**)`, `Write(${dir}/**)`, `Read(${dir}/**/.env)`, `Read(${dir}/**/.env.*)`]),
+        ...readOnly.flatMap(dir => [
+          `Edit(${dir}/**)`, `Write(${dir}/**)`, `Read(${dir}/**/.env)`, `Read(${dir}/**/.env.*)`,
+          `Glob(${dir}/**/.env)`, `Glob(${dir}/**/.env.*)`, `Grep(${dir}/**/.env)`, `Grep(${dir}/**/.env.*)`,
+        ]),
         ...buddySecretDeny(home),
         ...buddyGuardedDeny(head.guarded?.paths ?? []),
         ...(head.shell ? BUDDY_SHELL_DENY : []),
@@ -153,6 +186,14 @@ export const buddySettings = (cwd: string, head: HeadNeeds, guard?: string, home
 
 /** CodeBuddy's `--effort` levels: Hydra's `off` is its `minimal`. */
 export const buddyEffort = (effort: string) => (effort === 'off' ? 'minimal' : effort)
+
+/** `20410k in (19800k cached) / 64k out`: cached input is named apart when the stream reported any. */
+export const buddyTokensText = (inputTokens: number, cachedTokens: number, outputTokens: number) => {
+  const text = tokensText(inputTokens, outputTokens)
+  if (cachedTokens <= 0) return text
+  const short = (n: number) => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+  return text.replace(' in /', ` in (${short(cachedTokens)} cached) /`)
+}
 
 /**
  * The CodeBuddy command line for one round. `default` permission mode plus the settings file means anything the rules
@@ -207,6 +248,8 @@ async function runRoundBuddy(
   let isCapped = false
   let isSignedOut = false
   const turnsBefore = argv.state.messages.size
+  // Each round reads its own usage: a resumed round must not take the session's earlier total from its result row.
+  argv.state.sawUsage = false
   const { errors, exit } = await pump($, buddyArgs(argv), argv.cwd, signal, async line => {
     if (!line.trim().startsWith('{')) return false
     let row: BuddyRow
@@ -220,11 +263,7 @@ async function runRoundBuddy(
       isSignedOut = true
       return true
     }
-    if (row.type === 'result') {
-      result = row
-      argv.state.inputTokens += (row.usage?.input_tokens ?? 0) + (row.usage?.cache_creation_input_tokens ?? 0) + (row.usage?.cache_read_input_tokens ?? 0)
-      argv.state.outputTokens += row.usage?.output_tokens ?? 0
-    }
+    if (row.type === 'result') result = row
     for (const event of foldBuddyRow(row, argv.state)) await onEvent(event)
     // CodeBuddy's own --max-turns is loose (a Head ran 13 turns under a cap of 2), so Hydra counts model messages itself.
     if (argv.state.messages.size - turnsBefore > argv.maxTurns) isCapped = true
@@ -336,7 +375,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
   const { round, rounds, sessionId, ending } = ended
 
   const files = [...state.files]
-  const tokens = tokensText(state.inputTokens, state.outputTokens)
+  const tokens = buddyTokensText(state.inputTokens, state.cachedInputTokens, state.outputTokens)
   const endedAt = await $.clock.now()
   const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const isDone = ending === 'done'

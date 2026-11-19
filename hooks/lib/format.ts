@@ -230,7 +230,7 @@ export type StreamEvent = { type: string; toolCallId?: string; toolName?: string
 
 export const EDIT_TOOLS = new Set(['edit_file', 'write_file'])
 const MAX_STEPS = 8
-const MAX_TOUCHED = 200
+const MAX_TOUCHED = 1000
 
 /** A short line for a tool call: `edit c.txt`, `search "TODO"`, `$ ls`. */
 export const describeTool = (name: string, input: Record<string, unknown> = {}, cwd = '') => {
@@ -331,6 +331,7 @@ export const scopeLines = (cwd: string, expected: readonly string[], files: read
   return [
     `named files: ${expected.length - missed.length}/${expected.length} changed`,
     ...(missed.length > 0 ? [`⚠ named but not changed: ${missed.join(', ')}`] : []),
+    ...(missed.length === expected.length ? renamedHint(missed, extra) : []),
     // Heads that shared the folder may have written those files: the line would blame this Head for their work.
     ...(extra.length > 0 && beside.length === 0 ? [`also changed, not named: ${extra.join(', ')}`] : []),
   ]
@@ -430,7 +431,20 @@ export const overlappingHeads = (runs: readonly HeadRun[], head: { id: string; c
     .filter((run): run is HeadRun & { cwd: string; startedAt: number } => run.id !== id && run.cwd !== undefined && run.startedAt !== undefined)
     .filter(run => isWithin(run.cwd, cwd) || isWithin(cwd, run.cwd))
     .filter(run => run.startedAt <= end && (run.endedAt ?? end) >= startedAt)
-    .map(run => run.id)
+    .map(run => run.id.replace(RETRY_SUFFIX, ''))
+    .filter((name, index, names) => name !== id.replace(RETRY_SUFFIX, '') && names.indexOf(name) === index)
+}
+
+/** A Head's JSON retry runs under `<name>-json`, `-json2`: it is the same Head in another round, not another Head. */
+const RETRY_SUFFIX = /-json\d*$/
+
+const folderOf = (file: string) => (file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '.')
+
+/** When a Head changed none of its named files but wrote as many others in the same folders, it likely used other names. */
+export const renamedHint = (missed: readonly string[], extra: readonly string[]): string[] => {
+  const folders = new Set(missed.map(folderOf))
+  const nearby = extra.filter(file => folders.has(folderOf(file)))
+  return missed.length > 0 && nearby.length === missed.length ? [`⚠ it wrote ${nearby.length} unnamed file(s) in the same folder(s), maybe the named ones under other names: ${nearby.join(', ')}`] : []
 }
 
 const REPORT_HEAD_CHARS = 5_000
@@ -504,6 +518,29 @@ export const editedCount = (report: string) => Number(summaryOfReport(report).ma
 export const withEdits = (report: string, cwd: string, files: readonly string[], stats: Readonly<Record<string, string>> = {}) => {
   const summary = summaryOfReport(report)
   return summary.replace(EDITED_LINE, () => editedLine(cwd, files, stats)) + report.slice(summary.length)
+}
+
+/** Separates file-tool edits from check output and other writes in the folder. */
+export const attributeFiles = (cwd: string, named: readonly string[], changed: readonly string[], times: Readonly<Record<string, number>>, checked: Readonly<Record<string, number>>) => {
+  const clean = (file: string) => relativeTo(cwd, file)
+  const allowed = (file: string) => !/(?:^|\/)(?:\.commandcode|\.codebuddy|\.workbuddy|\.opencode)(?:\/|$)/.test(clean(file))
+  const edits = [...new Set(named.map(clean).filter(allowed))]
+  const others = [...new Set(changed.map(clean).filter(allowed))].filter(file => !edits.includes(file))
+  const check = others.filter(file => times[file] !== undefined && times[file] === checked[file])
+  return { edits, check, folder: others.filter(file => !check.includes(file)) }
+}
+
+/** Marks stats measured against the commit for files that were already uncommitted. */
+export const priorEditStats = (cwd: string, stats: Readonly<Record<string, string>>, before: Readonly<Record<string, string>>) => {
+  const prior = new Set(Object.keys(before).map(file => relativeTo(cwd, file)))
+  return Object.fromEntries(Object.entries(stats).map(([file, stat]) => [file, prior.has(file) ? (stat === 'new' ? 'had edits before' : `${stat} vs last commit; had edits before`) : stat]))
+}
+
+/** Adds compact lines for writes that are not attributed to the Head. */
+export const withOtherWrites = (report: string, check: readonly string[], folder: readonly string[]) => {
+  const line = (label: string, files: readonly string[]) => files.length ? `\n${label}: ${files.slice(0, 8).join(', ')}${files.length > 8 ? ` and ${files.length - 8} more` : ''}` : ''
+  const summary = summaryOfReport(report)
+  return summary.replace(EDITED_LINE, match => match + line('check wrote', check) + line("changed in the folder during the run, not through this Head's file tools", folder)) + report.slice(summary.length)
 }
 
 /** `git diff --numstat -z` rows and `git ls-files --others -z` paths as one stat per file: `+12 −3`, or `new` for a file git does not track yet. */

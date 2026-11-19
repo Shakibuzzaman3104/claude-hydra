@@ -606,7 +606,10 @@ test('does not count a failed edit as an edit, and still counts a refused call a
 test('allows edits only under the project and granted folders, and protects history and secrets everywhere', async () => {
   const settings = buddySettings('/work/app', { addDirs: ['/refs', '/work/pkg'], writeDirs: ['/work/pkg'], shell: false }, 'GUARD')
   const { allow, deny } = settings.permissions
-  expect(allow).toEqual(['Edit(/work/app/**)', 'Write(/work/app/**)', 'Edit(/work/pkg/**)', 'Write(/work/pkg/**)', 'Read(/refs/**)', 'Read(/work/pkg/**)'])
+  expect(allow).toEqual([
+    'Edit(/work/app/**)', 'Write(/work/app/**)', 'Edit(/work/pkg/**)', 'Write(/work/pkg/**)',
+    'Read(/refs/**)', 'Glob(/refs/**)', 'Grep(/refs/**)', 'Read(/work/pkg/**)', 'Glob(/work/pkg/**)', 'Grep(/work/pkg/**)',
+  ])
   expect(allow).not.toContain('Bash')
   for (const root of ['/work/app', '/work/pkg']) {
     expect(deny).toEqual(expect.arrayContaining([`Edit(${root}/.git/**)`, `Write(${root}/.git/**)`, `Edit(${root}/**/.env)`, `Read(${root}/**/.env.*)`]))
@@ -828,7 +831,8 @@ test('writes the Antigravity permission rules: writes only in the project, reads
   for (const dir of AGY_SECRET_DIRS) expect(none.permissions.deny).toContain(`read_file(/home/me/${dir})`)
   expect(AGY_SECRET_DIRS).toContain('.gemini')
   expect(none.permissions.allow.some(rule => rule.startsWith('command'))).toBe(false)
-  expect(none.permissions.deny.some(rule => rule.startsWith('command'))).toBe(false)
+  // Headless agy's Auto mode approves what no rule names, so a no-shell Head denies the command tool outright.
+  expect(none.permissions.deny).toContain('command(*)')
 
   const shell = agySettings('/p/app', { addDirs: [], shell: true })
   expect(shell.permissions.allow).toContain('command(*)')

@@ -5,7 +5,7 @@
 import type { HeadRun } from '../types'
 import { expect, test } from 'claude-code/testing'
 
-import { formatReport, overlappingHeads } from './lib/format'
+import { attributeFiles, formatReport, overlappingHeads, priorEditStats, renamedHint, scopeLines, withEdits, withOtherWrites } from './lib/format'
 
 type Report = Parameters<typeof formatReport>[0]
 
@@ -98,4 +98,39 @@ test('counts a Head still running when this one ended, and one that started whil
   const own = run('head-b', '/p/app', 1000, 2000)
   const runs = [own, run('open', '/p/app', 1200), run('late', '/p/app/sub', 1900, 9000)]
   expect(overlappingHeads(runs, own)).toEqual(['open', 'late'])
+})
+
+test('attributes only named tool edits and excludes Hydra lockdown files', () => {
+  const files = attributeFiles('/p', ['/p/src/a.ts', '.commandcode/settings.local.json', '.opencode/config.json'], ['/p/src/a.ts', '/p/.codebuddy/settings.json', '/p/.workbuddy/settings.json', '/p/shell.ts', '/p/lead.ts'], {}, {})
+  expect(files).toEqual({ edits: ['src/a.ts'], check: [], folder: ['shell.ts', 'lead.ts'] })
+  expect(scopeLines('/p', ['src/a.ts', 'lead.ts'], files.edits)).toEqual(['named files: 1/2 changed', '⚠ named but not changed: lead.ts'])
+})
+
+test('separates check writes only when their last write was during a check', () => {
+  const files = attributeFiles('/p', ['named.ts'], ['named.ts', 'build/a', 'build/b', 'later.ts'], { 'named.ts': 1, 'build/a': 2, 'build/b': 3, 'later.ts': 5 }, { 'named.ts': 1, 'build/a': 2, 'build/b': 3, 'later.ts': 4 })
+  expect(files).toEqual({ edits: ['named.ts'], check: ['build/a', 'build/b'], folder: ['later.ts'] })
+  const text = withOtherWrites(withEdits(report({ files: ['/p/build/a'] }), '/p', files.edits), files.check, files.folder)
+  expect(text).toContain('edited (1): named.ts\ncheck wrote: build/a, build/b\nchanged in the folder during the run, not through this Head\'s file tools: later.ts')
+  expect(withOtherWrites(report(), Array.from({ length: 10 }, (_, i) => `f${i}`), [])).toContain('check wrote: f0, f1, f2, f3, f4, f5, f6, f7 and 2 more')
+})
+
+test('labels stats for edits and untracked files that existed before the Head', () => {
+  expect(priorEditStats('/p', { 'old.ts': '+52 −4', 'existing.ts': 'new', 'fresh.ts': 'new' }, { '/p/old.ts': 'hash', '/p/existing.ts': 'hash' })).toEqual({ 'old.ts': '+52 −4 vs last commit; had edits before', 'existing.ts': 'had edits before', 'fresh.ts': 'new' })
+})
+
+test('a Head that wrote its named files under other names gets a hint pairing them', () => {
+  const lines = scopeLines('/p', ['facts/a-long-name.json', 'facts/b-long-name.json'], ['/p/facts/a.json', '/p/facts/b.json'])
+  expect(lines[0]).toBe('named files: 0/2 changed')
+  expect(lines.some(line => line.includes('maybe the named ones under other names: facts/a.json, facts/b.json'))).toBe(true)
+  expect(renamedHint(['facts/a.json'], ['src/x.ts'])).toEqual([])
+})
+
+test('a JSON retry of a Head is not reported as another Head beside it', () => {
+  const runs = [
+    { id: 'net-core', cwd: '/p', startedAt: 1, endedAt: 10 },
+    { id: 'net-core-json2', cwd: '/p', startedAt: 11, endedAt: 12 },
+    { id: 'docs-json', cwd: '/p', startedAt: 2, endedAt: 9 },
+    { id: 'docs', cwd: '/p', startedAt: 1, endedAt: 3 },
+  ] as HeadRun[]
+  expect(overlappingHeads(runs, { id: 'net-core', cwd: '/p', startedAt: 1, endedAt: 12 })).toEqual(['docs'])
 })

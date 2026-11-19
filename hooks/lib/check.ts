@@ -17,6 +17,8 @@ export const CHECK_DEFAULT_MINUTES = 10
 
 const TAIL_LINES = 60
 const TAIL_CHARS = 4_000
+const FAILURE_LINES = 20
+const FAILURE_LINE = /\b(fail(ed|ure)?|error|panic)\b|✗|\bFAIL\b/i
 
 export type CheckOutcome =
   | { kind: 'passed'; seconds: number }
@@ -28,7 +30,11 @@ export type CheckOutcome =
 export const checkTail = (stdout: string, stderr: string) => {
   const text = [stdout, stderr].filter(part => part.trim()).join('\n')
   const plain = text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\r\n?/g, '\n')
-  return plain.trimEnd().split('\n').slice(-TAIL_LINES).join('\n').slice(-TAIL_CHARS)
+  const lines = plain.trimEnd().split('\n')
+  const tail = lines.slice(-TAIL_LINES).join('\n').slice(-TAIL_CHARS)
+  // A test runner's summary is last, its failing test names earlier: keep those lines from the cut part.
+  const failures = lines.slice(0, -TAIL_LINES).filter(line => FAILURE_LINE.test(line)).slice(0, FAILURE_LINES).map(line => line.slice(0, 200))
+  return failures.length > 0 ? `${failures.join('\n')}\n[…]\n${tail}`.slice(-(TAIL_CHARS + FAILURE_LINES * 200)) : tail
 }
 
 /** Exit 0 passes; 126 and 127 mean the shell could not run the command (not executable, not found), which judges nothing. */
@@ -112,7 +118,7 @@ export const withSummary = (report: string, lines: readonly string[], output?: s
 export type Checked = { text: string; isDone: boolean; files?: string[]; ending?: string }
 
 /** Endings where the work may still be whole: the Head stopped on its own limits, not on a refusal or a failure. */
-const UNFINISHED_BUT_CHECKABLE = new Set(['stalled', 'capped', 'timeout'])
+const UNFINISHED_BUT_CHECKABLE = new Set(['stalled', 'capped', 'timeout', 'blocked'])
 
 /** A finished Head is checked, and so is one that ran out of turns, time or words after editing files: the check, not the Head, says whether the work is done. */
 export const isCheckable = (result: Checked) =>
@@ -140,7 +146,7 @@ export type CheckSteps<R extends Checked> = {
  * one effort level up, up to `CHECK_FIX_ROUNDS` times. A Head that ran out of turns or time, or stalled, after editing
  * files is checked too (`isCheckable`): the check's verdict counts for more than the missing HEAD DONE. A check that
  * could not judge the code (no start, a timeout, command not found) is UNKNOWN and never retried, and a Head that was
- * blocked, stopped or failed is never checked. Returns the last run with every try's files and the check lines in its
+ * stopped or failed is never checked. A blocked Head is checked but never sent back. Returns every try's report and files and the check lines in its
  * report, and the final outcome (none when the check never ran).
  */
 export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promise<{ result: R; outcome?: CheckOutcome }> {
@@ -148,24 +154,32 @@ export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promis
   const edited: string[] = []
   const tries: CheckOutcome[] = []
   let effort = steps.effort
+  const efforts = [effort ?? DEFAULT_EFFORT]
   let result = await steps.run()
+  const reports = [result.text]
+  const report = () => reports.map((text, index) => index === 0 ? text : `--- fix round ${index} ---\n${text}`).join('\n')
+  const effortLines = () => efforts.length > 1 ? [`effort: ${efforts.join(' → ')} (raised after each failed check)`] : []
   for (;;) {
     for (const file of result.files ?? []) if (!edited.includes(file)) edited.push(file)
     if (!isCheckable({ ...result, files: edited }) || steps.isAborted()) {
       const line = tries.length > 0 ? `✗ FAILED earlier, and the Head did not finish its fix round` : 'not run: the Head did not finish'
-      return { result: { ...result, files: edited, text: withSummary(result.text, [`check: \`${steps.check}\` ${line}`]) }, outcome: tries.at(-1) }
+      return { result: { ...result, files: edited, text: withSummary(report(), [`check: \`${steps.check}\` ${line}`, ...effortLines()]) }, outcome: tries.at(-1) }
     }
     await steps.onStep?.(`check: ${steps.check}`)
     const outcome = await steps.runCheck()
     tries.push(outcome)
     const minutesLeft = steps.minutes - Math.floor(((await steps.now()) - startedAt) / 60_000)
-    if (outcome.kind !== 'failed' || tries.length > CHECK_FIX_ROUNDS || minutesLeft < 1 || steps.isAborted()) {
+    if (outcome.kind !== 'failed' || result.ending === 'blocked' || tries.length > CHECK_FIX_ROUNDS || minutesLeft < 1 || steps.isAborted()) {
       const lines = checkLines(steps.check, outcome, tries, outcome.kind === 'unknown' ? [] : checkedEdits(steps.check, edited, steps.cwd))
-      if (outcome.kind === 'passed' && !result.isDone) lines.push(`⚠ ${UNFINISHED_PASS}`)
-      return { result: { ...result, files: edited, text: withSummary(result.text, lines, outcome.kind === 'passed' ? undefined : outcome.tail) }, outcome }
+      lines.push(...effortLines())
+      if (outcome.kind === 'passed' && !result.isDone) lines.push(result.ending === 'blocked' ? '⚠ the Head said it was blocked, but the check passed' : `⚠ ${UNFINISHED_PASS}`)
+      return { result: { ...result, ...(outcome.kind === 'passed' && result.ending === 'blocked' ? { isDone: true } : {}), files: edited, text: withSummary(report(), lines, outcome.kind === 'passed' ? undefined : outcome.tail) }, outcome }
     }
-    effort = raisedEffort(effort)
+    const nextEffort = raisedEffort(effort)
+    if (nextEffort && nextEffort !== (effort ?? DEFAULT_EFFORT)) efforts.push(nextEffort)
+    effort = nextEffort
     await steps.onStep?.(`check failed (exit ${outcome.exitCode}): sending it back`)
     result = await steps.run({ note: fixNote(steps.check, outcome, edited.map(file => relativeTo(steps.cwd, file))), effort, minutes: minutesLeft })
+    reports.push(result.text)
   }
 }

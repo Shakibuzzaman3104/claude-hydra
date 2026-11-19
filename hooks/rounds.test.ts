@@ -344,7 +344,8 @@ test('isCheckable accepts a finished Head and an unfinished one that edited file
   expect(isCheckable({ text: '', isDone: false, ending: 'capped' })).toBe(false)
   expect(isCheckable({ text: '', isDone: false, ending: 'stalled' })).toBe(false)
   expect(isCheckable({ text: '', isDone: false, ending: 'timeout' })).toBe(false)
-  expect(isCheckable({ text: '', isDone: false, ending: 'blocked', files: ['a'] })).toBe(false)
+  expect(isCheckable({ text: '', isDone: false, ending: 'blocked', files: ['a'] })).toBe(true)
+  expect(isCheckable({ text: '', isDone: false, ending: 'blocked' })).toBe(false)
   expect(isCheckable({ text: '', isDone: false, ending: 'stopped', files: ['a'] })).toBe(false)
   expect(isCheckable({ text: '', isDone: false, ending: 'error', files: ['a'] })).toBe(false)
 })
@@ -367,14 +368,22 @@ const steps = (results: Result[], outcomes: CheckOutcome[], calls: unknown[] = [
   isAborted: () => false,
 })
 
-test('checkHead checks a capped Head that edited files, and never checks a blocked one', async () => {
+test('checkHead checks capped and blocked Heads that edited files, without retrying a blocked Head', async () => {
   const unfinished = reportOf({ ending: 'capped', files: ['/p/a.kt'], finalText: 'ran out of turns' })
   const checked = await checkHead(steps([{ text: unfinished, isDone: false, ending: 'capped', files: ['/p/a.kt'] }], [passed]))
   expect(checked.outcome?.kind).toBe('passed')
   expect(checked.result.text).toContain('✓ passed')
   expect(checked.result.text).toContain('did not report HEAD DONE')
   const blocked = await checkHead(steps([{ text: report(), isDone: false, ending: 'blocked', files: ['/p/a.kt'] }], [passed]))
-  expect(blocked.result.text).toContain('not run: the Head did not finish')
+  expect(blocked.outcome?.kind).toBe('passed')
+  expect(blocked.result.isDone).toBe(true)
+  expect(blocked.result.text).toContain('the Head said it was blocked, but the check passed')
+  const calls: unknown[] = []
+  const failed: CheckOutcome = { kind: 'failed', exitCode: 1, tail: 'boom', seconds: 1 }
+  const rejected = await checkHead(steps([{ text: report(), isDone: false, ending: 'blocked', files: ['/p/a.kt'] }], [failed], calls))
+  expect(rejected.outcome?.kind).toBe('failed')
+  expect(rejected.result.text).toContain('✗ FAILED, exit 1')
+  expect(calls).toEqual([undefined])
 })
 
 test('the check notes name the command and what a failed check means', async () => {

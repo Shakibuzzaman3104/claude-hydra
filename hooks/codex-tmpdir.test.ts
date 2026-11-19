@@ -5,7 +5,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
 
-import { codexArgs, codexEnv, codexFilesystem, removeCodexTemp } from './register'
+import { codexArgs, codexEnv, codexFilesystem, makeCodexTemp, removeCodexTemp } from './register'
 
 const CWD = '/home/me/app'
 const TEMP = '/var/folders/ab/T/hydra-codex-session-1-head-1'
@@ -24,9 +24,35 @@ test('passes the temp folder in the filesystem profile and TMPDIR in the round e
   const args = codexArgs({ prompt: 'do it', model: 'gpt-6-luna', maxTurns: 40, cwd: CWD, addDirs: [], filesystem })
   expect(args.join(' ')).toContain(TEMP)
   expect(args).toContain(`permissions.hydra.filesystem=${filesystem}`)
-  expect(codexEnv(TEMP)).toEqual({ TMPDIR: `${TEMP}/`, TMPPREFIX: `${TEMP}/zsh` })
-  // The person's own environment stays, and TMPDIR wins in the Head.
-  expect(codexEnv(TEMP, { FOO: 'bar', TMPDIR: '/tmp' })).toEqual({ FOO: 'bar', TMPDIR: `${TEMP}/`, TMPPREFIX: `${TEMP}/zsh` })
+  expect(codexEnv(TEMP)).toEqual({ TMPDIR: `${TEMP}/`, TMPPREFIX: `${TEMP}/zsh`, GOCACHE: `${TEMP}/go-build`, GOTMPDIR: `${TEMP}/go-tmp` })
+  // The person's own environment stays, TMPDIR wins in the Head, and their module cache is left alone.
+  expect(codexEnv(TEMP, { FOO: 'bar', TMPDIR: '/tmp', GOCACHE: '/home/me/Library/Caches/go-build', GOMODCACHE: '/home/me/go/pkg/mod' })).toEqual({
+    FOO: 'bar', TMPDIR: `${TEMP}/`, TMPPREFIX: `${TEMP}/zsh`, GOCACHE: `${TEMP}/go-build`, GOTMPDIR: `${TEMP}/go-tmp`, GOMODCACHE: '/home/me/go/pkg/mod',
+  })
+})
+
+test('creates Go\'s build cache and temp folders inside the Head\'s private temp folder', async () => {
+  const ran: string[] = []
+  const $ = {
+    env: { get: async () => '/var/folders/ab/T' },
+    session: { id: async () => 'session-1' },
+    process: { run: async (argv: string[]) => {
+      ran.push(argv.join(' '))
+      return { exitCode: 0, stdout: '', stderr: '' }
+    } },
+  } as unknown as EngineInterface
+  const dir = await makeCodexTemp($, 'head-1')
+  expect(dir).toBe(TEMP)
+  expect(ran).toEqual([
+    `/bin/mkdir -p ${TEMP} ${TEMP}/go-build ${TEMP}/go-tmp`,
+    `/bin/chmod 700 ${TEMP} ${TEMP}/go-build ${TEMP}/go-tmp`,
+  ])
+})
+
+test('keeps every .env.* file closed: Codex takes only none on a glob, so .env.example cannot be exempted', async () => {
+  const profile = codexFilesystem(CWD, { addDirs: [], writeDirs: [], shell: true }, '/home/me')
+  expect(profile).toContain(`"${CWD}/**/.env.*"="none"`)
+  expect(profile).not.toContain('.env.example')
 })
 
 test('removes only folders Hydra named, never a foreign path', async () => {

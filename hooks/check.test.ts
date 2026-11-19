@@ -8,7 +8,7 @@ import { CHECK_FIX_ROUNDS, CHECK_MAX_MINUTES, checkHead, checkMinutesOf, checkTa
 import type { CheckOutcome } from './lib/check'
 import { formatReport, reportContext, reportNotice } from './lib/format'
 
-type Result = { text: string; isDone: boolean; files?: string[] }
+type Result = { text: string; isDone: boolean; files?: string[]; ending?: string }
 
 const report = (files: string[] = []) => formatReport({ id: 'h', model: 'm', cwd: '/p', finished: true, rounds: 1, turns: 3, usd: 0, files, denied: [], finalText: 'All done. HEAD DONE', exit: '0' })
 const passed: CheckOutcome = { kind: 'passed', seconds: 4 }
@@ -50,6 +50,35 @@ test('a failing check sends the Head back with the output, one effort level up, 
   expect(calls[1]?.note).toContain('Do not weaken, skip or delete tests')
   expect(result.files).toEqual(['/p/a.kt', '/p/b.kt'])
   expect(result.text).toContain('2 tries: ✗ ✓')
+  expect(result.text).toContain('effort: low → medium (raised after each failed check)')
+})
+
+test('checks a blocked Head with edits, accepts a pass and never retries a failure', async () => {
+  const blocked = { text: report(), isDone: false, ending: 'blocked', files: ['/p/a.kt'] }
+  const calls: unknown[] = []
+  const one = await checkHead(steps([blocked], [passed], calls))
+  expect(one.result.isDone).toBe(true)
+  expect(one.result.text).toContain('the Head said it was blocked, but the check passed')
+  const two = await checkHead(steps([blocked], [failed()], calls))
+  expect(two.outcome?.kind).toBe('failed')
+  expect(two.result.isDone).toBe(false)
+  expect(two.result.text).toContain('✗ FAILED, exit 1')
+  expect(calls).toEqual([undefined, undefined])
+  const checks = [passed]
+  await checkHead(steps([{ ...blocked, files: [] }], checks))
+  expect(checks.length).toBe(1)
+})
+
+test('keeps the main report and every fix report with the effort history', async () => {
+  const main = `fallback: first → second\nasked: original\n${report()}\nmain Done`
+  const fix1 = `${report()}\nfirst fix Done`
+  const fix2 = `${report()}\nsecond fix Done`
+  const { result } = await checkHead({ ...steps([main, fix1, fix2].map(text => ({ text, isDone: true })), [failed(), failed(), passed]), effort: 'high' })
+  expect(result.text).toContain('fallback: first → second\nasked: original')
+  expect(result.text).toContain('effort: high → xhigh → max (raised after each failed check)')
+  expect(result.text).toContain('main Done\n--- fix round 1 ---')
+  expect(result.text).toContain('first fix Done\n--- fix round 2 ---')
+  expect(result.text).toContain('second fix Done')
 })
 
 test(`gives up after ${CHECK_FIX_ROUNDS} fix rounds, putting the output below the Head's own text`, async () => {
@@ -122,4 +151,12 @@ test(`caps one check run at ${CHECK_MAX_MINUTES} minutes`, async () => {
 
 test('puts the check lines into a report without a head-report marker too', async () => {
   expect(withSummary('head h · m', ['check: x ✓ passed (1s)'])).toBe('head h · m\ncheck: x ✓ passed (1s)')
+})
+
+test('a long check output keeps the failing test lines that the tail would cut', () => {
+  const out = ['(fail) parses the header [1ms]', ...Array.from({ length: 200 }, (_, i) => `(pass) case ${i}`), ' 490 pass', ' 1 fail'].join('\n')
+  const tail = checkTail(out, '')
+  expect(tail.startsWith('(fail) parses the header')).toBe(true)
+  expect(tail).toContain(' 1 fail')
+  expect(checkTail('a\nb\n 0 fail', '')).toBe('a\nb\n 0 fail')
 })

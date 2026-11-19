@@ -4,15 +4,17 @@
  */
 import type { EngineInterface } from 'claude-code'
 
+import type { Ending } from '../../types'
+
 import { effortModeOf, headEffort } from '../lib/effort'
 import { agyTokenOf } from '../lib/accounts'
 import { AGY_TOKEN, agyModelId, agyPoolOf } from '../lib/engines'
-import { applyEvent, formatReport, relativeTo, tokensText } from '../lib/format'
+import { applyEvent, describeTool, formatReport, relativeTo, tokensText } from '../lib/format'
 import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
 import { changedFiles, compareChangedFiles, notStarted, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
-import type { Round, RoundArgs } from '../lib/runtime'
+import type { IdleLimits, Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { NO_GUARD } from '../lib/protect'
@@ -41,10 +43,12 @@ export type AgyRow = {
   }
 }
 
-/** What an Antigravity Head did, accumulated from its stream: tool calls (its turns), refused actions, tokens, the report. */
+/** What an Antigravity Head did, accumulated from its stream: tool calls (its turns), refused actions, shell commands, tokens, the report. */
 export type AgyState = {
   calls: Map<number, { tool: string; input: Record<string, unknown> }>
   denied: SessionReport['denied']
+  /** The commands a shell call ran, in order, for the report's `shell:` line. */
+  shell: string[]
   turns: number
   inputTokens: number
   outputTokens: number
@@ -52,9 +56,11 @@ export type AgyState = {
   conversationId?: string
   status?: string
   lastTarget: string
+  /** The tool call in flight (started, not yet DONE): the one a refused or hung run names. */
+  pending?: { tool: string; input: Record<string, unknown> }
 }
 
-export const newAgyState = (): AgyState => ({ calls: new Map(), denied: [], turns: 0, inputTokens: 0, outputTokens: 0, finalText: '', lastTarget: '' })
+export const newAgyState = (): AgyState => ({ calls: new Map(), denied: [], shell: [], turns: 0, inputTokens: 0, outputTokens: 0, finalText: '', lastTarget: '' })
 
 const agyInput = (name: string, parameters: Record<string, unknown> = {}): Record<string, unknown> => {
   if (name === 'run_command') return { command: String(parameters.CommandLine ?? '') }
@@ -80,11 +86,14 @@ export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
       if (!state.calls.has(index)) {
         const call = { tool: AGY_TOOLS[name] ?? name, input: agyInput(name, step.tool_info?.parameters) }
         state.calls.set(index, call)
+        state.pending = call
         events.push({ type: 'tool_queued', toolCallId: String(index), toolName: call.tool, input: call.input }, { type: 'tool_running', toolCallId: String(index), toolName: call.tool })
       }
       if (step.state === 'DONE') {
         const call = state.calls.get(index)!
         state.lastTarget = String(call.input.command ?? call.input.file_path ?? call.input.pattern ?? '')
+        if (call.tool === 'shell_command' && call.input.command) state.shell.push(String(call.input.command))
+        if (state.pending === call) state.pending = undefined
         events.push({ type: 'tool_completed', toolCallId: String(index), toolName: call.tool, isError: false }, { type: 'turn_end' })
         state.turns++
       }
@@ -97,7 +106,10 @@ export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
     state.inputTokens += result.usage?.input_tokens ?? 0
     state.outputTokens += result.usage?.output_tokens ?? 0
     for (const action of result.denied_actions ?? []) {
-      state.denied.push({ tool: action.display_name ?? action.action ?? 'tool', target: state.lastTarget, text: `Antigravity refused the ${action.action ?? 'action'} permission (the call before this stop: ${state.lastTarget || 'unknown'})` })
+      // The refused call is the one in flight (a refused shell call never reaches DONE); else the last one that finished.
+      const attempted = state.pending?.input ?? {}
+      const target = String(attempted.command ?? attempted.file_path ?? attempted.pattern ?? state.lastTarget)
+      state.denied.push({ tool: action.display_name ?? action.action ?? 'tool', target, text: `Antigravity refused the ${action.action ?? 'action'} permission: ${target ? target.slice(0, 120) : 'the call named no command or path'}` })
     }
   }
   return events
@@ -147,7 +159,8 @@ export const agySpellings = (path: string, roots: readonly string[], caseless: b
  * The permission settings one Antigravity Head runs with: it writes only under the project and the folders it may write to
  * (`.git` denied), reads outside them only the `addDirs`, reads none of `envFiles` or the paths `.hydraignore` names (whose
  * `.hydraignore` stays read-only), reads no credential folder (its own `Library` folder, which links to the keychain, included),
- * and has a shell (inside the terminal sandbox, minus the dangerous commands) only when asked. `tempDirs` are system temp folders
+ * and has a shell (inside the terminal sandbox, minus the dangerous commands) only when asked: with no shell the command tool
+ * is denied outright, because headless agy's Auto mode approves any call no rule names. `tempDirs` are system temp folders
  * the sandbox would leave writable. Rules name paths (a glob or a regex makes the sandbox refuse every command) and match one
  * spelling, so on a `caseless` disk each path inside a root is denied in every letter case. `headHome` is the Head's own `HOME`,
  * whose `Library` folder links to the keychain: it is denied too. A refused call ends the Head's turn.
@@ -173,7 +186,7 @@ export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: r
         ...(home ? AGY_SECRET_DIRS.map(dir => `read_file(${home.replace(/\/$/, '')}/${dir})`) : []),
         // The Head's own Library holds the link to the keychain, so no tool of its reads or writes there, with a shell or without.
         ...(headHome ? [`read_file(${trimSlash(headHome)}/Library)`, `write_file(${trimSlash(headHome)}/Library)`] : []),
-        ...(head.shell ? AGY_SHELL_DENY : []),
+        ...(head.shell ? AGY_SHELL_DENY : ['command(*)']),
       ],
     },
   }
@@ -220,6 +233,31 @@ export const agyArgs = (a: RoundArgs & { home: string }) => {
   // No --add-dir: it turns the project read-only in the sandbox. The permission rules already open the folders the Head may use.
   if (a.resume) args.push('--conversation', a.resume)
   return args
+}
+
+/** No output 5 min after the start, or 10 min later: agy has hung (a tool call can sit there without a turn or an end). */
+export const AGY_WATCHDOG: IdleLimits = { firstMs: 300_000, idleMs: 600_000 }
+
+/** How a watchdog stop ends a Head: stalled, with the activity naming the call it hung on. */
+export const agyHungEnding = (round: Pick<Round, 'signal'>, ending: Ending, call = ''): { ending: Ending; activity?: string } =>
+  round.signal === 'idle' && ending !== 'done'
+    ? { ending: 'stalled', activity: `stalled: no output for 10 min${call ? ` on ${call}` : ''}` }
+    : { ending }
+
+/** The report's shell line: the commands a Head ran, in order, each cut to 80 characters; empty when it ran none. */
+export const agyShellLine = (commands: readonly string[]) =>
+  commands.length === 0 ? ''
+    : `shell: ${commands.length} command${commands.length === 1 ? '' : 's'}: ${commands.map(command => command.replace(/\s+/g, ' ').trim().slice(0, 80)).join('; ')}`
+
+/** One line naming up to 30 untracked files under `cwd`, so a Head knows its file search may miss them; empty outside a repository. */
+export async function agyUntrackedNote($: EngineInterface, cwd: string): Promise<string> {
+  const ran = await $.process.run(['git', '-C', cwd, 'ls-files', '--others', '--exclude-standard'], { timeoutMs: 10_000 }).catch(() => undefined)
+  if (!ran || ran.exitCode !== 0) return ''
+  const files = ran.stdout.split('\n').map(line => line.trim()).filter(Boolean)
+  if (files.length === 0) return ''
+  const shown = files.slice(0, 30)
+  const more = files.length > shown.length ? ` (and ${files.length - shown.length} more)` : ''
+  return `Untracked files (git sees them; Antigravity's file search may miss them, so open them by path): ${shown.join(', ')}${more}`
 }
 
 /**
@@ -324,6 +362,7 @@ async function runRoundAgy(
   const { state } = argv
   state.finalText = ''
   state.status = undefined
+  state.pending = undefined
   const turnsBefore = state.turns
   let isCapped = false
   const { errors, exit } = await pump($, agyArgs(argv), argv.cwd, signal, async line => {
@@ -337,14 +376,18 @@ async function runRoundAgy(
     for (const event of foldAgyRow(row, state)) await onEvent(event)
     if (state.turns - turnsBefore > argv.maxTurns) isCapped = true
     return isCapped
-  }, { HOME: argv.home })
+  }, { HOME: argv.home }, AGY_WATCHDOG)
+  // The stream callback set it; TypeScript still sees the reset above.
+  const pending = state.pending as AgyState['pending']
+  const hangCall = exit.signal === 'idle' && pending ? describeTool(pending.tool, pending.input, argv.cwd) : ''
+  const hangNote = exit.signal === 'idle' ? `agy produced no output for 10 min${hangCall ? ` while ${hangCall} was running` : ''}, so Hydra stopped it.` : ''
   return {
     finalText: state.finalText,
     sessionId: state.conversationId,
     subtype: isCapped ? 'error_max_turns' : state.status === 'SUCCESS' ? 'success' : state.status ? 'error' : undefined,
     code: isCapped ? 8 : exit.code,
     signal: exit.signal,
-    errors: agyRoundErrors(errors, state),
+    errors: [agyRoundErrors(errors, state), hangNote].filter(Boolean).join('\n'),
   }
 }
 
@@ -447,10 +490,12 @@ export async function runAgyHead($: EngineInterface, head: AgyHead, outer: Abort
 }
 
 async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, outer: AbortSignal, id: string) {
-  const { task, cwd, model, maxTurns, minutes } = head
+  const { task: brief, cwd, model, maxTurns, minutes } = head
   const addDirs = union(head.addDirs, head.writeDirs)
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
+  const untracked = await agyUntrackedNote($, cwd)
+  const task = untracked ? `${untracked}\n\n${brief}` : brief
 
   const startedAt = await $.clock.now()
   await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
@@ -474,6 +519,9 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
     turns: () => state.turns,
     calls: () => counter.calls,
     denied: () => state.denied.map(d => `${d.tool} ${d.target}`.slice(0, 160)),
+    // A run the watchdog stopped is a hang: resuming it would only sit on the same call again.
+    mayResume: round => round.signal !== 'idle',
+    mayRetryStart: round => round.signal !== 'idle',
     sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
     onStep: activity => setRun($, id, { activity }),
   })
@@ -483,20 +531,26 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
   const endedAt = await $.clock.now()
   const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const tokens = tokensText(state.inputTokens, state.outputTokens)
-  const isDone = ending === 'done'
+  // A silent run stopped by the watchdog is a stall, and its activity names the call it hung on.
+  const hangCall = round.signal === 'idle' && state.pending ? describeTool(state.pending.tool, state.pending.input, cwd) : ''
+  const hung = agyHungEnding(round, ending, hangCall)
+  const finalEnding = hung.ending
+  const isDone = finalEnding === 'done'
   const stopped = outer.aborted ? stopReason(outer) : undefined
   await setRun($, id, {
-    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt, ending,
+    state: isDone ? 'done' : 'failed', turns: state.turns, tokens, endedAt, ending: finalEnding,
     files: files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
-    activity: endActivity(ended, { maxTurns, minutes, stopped }),
+    activity: hung.activity ?? endActivity(ended, { maxTurns, minutes, stopped }),
   })
   void refreshHeads($)
 
-  const text = formatReport({
-    id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns: state.turns, usd: null, files, denied: state.denied,
+  const report = formatReport({
+    id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending: finalEnding, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns: state.turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'agy', tokens,
     reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
-  return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending }
+  const shellLine = agyShellLine(state.shell)
+  const text = shellLine ? report.replace('\n--- head report ---', `\n${shellLine}\n--- head report ---`) : report
+  return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending: finalEnding }
 }

@@ -4,8 +4,9 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-import { AGY_POOL_LABEL, AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
+import { AGY_MODELS, AGY_POOL_LABEL, AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
 import type { AgyPool, Engine } from './engines'
+import { agyBlockedUntil, readAgyUsage } from '../engines/agy'
 import { opencodeCheckInit, opencodeProviders } from './checks'
 import { relativeTo } from './format'
 import { commandOf, homeOf, platformOf } from './platform'
@@ -24,6 +25,7 @@ const ACCOUNTS_KEY = 'accounts-v1'
 /** Account folders the person removed: a folder left on disk is not found again. */
 const REMOVED_KEY = 'accountsRemoved-v1'
 const COOLDOWNS_KEY = 'cooldowns-v1'
+const UNAVAILABLE_KEY = 'unavailable-v1'
 const LAST_USED_KEY = 'lastUsed-v1'
 const ACCOUNTS_DIR = '.claude/hydra/accounts'
 
@@ -31,6 +33,8 @@ export const COOLDOWN_DEFAULT_MS = 60 * 60_000
 /** How long a signed-out account is passed over: the person may sign it in again any time. */
 export const SIGNED_OUT_COOLDOWN_MS = 10 * 60_000
 export const COOLDOWN_MAX_MS = 7 * 86_400_000
+/** How long an engine and model that could not start here are passed over: the reason may be a local setup, not a usage limit. */
+export const UNAVAILABLE_COOLDOWN_MS = 30 * 60_000
 
 export const STRATEGIES = ['fill', 'spread'] as const
 export type Strategy = (typeof STRATEGIES)[number]
@@ -430,6 +434,55 @@ export async function resetCooldowns($: EngineInterface) {
   await $.store.set(COOLDOWNS_KEY, {})
 }
 
+type Unavailable = Record<string, { engine: Engine; model: string; until: number; reason: string }>
+
+/** The stored "could not start here" entries, dropping malformed ones. */
+const unavailableIn = (stored: unknown): Unavailable => {
+  if (!stored || typeof stored !== 'object') return {}
+  return Object.fromEntries(Object.entries(stored as Record<string, unknown>).filter((entry): entry is [string, Unavailable[string]] => {
+    const value = entry[1] as Partial<Unavailable[string]> | undefined
+    return !!value && typeof value.until === 'number' && typeof value.reason === 'string' && typeof value.model === 'string' && isEngine(value.engine)
+  }))
+}
+
+/** The entries that have not lapsed yet. */
+async function activeUnavailable($: EngineInterface, now: number) {
+  return Object.entries(unavailableIn(await $.store.get(UNAVAILABLE_KEY).catch(() => undefined))).filter(([, entry]) => entry.until > now)
+}
+
+/**
+ * Remembers for 30 minutes that `engine`'s `model` could not start here, with the engine's own error line (at most 120
+ * characters): a route that ended `unavailable` is then named in the Lead's usage note, not tried again at once.
+ */
+export async function recordUnavailable($: EngineInterface, engine: Engine, model: string, reason: string) {
+  const now = await $.clock.now()
+  const kept = Object.fromEntries(await activeUnavailable($, now))
+  await $.store.set(UNAVAILABLE_KEY, { ...kept, [`${engine}:${model}`]: { engine, model, until: now + UNAVAILABLE_COOLDOWN_MS, reason: reason.trim().slice(0, 120) } })
+}
+
+/** The model that draws on each Antigravity pool, so a bucket's limit is read back as that pool's. */
+const AGY_POOL_MODEL: Record<string, string> = Object.fromEntries(Object.entries(AGY_MODELS).map(([model, spec]) => [spec.pool, model]))
+
+/**
+ * Reads each Antigravity account's quota (which costs none) and records a cooldown for every bucket already spent, as a
+ * Head's pick does. Other engines have no free probe; a failed read is ignored, so this never throws.
+ */
+export async function refreshLimits($: EngineInterface, engines: readonly Engine[]) {
+  if (!engines.includes('agy')) return
+  try {
+    for (const account of await accountsOf($, 'agy')) {
+      const buckets = await readAgyUsage($, account.dir)
+      for (const pool of new Set(buckets.map(bucket => bucket.pool))) {
+        const model = AGY_POOL_MODEL[pool]
+        const until = model ? agyBlockedUntil(buckets, model) : undefined
+        if (until !== undefined) await recordCooldown($, cooldownKey(accountId(account), pool), until)
+      }
+    }
+  } catch {
+    // A quota read is a hint for the Lead, never a reason to stop a hunt.
+  }
+}
+
 export async function readLastUsed($: EngineInterface): Promise<LastUsed> {
   const stored = await $.store.get(LAST_USED_KEY).catch(() => undefined)
   if (!stored || typeof stored !== 'object') return {}
@@ -582,23 +635,31 @@ export async function rotateAccounts<R extends Ran>(steps: Rotation<R>): Promise
 }
 
 /**
- * The usage limits in force now, as lines for the Lead: an engine (and pool) every account of which is cooling, with when the
- * first frees up. Engines with a free account are left out.
+ * The usage limits in force now, as lines for the Lead: an engine (and pool) every account of which is cooling, one with only
+ * some accounts cooling, and a model that could not start here, with when each frees up. An engine with every account free is left out.
  */
 export async function coolingLines($: EngineInterface, engines: readonly Engine[]): Promise<string[]> {
   const now = await $.clock.now()
   const cooldowns = activeCooldowns(await readCooldowns($), now)
-  if (Object.keys(cooldowns).length === 0) return []
+  const unavailable = await activeUnavailable($, now)
+  if (Object.keys(cooldowns).length === 0 && unavailable.length === 0) return []
   const lines: string[] = []
   for (const engine of engines) {
     const accounts = await accountsOf($, engine)
     const pools = new Set<string | undefined>([undefined])
     for (const key of Object.keys(cooldowns)) if (key.startsWith(`${engine}/`) && key.includes('#')) pools.add(key.slice(key.indexOf('#') + 1))
     for (const pool of pools) {
+      const where = `${engine}${pool ? ` ${poolLabel(pool)}` : ''}`
       const picked = pickAccount(engine, accounts, cooldowns, now, 'fill', {}, [], pool)
-      if (!picked.account && picked.until !== null) lines.push(`${engine}${pool ? ` ${poolLabel(pool)}` : ''}: every account at its limit until ${timeOf(picked.until)}`)
+      if (!picked.account && picked.until !== null) {
+        lines.push(`${where}: every account at its limit until ${timeOf(picked.until)}`)
+        continue
+      }
+      const cooling = accounts.map(account => coolingUntil(cooldowns, accountId(account), pool)).filter(until => until > now)
+      if (pool === undefined && cooling.length > 0) lines.push(`${where}: ${cooling.length} of ${accounts.length} accounts at its limit until ${timeOf(Math.min(...cooling))}`)
     }
   }
+  for (const [, entry] of unavailable) if (engines.includes(entry.engine)) lines.push(`${entry.engine} ${entry.model}: could not start here at ${timeOf(entry.until)} (${entry.reason})`)
   return lines
 }
 

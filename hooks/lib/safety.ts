@@ -46,17 +46,29 @@ export const isSecretPath = (rel: string) => SECRET_PATHS.some(secret => rel ===
 /** Whether a home-relative path holds a credential path (granting it would grant the secret on an engine without "more specific wins"). */
 export const holdsSecret = (rel: string) => SECRET_PATHS.some(secret => secret.startsWith(`${rel}/`))
 
+/**
+ * Hydra's own folders under `~/.claude` that a Head may read: earlier hunts' reports, Heads' settings folders and installed
+ * plugins. They sit inside the credential path `.claude`, so a read grant naming one is allowed where every other is not.
+ */
+const HYDRA_READ_PATHS = ['.claude/hydra/hunts', '.claude/hydra/heads', '.claude/plugins/cache']
+
+const isHydraReadPath = (rel: string) => HYDRA_READ_PATHS.some(path => rel === path || rel.startsWith(`${path}/`))
+
 /** `path` relative to `home`, or undefined when it is not inside it. */
 export const homeRelative = (path: string, home: string) => {
   const base = trimSlash(home)
   return base && path.startsWith(`${base}/`) ? trimSlash(path).slice(base.length + 1) : undefined
 }
 
-/** Refusal text when one of `dirs` (real paths) is a credential path or inside one, under the real `home`. */
+/**
+ * Refusal text when one of `dirs` (real paths) is a credential path or inside one, under the real `home`. A read grant may
+ * name Hydra's own hunts, Heads and plugin cache folders; a `writeDirs` grant never may (that folder is refused on its own).
+ */
 export const secretDirRefusal = (dirs: readonly string[], home: string, what: string) => {
+  const isRead = what !== 'writeDirs'
   const secret = dirs.find(dir => {
     const rel = homeRelative(dir, home)
-    return rel !== undefined && isSecretPath(rel)
+    return rel !== undefined && isSecretPath(rel) && !(isRead && isHydraReadPath(rel))
   })
   return secret ? `${what}: ${secret} is a credential folder (or inside one), which a Head never reads.` : undefined
 }

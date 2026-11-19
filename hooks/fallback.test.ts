@@ -13,7 +13,7 @@ import {
 import { ENGINES, FALLBACK_ORDER, isModelFor, modelAlternates, modelOn, usagePoolOf } from './lib/engines'
 import { addTokens } from './lib/format'
 import { agyBlockedUntil, parseAgyUsage } from './engines/agy'
-import { attemptStart, fallbackRoutes } from './engines/index'
+import { attemptStart, fallbackRoutes, lostSearch, unavailableWhy, withHeadName } from './engines/index'
 
 const MIN = 60_000
 const NOW = Date.parse('2026-10-23T06:00:00Z')
@@ -279,4 +279,23 @@ test('a WorkBuddy model cooling on every account is listed per model, like an An
   expect(await coolingLines($, ['workbuddy'])).toEqual([
     `workbuddy glm-5.3: every account at its limit until ${timeOf(NOW + 15 * MIN)}`,
   ])
+})
+
+test('a Head is told its name, and the placeholders in its task are filled in', () => {
+  const task = withHeadName('Write scratch files under _scratch/<your-head-name>/ and log to {name}.log.', 'be-binary-obf')
+  expect(task.startsWith('Your Head name in this run is "be-binary-obf".')).toBe(true)
+  expect(task).toContain('_scratch/be-binary-obf/')
+  expect(task).toContain('be-binary-obf.log')
+})
+
+test('a route that could not start names the engine\'s own first error line', () => {
+  expect(unavailableWhy('\n  Error: path has a space and agy refused it\nmore')).toBe('Error: path has a space and agy refused it')
+  expect(unavailableWhy(undefined)).toBe('')
+  expect(unavailableWhy('x'.repeat(300))).toHaveLength(120)
+})
+
+test('a research Head moved off Argon is flagged as having lost web search', () => {
+  expect(lostSearch({ engine: 'agy', model: 'gemini-4-argon' }, { engine: 'codex', model: 'gpt-6.1-terra' })).toBe(true)
+  expect(lostSearch({ engine: 'agy', model: 'gemini-4-argon' }, { engine: 'agy', model: 'gemini-4-argon' })).toBe(false)
+  expect(lostSearch({ engine: 'agy', model: 'gemini-4-hydrogen' }, { engine: 'codex', model: 'gpt-6.1-terra' })).toBe(false)
 })

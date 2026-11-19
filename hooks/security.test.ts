@@ -97,6 +97,21 @@ test('keeps credential paths closed even when a grant covers or names them', asy
   expect(codexFilesystem('/Users/me/app', { addDirs: [], shell: true }, '/Users/me', ['.config/git'])).toContain('"/Users/me/.config/git/credentials"="none"')
 })
 
+test('lets a Head read Hydra\'s own hunt reports and installed plugins, never write them', async () => {
+  const home = '/Users/me'
+  for (const dir of ['/Users/me/.claude/hydra/hunts/s1/h1', '/Users/me/.claude/hydra/heads/agy-1', '/Users/me/.claude/plugins/cache/public/tool']) {
+    expect(secretDirRefusal([dir], home, 'addDirs')).toBeUndefined()
+    expect(secretDirRefusal([dir], home, 'writeDirs')).toContain('credential')
+  }
+  // The engine start checks addDirs and writeDirs together, after each writeDirs entry was refused on its own.
+  expect(secretDirRefusal(['/Users/me/.claude/hydra/hunts/s1/h1'], home, 'addDirs/writeDirs')).toBeUndefined()
+  // Everything else under ~/.claude stays refused, and so does a grant on Hydra's own hydra folder.
+  expect(secretDirRefusal(['/Users/me/.claude/hydra/accounts/codex/work'], home, 'addDirs')).toContain('credential')
+  expect(secretDirRefusal(['/Users/me/.claude/hydra'], home, 'addDirs')).toContain('credential')
+  expect(secretDirRefusal(['/Users/me/.claude/settings.json'], home, 'addDirs')).toContain('credential')
+  expect(secretDirRefusal(['/Users/me/.ssh/keys'], home, 'addDirs')).toContain('credential')
+})
+
 test('opens a linked worktree\'s git folders to a Codex Head, read-only', async () => {
   const files: Record<string, string> = {
     '/p/wt/.git': 'gitdir: /p/main/.git/worktrees/wt\n',

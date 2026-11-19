@@ -15,12 +15,12 @@ export type HuntRefute = { lenses: string[]; fix: boolean }
 export type HuntPlan = { name: string; shared: string; schema?: Schema; heads: HuntHead[]; refute?: HuntRefute; fresh: boolean }
 export type Problem = { file?: string; line?: number; problem: string; severity: string }
 export type Verdict = 'holds' | 'broken' | 'unsure' | 'none'
-export type HeadStatus = 'done' | 'blocked' | 'unfinished' | 'failed' | 'invalid'
+export type HeadStatus = 'done' | 'partial' | 'blocked' | 'unfinished' | 'failed' | 'invalid'
 export type HeadCall = HuntHead & { schema?: Schema; resume?: string }
 /** What a Head was asked to run on, before Hydra moved it. */
 export type HeadAsked = { engine: string; model?: string }
 export type HeadRan = { engine: string; model?: string; isDone: boolean; ending?: string; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; isResumable: boolean }
-export type HeadOutcome = { name: string; engine: string; model?: string; status: HeadStatus; isCached: boolean; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; refute?: { verdict: Verdict; by: string[]; problems: Problem[]; fixRounds: number; edited: string[] } }
+export type HeadOutcome = { name: string; engine: string; model?: string; status: HeadStatus; isCached: boolean; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** Why a Head that did not finish still counts as done, e.g. `out of time, check passed`. */ note?: string; /** The files a reading Head changed in its fix round, though it was told not to. */ readingChanged?: string[]; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; refute?: { verdict: Verdict; by: string[]; problems: Problem[]; fixRounds: number; edited: string[] } }
 export type HuntResult = { name: string; outcomes: HeadOutcome[]; missing: string[] }
 export type HuntSteps = { plan: HuntPlan; cache: Readonly<Record<string, HeadOutcome>>; runHead: (call: HeadCall) => Promise<HeadRan>; refuterEngine: (author: string, index: number) => string | undefined; save: (key: string, outcome: HeadOutcome) => Promise<void>; isAborted: () => boolean }
 
@@ -34,11 +34,23 @@ export const parseHunt = (input: Readonly<Record<string, unknown>>, root?: strin
   if (Array.isArray(input.heads) && input.heads.length > HUNT_MAX_HEADS) return { deny: `A hunt takes at most ${HUNT_MAX_HEADS} Heads; split it into two hunts.` }
   if (!Array.isArray(input.heads) || input.heads.length === 0 || !input.heads.every(object)) return { deny: `\`heads\` must list 1 to ${HUNT_MAX_HEADS} Heads, each with a \`task\`.` }
   const heads: HuntHead[] = []
+  const notes: string[] = []
+  const declared = new Set(input.heads.flatMap(entry => typeof entry.name === 'string' && entry.name.trim() ? [entry.name.trim().toLowerCase()] : []))
   for (const [index, entry] of input.heads.entries()) {
     if (typeof entry.task !== 'string' || !entry.task.trim()) return { deny: `Head ${index + 1} has no \`task\`.` }
-    const headName = entry.name === undefined ? `${name.slice(0, 16)}-${index + 1}` : typeof entry.name === 'string' ? entry.name.trim().toLowerCase() : ''
+    let headName = entry.name === undefined ? `${name.slice(0, 16)}-${index + 1}` : typeof entry.name === 'string' ? entry.name.trim().toLowerCase() : ''
     if (!slug(headName, 20)) return { deny: `Head ${index + 1}: \`name\` must be lowercase letters, digits and dashes, up to 20.` }
-    if (/-fix$|-r\d+$|-json\d*$/.test(headName)) return { deny: `Head ${index + 1}: the name "${headName}" ends like one of the hunt's own follow-up Heads (-fix, -r1, -json); pick another.` }
+    if (/-fix$|-r\d+$|-json\d*$/.test(headName)) {
+      const old = headName
+      const base = (headName.length > 18 ? headName.slice(0, 18).replace(/-+$/, '') : headName) || 'head'
+      let renamed = `${base}-h`
+      for (let n = 2; heads.some(head => head.name === renamed) || declared.has(renamed); n++) {
+        const suffix = `-${n}-h`
+        renamed = `${base.slice(0, 20 - suffix.length).replace(/-+$/, '')}${suffix}`
+      }
+      headName = renamed
+      notes.push(`note: Head ${index + 1} renamed ${old} → ${headName} (names ending -fix, -rN or -jsonN are kept for Hydra's follow-up Heads)`)
+    }
     if (heads.some(head => head.name === headName)) return { deny: `Two Heads are named "${headName}"; names must differ.` }
     const head: HuntHead = { name: headName, task: entry.task.trim() }
     for (const key of ['engine', 'model', 'effort', 'check', 'cwd'] as const) if (typeof entry[key] === 'string' && entry[key].trim()) head[key] = entry[key].trim()
@@ -52,9 +64,6 @@ export const parseHunt = (input: Readonly<Record<string, unknown>>, root?: strin
   const absolute = (path: string, base: string) => normalize(path.startsWith('/') ? path : `${base}/${path}`)
   const rootHeads = heads.filter(head => (head.cwd || root) && absolute(head.cwd || root!, root || '/') === '/')
   if (rootHeads.length) return { deny: `Heads ${rootHeads.map(head => head.name).join(', ')}: / is the root of the disk; pass a project folder in cwd.` }
-  const folders = heads.flatMap(head => { const cwd = absolute(head.cwd || root || '/', root || '/'); return [cwd, ...(head.addDirs ?? []).map(dir => absolute(dir, cwd)), ...(head.writeDirs ?? []).map(dir => absolute(dir, cwd))] })
-  const paths = `${typeof input.shared === 'string' ? input.shared : ''}\n${heads.map(head => head.task).join('\n')}`.match(/(?:^|[\s`"'(])\/(?!\/)[^\s`"'(),;:]+/g) ?? []
-  const notes = [...new Set(paths.map(path => path.trim().replace(/^[`"'(]/, '').replace(/[.!?]+$/, '')).filter(path => !folders.some(folder => folder === '/' || normalize(path) === folder || normalize(path).startsWith(`${folder}/`))))].map(path => `note: ${path} is outside every Head's folders; pass it in addDirs to let them read it`)
   let schema: Schema | undefined
   if (input.schema !== undefined && input.schema !== null) {
     const problem = schemaProblem(input.schema)
@@ -69,6 +78,35 @@ export const parseHunt = (input: Readonly<Record<string, unknown>>, root?: strin
     refute = { lenses: lenses.length ? lenses : [DEFAULT_LENS], fix: input.refute.fix !== false }
   } else if (input.refute !== undefined && input.refute !== null && input.refute !== false) return { deny: '`refute` must be true or { lenses, fix }.' }
   return { plan: { name, shared: typeof input.shared === 'string' ? input.shared.trim() : '', ...(schema !== undefined ? { schema } : {}), heads, ...(refute ? { refute } : {}), fresh: input.fresh === true }, ...(notes.length ? { notes } : {}) }
+}
+
+/** Notes for paths named in the plan that exist but sit outside every Head's folders. */
+export const outsidePathNotes = async (plan: HuntPlan, root: string | undefined, exists: (path: string) => Promise<boolean>): Promise<string[]> => {
+  const normalize = (path: string) => '/' + path.split('/').reduce<string[]>((parts, part) => { if (part === '..') parts.pop(); else if (part && part !== '.') parts.push(part); return parts }, []).join('/')
+  const absolute = (path: string, base: string) => normalize(path.startsWith('/') ? path : `${base}/${path}`)
+  const folders = plan.heads.flatMap(head => { const cwd = absolute(head.cwd || root || '/', root || '/'); return [cwd, ...(head.addDirs ?? []).map(dir => absolute(dir, cwd)), ...(head.writeDirs ?? []).map(dir => absolute(dir, cwd))] })
+  const inside = (path: string) => folders.some(folder => folder === '/' || normalize(path) === folder || normalize(path).startsWith(`${folder}/`))
+  const isThere = (path: string) => exists(path).catch(() => false)
+  const text = `${plan.shared}\n${plan.heads.map(head => head.task).join('\n')}`
+  const found = new Set<string>()
+  const pattern = /(?:^|[\s`"'(])\/(?!\/)[^\s`"'(),;:]+/g
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+    const token = match[0].trim().replace(/^[`"'(]/, '')
+    if (!token.startsWith('/') || /[*?]/.test(token)) continue
+    const line = text.slice((match.index ?? 0) + match[0].length).split('\n')[0]!.split(/[`"']/)[0]!
+    let chosen = token
+    if (/^\s+\S/.test(line)) {
+      const words = line.trim().split(/\s+/)
+      for (let count = words.length; count >= 1; count--) {
+        const longer = `${token} ${words.slice(0, count).join(' ')}`.replace(/[.,;:!?]+$/, '')
+        if (await isThere(longer)) { chosen = longer; break }
+      }
+    }
+    const path = chosen.replace(/[.,;:!?]+$/, '')
+    if (found.has(path) || inside(path) || !(await isThere(path))) continue
+    found.add(path)
+  }
+  return [...found].map(path => `note: ${path} is outside every Head's folders; pass it in addDirs to let them read it`)
 }
 
 export const headKey = (plan: HuntPlan, head: HuntHead): string => {
@@ -87,12 +125,25 @@ export const refuteTask = (head: HuntHead, shared: string, author: Pick<HeadRan,
   'Answer "broken" only for a concrete problem you can point to (file and line where there is one), "holds" when you checked and found none, and "unsure" when you could not check. Never invent a problem to have one. List what you actually checked.',
 ].filter(Boolean).join('\n\n')
 
-export const fixTask = (problems: readonly Problem[]): string => `A reviewer checked your work and reports these problems:\n${problems.slice(0, 15).map(p => `- [${p.severity}] ${p.file ? `${p.file}${p.line ? `:${p.line}` : ''}: ` : ''}${p.problem}`).join('\n')}\nFor each one: fix it if it is real, or say in one line why it is not. Then give your full result again.`
+export const fixTask = (problems: readonly Problem[], isReading = false): string => `A reviewer checked your work and reports these problems:\n${problems.slice(0, 15).map(p => `- [${p.severity}] ${p.file ? `${p.file}${p.line ? `:${p.line}` : ''}: ` : ''}${p.problem}`).join('\n')}\n${isReading ? 'This is a reading job: change no files, revise only your result (the report, or the JSON).\n' : ''}For each one: fix it if it is real, or say in one line why it is not. Then give your full result again.`
+
+const ENDINGS = ['blocked', 'capped', 'timeout', 'stalled']
+/** Why a Head that did not finish still counts as done, when its check passed. */
+const doneNote = (ran: HeadRan): string | undefined => {
+  if (ran.isDone || ran.check !== 'passed') return undefined
+  if (ran.ending === 'timeout') return 'out of time, check passed'
+  if (ran.ending === 'capped') return 'out of turns, check passed'
+  if (ran.ending === 'stalled') return 'stalled, check passed'
+  if (ran.ending === 'blocked') return 'said blocked, check passed'
+  return undefined
+}
 
 export const statusOf = (ran: HeadRan, hasSchema: boolean): HeadStatus => {
-  if (ran.check === 'failed') return 'failed'
+  if (ran.check === 'failed') return ran.ending === 'blocked' ? 'blocked' : 'failed'
+  if (!ran.isDone && ran.check === 'passed' && ENDINGS.includes(ran.ending ?? '')) return 'done'
   if (ran.isDone && hasSchema && ran.data === undefined) return 'invalid'
   if (ran.isDone) return 'done'
+  if (ran.data !== undefined && ENDINGS.includes(ran.ending ?? '')) return 'partial'
   if (ran.ending === 'blocked') return 'blocked'
   if (ran.ending === 'capped' || ran.ending === 'timeout' || ran.ending === 'stalled') return 'unfinished'
   return 'failed'
@@ -116,7 +167,7 @@ export const verdictOf = (answers: readonly unknown[]): { verdict: Verdict; prob
 }
 
 const union = (a: string[], b: string[]) => [...new Set([...a, ...b])]
-const outcomeOf = (name: string, ran: HeadRan, hasSchema: boolean): HeadOutcome => ({ name, engine: ran.engine, ...(ran.model !== undefined ? { model: ran.model } : {}), status: statusOf(ran, hasSchema), isCached: false, ...(ran.check !== undefined ? { check: ran.check } : {}), files: ran.files, summary: ran.summary, ...(ran.data !== undefined ? { data: ran.data } : {}), ...(ran.dataErrors !== undefined ? { dataErrors: ran.dataErrors } : {}), ...(ran.reportPath !== undefined ? { reportPath: ran.reportPath } : {}), ...(ran.cost !== undefined ? { cost: ran.cost } : {}), ...(ran.fallback !== undefined ? { fallback: ran.fallback } : {}), ...(ran.asked !== undefined ? { asked: ran.asked } : {}) })
+const outcomeOf = (name: string, ran: HeadRan, hasSchema: boolean): HeadOutcome => { const note = doneNote(ran); return ({ name, engine: ran.engine, ...(ran.model !== undefined ? { model: ran.model } : {}), status: statusOf(ran, hasSchema), isCached: false, ...(ran.check !== undefined ? { check: ran.check } : {}), files: ran.files, summary: ran.summary, ...(ran.data !== undefined ? { data: ran.data } : {}), ...(ran.dataErrors !== undefined ? { dataErrors: ran.dataErrors } : {}), ...(ran.reportPath !== undefined ? { reportPath: ran.reportPath } : {}), ...(ran.cost !== undefined ? { cost: ran.cost } : {}), ...(note !== undefined ? { note } : {}), ...(ran.fallback !== undefined ? { fallback: ran.fallback } : {}), ...(ran.asked !== undefined ? { asked: ran.asked } : {}) }) }
 
 export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
   const { plan } = steps
@@ -140,11 +191,12 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
         return { ...verdictOf(present.map(answer => answer.result.data)), by: present.filter(answer => usable(answer.result.data)).map(answer => answer.engine), edited: [...new Set(present.flatMap(answer => answer.result.files))] }
       }
       if (plan.refute && outcome.status === 'done' && !steps.isAborted()) {
+        const isReading = !head.files?.length
         const first = await review(ran, '')
         outcome.refute = { ...first, fixRounds: 0 }
         if (first.verdict === 'broken' && plan.refute.fix && ran.isResumable && !steps.isAborted()) {
           let fixed: HeadRan | undefined
-          try { fixed = await steps.runHead({ ...head, name: `${head.name}-fix`, resume: head.name, task: fixTask(first.problems), ...(plan.schema ? { schema: plan.schema } : {}) }) } catch { /* Keep the original result. */ }
+          try { fixed = await steps.runHead({ ...head, name: `${head.name}-fix`, resume: head.name, task: fixTask(first.problems, isReading), ...(plan.schema ? { schema: plan.schema } : {}) }) } catch { /* Keep the original result. */ }
           if (fixed) {
             const updated = outcomeOf(head.name, fixed, plan.schema !== undefined)
             updated.engine = ran.engine
@@ -153,6 +205,7 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
             // The fix continues the author's session, so the route that moved it is the author's too.
             if (ran.fallback !== undefined) updated.fallback = ran.fallback
             if (ran.asked !== undefined) updated.asked = ran.asked
+            if (isReading && fixed.files.length) updated.readingChanged = fixed.files
             updated.files = union(ran.files, fixed.files)
             if (ran.cost !== undefined && fixed.cost !== undefined) updated.cost = `${ran.cost} + ${fixed.cost}`
             else if (ran.cost !== undefined) updated.cost = ran.cost
@@ -166,7 +219,7 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
       return outcome
     } catch (error) { return failure(`could not run: ${String(error).slice(0, 300)}`) }
   }))
-  return { name: plan.name, outcomes, missing: outcomes.filter(outcome => outcome.status !== 'done').map(outcome => outcome.name) }
+  return { name: plan.name, outcomes, missing: outcomes.filter(outcome => outcome.status !== 'done' && outcome.status !== 'partial').map(outcome => outcome.name) }
 }
 
 /** The engine and model a Head started on, read from the first route of its `fallback:` trail (`engine model (why) → …`). */
@@ -178,13 +231,15 @@ const askedOf = (fallback: string) => {
 
 export const formatHunt = (result: HuntResult, limit = 14000): string => {
   const done = result.outcomes.filter(outcome => outcome.status === 'done').length
+  const partial = result.outcomes.filter(outcome => outcome.status === 'partial').length
   const cached = result.outcomes.filter(outcome => outcome.isCached).length
   const broken = result.outcomes.filter(outcome => outcome.refute?.verdict === 'broken').length
-  const first = `hunt ${result.name} · ${result.outcomes.length} Head(s) · ${done} done${cached ? ` (${cached} from cache)` : ''}${broken ? ` · ${broken} refuted` : ''}${result.missing.length ? ` · missing: ${result.missing.join(', ')}` : ''}`
+  const first = `hunt ${result.name} · ${result.outcomes.length} Head(s) · ${done} done${cached ? ` (${cached} from cache)` : ''}${partial ? ` · ${partial} partial` : ''}${broken ? ` · ${broken} refuted` : ''}${result.missing.length ? ` · missing: ${result.missing.join(', ')}` : ''}`
   const share = Math.max(0, Math.floor((limit - first.length - 2 * result.outcomes.length) / (result.outcomes.length || 1)))
   const blocks = result.outcomes.map(outcome => {
     const refute = outcome.refute
-    const lines = [`## ${outcome.name} · ${outcome.engine || 'no engine'} · ${outcome.status}${outcome.isCached ? ' (cached)' : ''}${outcome.check ? ` · check ${outcome.check}` : ''}${refute ? ` · refute: ${refute.verdict}${refute.by.length ? ` by ${refute.by.join(', ')}` : ''}${refute.fixRounds ? ' after a fix' : ''}` : ''}${outcome.cost ? ` · ${outcome.cost}` : ''}`]
+    const lines = [`## ${outcome.name} · ${outcome.engine || 'no engine'} · ${outcome.status}${outcome.note ? ` (${outcome.note})` : ''}${!outcome.note && outcome.check ? ` · check ${outcome.check}` : ''}${outcome.isCached ? ' (cached)' : ''}${refute ? ` · refute: ${refute.verdict}${refute.by.length ? ` by ${refute.by.join(', ')}` : ''}${refute.fixRounds ? ' after a fix' : ''}` : ''}${outcome.cost ? ` · ${outcome.cost}` : ''}`]
+    if (outcome.readingChanged?.length) lines.push(`⚠ a reading Head changed files in its fix round: ${outcome.readingChanged.join(', ')}`)
     if (outcome.fallback) {
       const asked = outcome.asked ?? askedOf(outcome.fallback)
       if (asked && (asked.engine !== outcome.engine || (asked.model !== undefined && asked.model !== outcome.model))) lines.push(`  asked: ${asked.engine}${asked.model !== undefined ? ` · ${asked.model}` : ''}`)

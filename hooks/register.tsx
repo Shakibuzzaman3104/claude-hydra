@@ -9,17 +9,17 @@ import { sweepBuddySettings } from './engines/codebuddy'
 import { sweepCodexTemps } from './engines/codex'
 import { writeRules } from './engines/commandcode'
 import { sweepOpenCodeFiles } from './engines/opencode'
-import { coolingLines, isStrategy, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
+import { coolingLines, isStrategy, refreshLimits, timeOf, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
 import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
 import type { Engine } from './lib/engines'
 import { REPORT_HEAD, isLive, listRuns, reportContext, reportNotice, stopRuns } from './lib/format'
-import { HUNT_MAX_HEADS, parseHunt } from './lib/hunt'
+import { HUNT_MAX_HEADS, outsidePathNotes, parseHunt } from './lib/hunt'
 import { REPORT_HUNT, huntContext, huntControllers, huntJobs, huntNotice, prepareHead, runHuntJob, runStructured, sweepHunts } from './lib/launch'
 import type { Launch } from './lib/launch'
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
-import { pauseOneSecond } from './lib/platform'
+import { homeOf, pauseOneSecond } from './lib/platform'
 import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, SURGE_LABEL, SURGE_OFF_HINT, SURGE_POLICY, parseHydraArgs } from './lib/policy'
 import { announceEnding, backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
@@ -57,6 +57,9 @@ const USAGE_COMMAND = 'hydra-usage'
 const HEAD_TOOL = 'mcp__hydra__head'
 const CONTROL_TOOL = 'mcp__hydra__control'
 const HUNT_TOOL = 'mcp__hydra__hunt'
+
+/** When a background result was sent: the host may hold it until the Lead's turn ends, so a late one can be told from a new one. */
+const lateNote = (now: number) => `(sent at ${timeOf(now)}, when it ended; if it reaches you much later, its report file may already have been read and acted on)\n`
 
 const PANE = 'hydra-usage'
 const HEADS_PANE = 'hydra-heads'
@@ -111,7 +114,7 @@ export const register: Register = (on, options) => {
             })
             .then(async result => {
               await announceEnding($, job.id)
-              if (!job.reply?.(result)) await $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${result.text}` })
+              if (!job.reply?.(result)) await $.prompt.submit({ text: `Hydra Head ${job.id} finished.\n${lateNote(await $.clock.now())}${result.text}` })
             })
             .finally(() => controllers.delete(job.id))
         }
@@ -125,7 +128,7 @@ export const register: Register = (on, options) => {
           void runHuntJob($, job, controller.signal)
             .catch(error => `hunt ${name} · failed before it reported: ${String(error).slice(0, 300)}`)
             .then(async text => {
-              if (!job.reply?.(text)) await $.prompt.submit({ text: `Hydra Hunt ${name} finished.\n${text}` }).catch(() => undefined)
+              if (!job.reply?.(text)) await $.prompt.submit({ text: `Hydra Hunt ${name} finished.\n${lateNote(await $.clock.now())}${text}` }).catch(() => undefined)
             })
             .finally(() => huntControllers.delete(name))
         }
@@ -174,7 +177,7 @@ export const register: Register = (on, options) => {
           name: { type: 'string', description: 'Names the hunt, its Heads and its saved results: lowercase letters, digits and dashes, up to 30 (auth-audit, login-build). Reuse the name to rerun only what failed or changed.' },
           heads: {
             type: 'array',
-            description: `1 to ${HUNT_MAX_HEADS} Heads. Each takes the Head tool's own fields: task (required), name, engine (required in auto mode), model, effort, files, check, checkMinutes, shell, cwd, addDirs, writeDirs, maxTurns, maxMinutes. Editing Heads must name disjoint files.`,
+            description: `1 to ${HUNT_MAX_HEADS} Heads. Each takes the Head tool's own fields: task (required), name (a name ending -fix, -rN or -jsonN is renamed with -h, since those endings name Hydra's own follow-up Heads), engine (required in auto mode), model, effort, files, check, checkMinutes, shell, cwd, addDirs, writeDirs, maxTurns, maxMinutes. Editing Heads must name disjoint files.`,
             items: { type: 'object', properties: { task: { type: 'string' }, name: { type: 'string' }, engine: { type: 'string', enum: [...ENGINES] }, model: { type: 'string' }, effort: { type: 'string', enum: [...HEAD_EFFORTS] }, files: { type: 'array', items: { type: 'string' } }, check: { type: 'string' }, checkMinutes: { type: 'number' }, shell: { type: 'boolean' }, cwd: { type: 'string' }, addDirs: { type: 'array', items: { type: 'string' } }, writeDirs: { type: 'array', items: { type: 'string' } }, maxTurns: { type: 'number' }, maxMinutes: { type: 'number' } }, required: ['task'] },
           },
           shared: { type: 'string', description: 'Text put before every Head\'s task: the project, the hard rules, what a finding must be. Write it once here, not in each task.' },
@@ -422,19 +425,19 @@ export const register: Register = (on, options) => {
     const { input, headModel, id, engine, routing } = prepared
     if (e.background === true) {
       if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment, or run this Head without background.' }
-      backgroundJobs.push({ input, headModel, id, engine, routing, schema })
+      backgroundJobs.push({ input, headModel, id, engine, routing, schema: schema ?? prepared.schema })
 
-      return { result: `Head ${id} ${prepared.continues ? `continues ${prepared.continues}` : 'started'} in the background on ${headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
+      return { result: `Head ${id} ${prepared.continues ? `continues ${prepared.continues}` : 'started'} in the background on ${typeof input.model === 'string' && input.model ? input.model : headModel} (${ENGINE_LABEL[engine]}). Its report arrives as a message from the hydra plugin when it finishes.` }
     }
     if (!isWorkerRunning) {
-      const { result } = await runStructured($, prepared, next.signal, schema)
+      const { result } = await runStructured($, prepared, next.signal, schema ?? prepared.schema)
 
       return { result: result.text }
     }
     // Run on the worker's long-lived `$`, so a cancelled call stops the Head cleanly instead of stranding it as running.
     // The hook waits through `$` calls: a hook's own time is capped at 10 s, and a `$` call in flight does not count.
     const { box, reply } = createReplyBox<HeadResult>(next.signal)
-    backgroundJobs.push({ input, headModel, id, engine, routing, schema, reply })
+    backgroundJobs.push({ input, headModel, id, engine, routing, schema: schema ?? prepared.schema, reply })
     const result = await waitForResult(box, next.signal, () => pauseOneSecond($))
 
     return { result: result?.text ?? `Head ${id} keeps running in the background after the call was interrupted; its report arrives as a message from the hydra plugin. Stop it with ${CONTROL_TOOL} if it is no longer wanted.` }
@@ -470,6 +473,11 @@ export const register: Register = (on, options) => {
     }
     const firstCheck = plan.heads.find(head => head.check)?.check
     if (firstCheck && !(await hasCheckConsent($, firstCheck))) return { deny: NO_CHECK_CONSENT }
+    // Read before any Head starts, so the Lead sees a limit or an unreadable path before the results come back.
+    const pathNotes = await outsidePathNotes(plan, await $.session.root(), path => $.fs.stat(path).then(() => true, () => false)).catch(() => [])
+    await refreshLimits($, [...vetted])
+    const limits = await coolingLines($, [...vetted]).catch(() => [])
+    parsed.notes = [...(parsed.notes ?? []), ...pathNotes, ...(limits.length > 0 ? [`limits now: ${limits.join('; ')} (Hydra moves these Heads to another route on its own)`] : [])]
     if (e.background === true) {
       huntJobs.push({ plan, launch })
 
@@ -492,7 +500,9 @@ export const register: Register = (on, options) => {
       const hydra = await readMode($)
       const head = hydra?.isOn ? `Hydra on · Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'Hydra off'
 
-      return { result: `${head}\n${listRuns(await readRuns($), now, id => controllers.has(id))}` }
+      const home = await homeOf($)
+      const saved = home ? `\nReports: ${home}/.claude/hydra/heads/${await $.session.id()}/<head>.md (a hunt's in ${home}/.claude/hydra/hunts/${await $.session.id()}/<hunt>/)` : ''
+      return { result: `${head}\n${listRuns(await readRuns($), now, id => controllers.has(id))}${saved}` }
     }
     if (action === 'stop') {
       const list = await readRuns($)
