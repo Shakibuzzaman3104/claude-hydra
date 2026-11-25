@@ -14,7 +14,7 @@ import { SECRET_PATHS, isWithin, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { IGNORE_FILE } from '../lib/protect'
 import type { Guarded } from '../lib/protect'
-import { homeOf, runScript } from '../lib/platform'
+import { homeOf, newestMtime, runScript } from '../lib/platform'
 import { OPENCODE_NO_PROJECT_CONFIG } from '../lib/checks'
 
 /** OpenCode tool names as the names Command Code's stream uses, so one live view reads every engine. */
@@ -556,7 +556,9 @@ export async function sweepOpenCodeFiles($: EngineInterface) {
   const now = await $.clock.now()
   const entries = await $.fs.list(folder).catch(() => [])
   for (const entry of entries) {
-    if (!entry.name.startsWith(PREFIX) || now - entry.mtimeMs <= 86_400_000) continue
+    if (!entry.name.startsWith(PREFIX)) continue
+    const newest = entry.kind === 'dir' ? await newestMtime($, `${folder}/${entry.name}`, 2) : entry.mtimeMs
+    if (newest === undefined || now - newest <= 86_400_000) continue
     if (entry.kind === 'file' && entry.name.endsWith('.json')) await $.process.run(['/bin/rm', '-f', `${folder}/${entry.name}`]).catch(() => undefined)
     else if (entry.kind === 'dir') await removeOpenCodeFiles($, `${folder}/${entry.name}`)
   }

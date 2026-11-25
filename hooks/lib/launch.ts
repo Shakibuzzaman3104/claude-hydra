@@ -13,7 +13,7 @@ import type { Engine, Routing } from './engines'
 import { RESUMABLE, clipReport, headName, relativeTo, resumeTarget, strings } from './format'
 import { formatHunt, runHunt } from './hunt'
 import type { HeadCall, HeadOutcome, HeadRan, HuntPlan } from './hunt'
-import { homeOf } from './platform'
+import { homeOf, newestMtime } from './platform'
 import { NO_CHECK_CONSENT, NO_CONSENT } from './policy'
 import { HUNT_PARALLEL, MAX_PARALLEL, announceEnding, controllers, createQueue, gate, hasCheckConsent, hasConsent, preflight, resolveWriteDirs, usedNames } from './runtime'
 import type { HeadResult, HeadSession } from './runtime'
@@ -385,8 +385,13 @@ export async function sweepHunts($: EngineInterface) {
   for (const kind of ['hunts', 'heads']) {
     const folder = `${home}/.claude/hydra/${kind}`
     const entries = await $.fs.list(folder).catch(() => [])
-    const old = entries.filter(entry => entry.kind === 'dir' && (kind === 'hunts' ? /^[A-Za-z0-9-]+$/ : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).test(entry.name) && entry.name !== own.slice(HUNT_STORE.length, -1) && now - entry.mtimeMs > HUNT_KEEP_MS)
-    if (old.length > 0) await $.process.run(['/bin/rm', '-rf', ...old.map(entry => `${folder}/${entry.name}`)]).catch(() => undefined)
+    const candidates = entries.filter(entry => entry.kind === 'dir' && (kind === 'hunts' ? /^[A-Za-z0-9-]+$/ : /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i).test(entry.name) && entry.name !== own.slice(HUNT_STORE.length, -1))
+    const old: string[] = []
+    for (const entry of candidates) {
+      const newest = await newestMtime($, `${folder}/${entry.name}`, kind === 'hunts' ? 2 : 1)
+      if (newest !== undefined && now - newest > HUNT_KEEP_MS) old.push(`${folder}/${entry.name}`)
+    }
+    if (old.length > 0) await $.process.run(['/bin/rm', '-rf', ...old]).catch(() => undefined)
   }
 }
 

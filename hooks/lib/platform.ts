@@ -105,6 +105,20 @@ export async function removeFile($: EngineInterface, path: string, isDir = false
   return $.process.run([...python, '-I', '-c', REMOVE, path, isDir ? 'dir' : 'file'], { timeoutMs: 10_000 })
 }
 
+/** When anything under `path` last changed, `depth` folders down; undefined when it cannot be read. `$.fs.list` gives folders an mtime of 0, so each is stat'ed. */
+export async function newestMtime($: Pick<EngineInterface, 'fs'>, path: string, depth: number): Promise<number | undefined> {
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (!stat) return undefined
+  let newest = stat.mtimeMs
+  if (depth <= 0 || stat.kind !== 'dir') return newest
+  for (const entry of await $.fs.list(path).catch(() => [])) {
+    const time = entry.kind === 'dir' ? await newestMtime($, `${path}/${entry.name}`, depth - 1) : entry.mtimeMs
+    if (time === undefined) return undefined
+    newest = Math.max(newest, time)
+  }
+  return newest
+}
+
 const REPLACE = 'import os,sys\nos.replace(sys.argv[1], sys.argv[2])'
 
 /** Renames `from` over `to` in one step: `/bin/mv -f` on macOS and Linux, Python's `os.replace` on Windows. */
