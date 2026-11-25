@@ -123,7 +123,7 @@ const LOCKDOWN_BRIEF: Record<Engine, string> = {
 /** What each engine is good for, as the Lead's routing guide. Judgement from how they run, not a benchmark, except where it says measured. */
 export const ROUTES: Record<Engine, string> = {
   codex: `gpt-6.1-terra, the Codex coding model (pass \`model: "gpt-6-luna"\` for easy work, \`gpt-6.1-sol\` for work that is not code): the strongest coder here, and the one that costs the most. For the hard part only: subtle state or concurrency, an algorithm, a bug known only by its symptoms, a change that cuts across layers. Its shell is sandboxed with no network, so a build or test that downloads anything fails there: give it a \`check\` instead. Spends the person's ChatGPT plan.`,
-  agy: `gemini-4-hydrogen by default (Gemini 4, low to xhigh): large context, for implementation, reading and summarising big areas, docs and reviews. Pass \`model: "gemini-3.8-flash"\` for bulk, boilerplate and mechanical edits across many files (it spends far less of the shared Gemini pool), \`gemini-4-argon\` for research and search (its Heads can search the web) and, with \`claude-sonnet-5-5\`, for normal implementation, \`claude-opus-5-5\` for hard work, \`gpt-oss-120b\` for simple edits. Claude + GPT-OSS, Gemini and Argon are separate usage pools, which Hydra checks before each Head. No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
+  agy: `gemini-4-hydrogen by default (Gemini 4, low to xhigh): large context, for implementation, reading and summarising big areas, docs and reviews. Pass \`model: "gemini-4-neon"\` for harder work, reviews, research and web search, \`gemini-4-carbon\` only for the deepest long-horizon work (it spends the Gemini pool fastest), \`claude-sonnet-5-5\` for normal implementation on the Claude pool and \`claude-opus-5-5\` for hard work (it drains that pool several times faster than Sonnet). Two usage pools, each with a weekly and a 5-hour limit: every Gemini model shares one, Claude and GPT-OSS the other; Hydra checks them before each Head. Argon, Flash and GPT-OSS leave on 30 November 2026. No shell unless \`shell: true\`; a refused call ends a round (Hydra resumes it).`,
   codebuddy: `DeepSeek V4.1 Flash: the cheap default. Send it well-specified edits, renames, new tests and small features. Measured: 95% of 126 runs passed at \`low\` effort. Optional shell.`,
   workbuddy: `DeepSeek V4.1 Flash, the same DeepSeek model through your WorkBuddy subscription (credits). Send it what you would send CodeBuddy: well-specified edits, renames, new tests and small features. Optional shell.`,
   opencode: `BETA. Free or cheap models (default \`opencode/deepseek-v4.1-flash-free\`, no account needed). No shell and no search tool: name the exact files in the task. Good for well-specified small edits; send anything that needs a shell, tests or a search elsewhere.`,
@@ -191,6 +191,22 @@ ${HUNT_RULE}
 - You manage the Heads yourself with ${CONTROL_TOOL}: \`list\` shows every Head (one marked NO LIVE PROCESS is stale), \`stop\` ends a stuck, wrong or stale Head (\`id\`, or all), \`clear\` drops finished ones from the views. Stop a Head yourself instead of asking the person to.
 ${fallbackRule(routing.fallback ?? true)}
 - End with what each Head did, what you verified, and the Heads' total cost.`
+
+/** The MCP server name the Antigravity plugin's tools sit under (`<plugin>_<server key>`). */
+export const AGY_SERVER = 'hydra_heads'
+
+/**
+ * The Lead policy for an Antigravity Lead, from the same auto-mode text: Antigravity runs every head and hunt call in the background
+ * and hands the result back itself, and the Lead's own quota is the one agy Heads draw on.
+ */
+export const AGY_LEAD_POLICY = (pool: readonly Engine[] = ENGINES) =>
+  autoPolicy('auto', pool, true, false)
+    .replace('# Hydra mode (on, auto engines)', `# Hydra (Antigravity Lead)
+You lead Hydra Heads through the \`${AGY_SERVER}\` MCP server: its \`head\`, \`hunt\` and \`control\` tools. Antigravity runs every \`head\` and \`hunt\` call in the background and hands you its report when it ends, so start several and keep working; never wait in a loop.
+- Your own model draws on the same Antigravity usage pools as \`agy\` Heads (Gemini, or Claude + GPT-OSS). Send Heads to the other engines first and use \`agy\` Heads only when no other engine fits; \`control\` lists the engines ready here and the limits in force.
+- Hydra asks the person once before an engine first gets code and before the first check runs. If a call is refused for consent, tell the person and stop: do not retry it.`)
+    .replace(' Tasks on disjoint files can go to different engines in parallel (`background: true`).', ' Tasks on disjoint files can go to different engines in parallel.')
+    .replaceAll(HEAD_TOOL, '`head`').replaceAll(HUNT_TOOL, '`hunt`').replaceAll(CONTROL_TOOL, '`control`')
 
 export const SURGE_LABEL: Record<Surge, string> = { rampage: 'Rampage', chimera: 'Chimera' }
 

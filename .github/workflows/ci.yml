@@ -55,6 +55,10 @@ jobs:
         run: claude plugin validate .
       - name: Run the hooks tests (hooks/register.test.ts)
         run: claude plugin test .
+      - name: Check the Antigravity server bundle and rules are rebuilt from the sources
+        run: node agy/build.mjs --check
+      - name: Run the Antigravity server tests
+        run: node --test agy/server.test.mjs
       # There is deliberately no `tsc --noEmit -p .` step: tsconfig.json extends .claude-plugin/types/tsconfig.json, and that folder
       # (the SDK types, gitignored) is generated only when the engine loads the mod in a session, which needs a logged-in Claude Code.
       # `claude plugin validate` and `claude plugin test` do not write it, so a fresh clone cannot be type-checked in CI. Run

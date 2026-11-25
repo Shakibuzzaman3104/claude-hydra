@@ -10,19 +10,21 @@ import { sweepBuddySettings } from './engines/codebuddy'
 import { sweepCodexTemps } from './engines/codex'
 import { writeRules } from './engines/commandcode'
 import { sweepOpenCodeFiles } from './engines/opencode'
-import { coolingLines, headLine, hideFinished, isStrategy, refreshLimits, timeOf, parseAccountsArgs, runAccountsCommand, setAccountStrategy, visibleRuns } from './lib/accounts'
-import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
+import { coolingLines, isStrategy, timeOf, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
+import { EFFORTS, effortModeOf, isEffortMode } from './lib/effort'
 import type { EffortMode } from './lib/effort'
-import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
+import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf } from './lib/engines'
 import type { Engine } from './lib/engines'
-import { REPORT_HEAD, isLive, listRuns, reportContext, reportNotice, stopRuns } from './lib/format'
-import { HUNT_MAX_HEADS, outsidePathNotes, parseHunt } from './lib/hunt'
-import { REPORT_HUNT, huntContext, huntControllers, huntJobs, huntNotice, prepareHead, runHuntJob, runStructured, sweepHunts } from './lib/launch'
+import { REPORT_HEAD, isLive, reportContext, reportNotice, stopRuns } from './lib/format'
+import { parseHunt } from './lib/hunt'
+import { CONTROL_TOOL_DEF, HEAD_TOOL_DEF, HUNT_TOOL_DEF } from './lib/tools'
+import { runControl } from './lib/control'
+import { REPORT_HUNT, huntContext, huntControllers, huntJobs, huntNotice, prepareHead, runHuntJob, runStructured, sweepHunts, vetHunt } from './lib/launch'
 import type { Launch } from './lib/launch'
 import { planOnboarding, setupCard, takeWelcome, onlyReadyNote } from './lib/onboarding'
-import { homeOf, pauseOneSecond } from './lib/platform'
-import { HYDRA_HELP, HYDRA_POLICY, NO_CHECK_CONSENT, NO_CONSENT, ROUTES, STATUSLINE_HELP, SURGE_LABEL, SURGE_OFF_HINT, SURGE_POLICY, parseHydraArgs } from './lib/policy'
-import { announceEnding, backgroundJobs, controllers, createReplyBox, hasCheckConsent, hasConsent, hasConsentAll, needsEngineCheck, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, setConfiguredEngine, stopHeadsNow, storeLead, sweepStatusFiles, waitForResult } from './lib/runtime'
+import { pauseOneSecond } from './lib/platform'
+import { HYDRA_HELP, HYDRA_POLICY, ROUTES, STATUSLINE_HELP, SURGE_LABEL, SURGE_OFF_HINT, SURGE_POLICY, parseHydraArgs } from './lib/policy'
+import { announceEnding, backgroundJobs, controllers, createReplyBox, hasConsent, hasConsentAll, pendingPrompts, preflight, preflightText, readyEngines, refreshHeads, refreshStatus, setConfiguredEngine, storeLead, sweepStatusFiles, waitForResult } from './lib/runtime'
 import type { HeadResult } from './lib/runtime'
 import { setExtraHomeRead } from './lib/safety'
 import { schemaProblem } from './lib/schema'
@@ -190,70 +192,9 @@ export const register: Register = (on, options) => {
       description: 'Turn on Hydra: Claude leads, Heads (Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode agents) implement',
       argumentHint: '[task] [effort=<level>] [head=<model>] [engine=<name>] | rampage | chimera | calm | off | status | help | accounts',
     })
-    await $.tool.register({
-      name: 'head',
-      description: 'Hydra: run one Head (a cheaper coding agent on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode, per the person\'s engine setting) headlessly on a self-contained implementation task, or continue an earlier Head with `resume`. Returns how it ended (finished, blocked, out of turns or time, stalled), its report or handoff, cost, the files it edited and any denied calls; with background: true it returns at once and the report arrives as a message. Usable only while the person has Hydra on.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task: { type: 'string', description: 'Self-contained spec: goal, exact files, constraints, what done looks like. With `resume`: only the follow-up (what to fix or do next), since the Head still has the rest. Put a build or test command in `check`, not here: a Head told to verify what its sandbox cannot run stalls.' },
-          resume: { type: 'string', description: 'Name of an ended Head to continue in its own session, on its engine, model and account, with what it already read and did: for feedback on its work, the next step of the same job, or a Head that ran out of turns or time (raise maxTurns or maxMinutes). `task` is then just the follow-up. Cheaper and better informed than a new Head. Not for Antigravity Heads, nor for unrelated work.' },
-          cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
-          engine: { type: 'string', enum: [...ENGINES], description: 'The engine this Head runs on. Required in auto mode; in a fixed-engine session it defaults to that engine, and naming another ready one sends just this Head there. Pick by the task: see the routing guide in the Hydra policy. If the engine is at its usage limit or signed out, Hydra moves the Head to another model or engine on its own, and the report says where it ran.' },
-          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-terra (default) for coding, including hard or multi-file work, gpt-6.1-sol for work that is not code, gpt-6-luna for mechanical or small tasks, gpt-6-astra (most capable, drains the shared allowance about 3x faster than Sol) only for the hardest bug or after Terra failed at high. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-4-hydrogen (default, low to xhigh, cheapest), gemini-4-neon (low to xhigh: harder work, reviews, research and web search), gemini-4-carbon (deepest long-horizon work, spends the Gemini pool fastest), claude-sonnet-5-5 (normal work on the Claude pool), claude-opus-5-5 (hard work, drains the Claude pool several times faster than Sonnet); gemini-4-argon, gemini-3.8-flash and gpt-oss-120b leave on 30 November 2026. Every Gemini model shares one usage pool and Claude + GPT-OSS another, each charged by token cost. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
-          files: { type: 'array', items: { type: 'string' }, description: 'The files this Head must create or change, relative to cwd, as the task names them. Hydra measures the Head against them: the band shows files written of files named, and the report flags a named file it never changed and any file it changed beyond them. Leave out for a reading job.' },
-          maxTurns: { type: 'number', description: 'Turn cap for the Head (default 100; 200 on Codex and Antigravity, where a turn is one tool call). It stops a runaway Head; a Head that hits it writes a handoff. Raise it for wide reads and audits.' },
-          addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
-          writeDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head may also write to, such as the real location of a symlinked package. Only folders the task must change: never /, the home folder or a folder above the project. Their .git, .commandcode and .env files stay protected.' },
-          shell: { type: 'boolean', description: 'Give the Head a shell (off by default). Dangerous commands stay denied: destructive git, rm -r/-f, sudo, network tools, builds and installs. OpenCode Heads never get one.' },
-          name: { type: 'string', description: 'Short name to track this Head by, saying what it works on (e.g. prefs-utils, login-tests); lowercase letters, digits and dashes, up to 20. Defaults to one made from the task; made unique with -2, -3.' },
-          effort: { type: 'string', enum: [...HEAD_EFFORTS], description: 'Reasoning effort for this Head (default low). Use low when you will check the result, one level up on each retry after a failed check, max first only for subtle work you cannot check. Ignored while the person has fixed a level with /hydra effort=<level>.' },
-          maxMinutes: { type: 'number', description: 'Wall-clock limit before the Head is stopped (default 40); it then gets two minutes to write a handoff' },
-          check: { type: 'string', description: 'Acceptance check: a shell command Hydra runs in cwd once the Head ends (e.g. ./gradlew testDebugUnitTest --tests LoginViewModelTest). It runs as the person, outside the Head\'s lockdown, so it can build and test what the Head cannot; the Head is told Hydra runs it. On a failure the Head is sent back in the same session with the output, one effort level up, at most twice. A Head that ran out of turns or time after editing is checked too. Scope it to what this Head changes: Heads running in the same cwd share the files. The person is asked once before the first check runs.' },
-          checkMinutes: { type: 'number', description: 'Time limit for one run of the check, in minutes (default and maximum 10)' },
-          background: { type: 'boolean', description: 'Return at once; the report arrives later as a message. Use for parallel fan-out.' },
-          schema: { type: 'object', description: 'A JSON Schema (root type object, with properties) the Head\'s result must match: for findings, lists and verdicts you will merge or count. Hydra asks the Head for one fenced json block, checks it, and sends a reply without usable JSON back to the Head up to twice; the report\'s `json:` line says how it ended. Supported: type, properties, required, items, enum, minItems, maxItems.' },
-        },
-        required: ['task'],
-      },
-    })
-    await $.tool.register({
-      name: 'hunt',
-      description: `Hydra: run a whole phase of Heads as one call and get one merged result back, instead of one report per Head. Every Head starts at once (up to ${HUNT_MAX_HEADS}); with \`schema\` each returns checked JSON; with \`refute\` a second Head on another engine tries to break each result and the author fixes what it broke, with no waiting between Heads. Returns a compact block per Head (status, check, refute verdict, edited files, its data) and the list of Heads that did not finish; every full report is saved to a file you can Read. Calling it again with the same \`name\` reuses the results of Heads whose task did not change and runs only the rest. Usable only while the person has Hydra on.`,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', description: 'Names the hunt, its Heads and its saved results: lowercase letters, digits and dashes, up to 30 (auth-audit, login-build). Reuse the name to rerun only what failed or changed.' },
-          heads: {
-            type: 'array',
-            description: `1 to ${HUNT_MAX_HEADS} Heads. Each takes the Head tool's own fields: task (required), name (a name ending -fix, -rN or -jsonN is renamed with -h, since those endings name Hydra's own follow-up Heads), engine (required in auto mode), model, effort, files, check, checkMinutes, shell, cwd, addDirs, writeDirs, maxTurns, maxMinutes. Editing Heads must name disjoint files.`,
-            items: { type: 'object', properties: { task: { type: 'string' }, name: { type: 'string' }, engine: { type: 'string', enum: [...ENGINES] }, model: { type: 'string' }, effort: { type: 'string', enum: [...HEAD_EFFORTS] }, files: { type: 'array', items: { type: 'string' } }, check: { type: 'string' }, checkMinutes: { type: 'number' }, shell: { type: 'boolean' }, cwd: { type: 'string' }, addDirs: { type: 'array', items: { type: 'string' } }, writeDirs: { type: 'array', items: { type: 'string' } }, maxTurns: { type: 'number' }, maxMinutes: { type: 'number' } }, required: ['task'] },
-          },
-          shared: { type: 'string', description: 'Text put before every Head\'s task: the project, the hard rules, what a finding must be. Write it once here, not in each task.' },
-          cwd: { type: 'string', description: 'Default working folder for Heads that do not set their own cwd.' },
-          schema: { type: 'object', description: 'One JSON Schema (root type object, with properties) every Head\'s result must match. Give one whenever you will merge, count or compare the results.' },
-          refute: { description: 'true, or { lenses: ["correctness", "edge cases"], fix: true }: after a Head finishes, one Head per lens (at most 3) on another engine tries to break its result and answers holds, broken or unsure. A broken result goes back to its author once (unless fix is false) and is refuted once more. A refuter that fails counts as no verdict, never as broken.' },
-          fresh: { type: 'boolean', description: 'Run every Head again, ignoring results saved under this name.' },
-          background: { type: 'boolean', description: 'Return at once; the merged result arrives later as a message.' },
-        },
-        required: ['name', 'heads'],
-      },
-    })
-    await $.tool.register({
-      name: 'control',
-      description: 'Hydra control for the Lead: list the Heads (with their state, turns, time and what they are doing), stop a stuck or wrong Head by id or all of them, clear finished ones from the views, or turn Hydra on/off and set the Head effort, model or engine.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['list', 'stop', 'clear', 'on', 'off', 'effort'], description: 'What to do (default list)' },
-          id: { type: 'string', description: 'For stop: the Head name (e.g. prefs-utils), a hunt name (stops the hunt and its Heads), or all; default all' },
-          effort: { type: 'string', enum: [...EFFORT_MODES], description: 'For on/effort: auto or a fixed level' },
-          headModel: { type: 'string', description: 'For on/effort: the model the Heads run on' },
-          engine: { type: 'string', enum: [...ENGINES, AUTO], description: 'For on/effort: the CLI Heads run on: commandcode, codebuddy, codex, agy, workbuddy or opencode (beta), or auto to let you pick one per Head' },
-          engines: { type: 'array', items: { type: 'string', enum: [...ENGINES] }, description: 'For on/effort with engine auto: the engines you may use (default: all that are ready)' },
-        },
-      },
-    })
+    await $.tool.register(HEAD_TOOL_DEF)
+    await $.tool.register(HUNT_TOOL_DEF)
+    await $.tool.register(CONTROL_TOOL_DEF)
     $.ui.status(undefined)
     // A reload or restart ends every Head this module was running; say so instead of showing them running forever.
     const startNow = await $.clock.now()
@@ -514,36 +455,9 @@ export const register: Register = (on, options) => {
     const { plan } = parsed
     if (huntControllers.has(plan.name)) return { deny: `A hunt named "${plan.name}" is still running. Wait for it, stop it with ${CONTROL_TOOL} (id: "${plan.name}"), or pick another name.` }
     if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment.' }
-    // Everything a Head would be refused for is found here, before any Head starts.
-    const vetted = new Set<Engine>()
-    // An engine that is not ready fails only its own Heads; the hunt is refused only when no Head could start.
-    const unready = new Map<Engine, string>()
-    const headEngines: Engine[] = []
-    for (const head of plan.heads) {
-      if (head.effort !== undefined && !isHeadEffort(head.effort)) return { deny: `Head ${head.name}: effort must be low, medium, high, xhigh or max.` }
-      const routed = resolveHeadEngine(hydra, head.engine, defaultEngine)
-      if ('deny' in routed) return { deny: `Head ${head.name}: ${routed.deny}` }
-      headEngines.push(routed.engine)
-      if (vetted.has(routed.engine) || unready.has(routed.engine)) continue
-      if (routed.isNew) {
-        const ready = await preflight($, routed.engine)
-        if (ready.problems.length > 0) { unready.set(routed.engine, ready.problems[0]!); continue }
-      }
-      vetted.add(routed.engine)
-      if (!(await hasConsent($, hydra.headModel, false, routed.engine))) return { deny: NO_CONSENT }
-    }
-    if (vetted.size === 0 && unready.size > 0) {
-      const [engine, problem] = [...unready][0]!
-      return { deny: `${ENGINE_LABEL[engine]} is not ready here: ${problem} Pick another engine.` }
-    }
-    const unreadyNotes = [...unready].map(([engine, problem]) => `not started: ${plan.heads.filter((_, index) => headEngines[index] === engine).map(head => head.name).join(', ')}, because ${ENGINE_LABEL[engine]} is not ready here: ${problem} The other Heads run; send these to another engine.`)
-    const firstCheck = plan.heads.find(head => head.check)?.check
-    if (firstCheck && !(await hasCheckConsent($, firstCheck))) return { deny: NO_CHECK_CONSENT }
-    // Read before any Head starts, so the Lead sees a limit or an unreadable path before the results come back.
-    const pathNotes = await outsidePathNotes(plan, await $.session.root(), path => $.fs.stat(path).then(() => true, () => false)).catch(() => [])
-    await refreshLimits($, [...vetted])
-    const limits = await coolingLines($, [...vetted]).catch(() => [])
-    parsed.notes = [...(parsed.notes ?? []), ...unreadyNotes, ...pathNotes, ...(limits.length > 0 ? [`limits now: ${limits.join('; ')} (Hydra moves these Heads to another route on its own)`] : [])]
+    const vetted = await vetHunt($, hydra, plan, defaultEngine)
+    if ('deny' in vetted) return { deny: vetted.deny }
+    parsed.notes = [...(parsed.notes ?? []), ...vetted.notes]
     if (e.background === true) {
       huntJobs.push({ plan, launch })
 
@@ -558,76 +472,7 @@ export const register: Register = (on, options) => {
 
   on('tool.describe', { tool: CONTROL_TOOL }, async ($, e, next) => ({ ...(await next(e)), isDeferred: false }))
 
-  on('tool.call', { tool: CONTROL_TOOL }, async ($, e) => {
-    const action = String(e.action ?? 'list')
-    const now = await $.clock.now()
-    const ids = typeof e.id === 'string' && e.id && e.id !== 'all' ? [e.id] : ('all' as const)
-    if (action === 'list') {
-      const hydra = await readMode($)
-      const head = hydra?.isOn ? `Hydra on · ${headLine(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'Hydra off'
-
-      const home = await homeOf($)
-      const saved = home ? `\nReports: ${home}/.claude/hydra/heads/${await $.session.id()}/<head>.md (a hunt's in ${home}/.claude/hydra/hunts/${await $.session.id()}/<hunt>/)` : ''
-      return { result: `${head}\n${listRuns(visibleRuns(await readRuns($)), now, id => controllers.has(id))}${saved}` }
-    }
-    if (action === 'stop') {
-      const list = await readRuns($)
-      const targets = list.filter(run => (run.state === 'running' || run.state === 'queued') && (ids === 'all' || ids.includes(run.id)))
-      // A stopped hunt starts no further Head and stops the ones it has running.
-      const hunts = [...huntControllers.keys()].filter(name => ids === 'all' || ids.includes(name))
-      for (const name of hunts) huntControllers.get(name)?.abort('stopped by the Lead')
-      const stoppedHunts = hunts.length > 0 ? `Stopping hunt ${hunts.join(', ')} and its Heads. ` : ''
-      if (targets.length === 0) return { result: stoppedHunts || `No running or queued Head or hunt${ids === 'all' ? '' : ` ${ids[0]}`}.` }
-      const ghosts = await stopHeadsNow($, targets.map(run => run.id), 'stopped by the Lead')
-
-      return { result: `${stoppedHunts}Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
-    }
-    if (action === 'clear') {
-      // Only hide them: they stay in the session's runs, so `resume "<name>"` still finds them.
-      await updateRuns($, hideFinished)
-
-      return { result: 'Cleared finished and failed Heads from the views. They can still be resumed by name.' }
-    }
-    const stored = await readMode($)
-    const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }
-    if (action === 'off') {
-      await updateMode($, () => ({ ...current, isOn: false, surge: undefined }))
-    } else if ((action === 'on' || action === 'effort') && (String(e.engine) === AUTO || Array.isArray(e.engines) || (isAuto(stored) && e.engine === undefined) || (action === 'on' && !stored?.isOn && !stored?.pinned && isAutoDefault && e.engine === undefined))) {
-      const listed = Array.isArray(e.engines) ? parseEngineList(e.engines.map(String).join(',')) : undefined
-      if (listed && (listed.bad.length > 0 || listed.engines.length === 0)) return { deny: `engines must be some of: ${ENGINES.join(', ')}.` }
-      const wanted = listed ? listed.engines : isAuto(stored) ? poolOf(stored) : [...ENGINES]
-      const effort = typeof e.effort === 'string' ? e.effort : undefined
-      if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
-      let pool: Engine[] = wanted
-      if (needsEngineCheck(action, e)) {
-        const ready = await readyEngines($, wanted)
-        if (ready.pool.length === 0) return { deny: ['No requested engine is ready:', ...ready.skipped.map(item => `${item.engine}: ${item.problem}`)].join(' ') }
-        if (!(await hasConsentAll($, ready.pool, false))) return { deny: NO_CONSENT }
-        pool = ready.pool
-      }
-      const headModel = typeof e.headModel === 'string' && e.headModel ? e.headModel : isModelFor('commandcode', current.headModel) ? current.headModel : defaultHead
-      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine: AUTO, engines: pool, pinned: listed === undefined && stored?.pinned === true, surge: stored?.surge }))
-    } else if (action === 'on' || action === 'effort') {
-      if (e.engine !== undefined && !isEngine(e.engine)) return { deny: `engine must be one of: ${[...ENGINES, AUTO].join(', ')}.` }
-      const engine = isEngine(e.engine) ? e.engine : engineOf(stored, defaultEngine)
-      if (needsEngineCheck(action, e)) {
-        const check = await preflight($, engine)
-        if (check.problems.length > 0) return { deny: preflightText(check) }
-        if (!(await hasConsent($, current.headModel, false, engine))) return { deny: NO_CONSENT }
-      }
-      const effort = typeof e.effort === 'string' ? e.effort : undefined
-      if (effort !== undefined && !isEffortMode(effort)) return { deny: `effort must be auto or one of: ${EFFORTS.join(', ')}.` }
-      const headModel = headModelFor(engine, typeof e.headModel === 'string' && e.headModel ? e.headModel : undefined, current.headModel, defaultHead)
-      await updateMode($, () => ({ isOn: action === 'on' ? true : current.isOn, headModel, effort: effort ?? effortModeOf(stored), engine, pinned: e.engine === undefined && stored?.pinned === true, surge: stored?.surge }))
-    } else {
-      return { deny: `Unknown action "${action}". Use list, stop, clear, on, off or effort.` }
-    }
-    $.ui.invalidate('tool.describe')
-    await refreshStatus($)
-    const hydra = await readMode($)
-
-    return { result: hydra?.isOn ? `Hydra on · Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'Hydra off.' }
-  }).catch(($, e, next) => ({ deny: `Hydra control failed (${next.error.message ?? next.error.kind}).` }))
+  on('tool.call', { tool: CONTROL_TOOL }, async ($, e) => runControl($, e, { defaultEngine, defaultHead, defaultEffort, isAutoDefault, onChanged: async () => { $.ui.invalidate('tool.describe'); await refreshStatus($) } })).catch(($, e, next) => ({ deny: `Hydra control failed (${next.error.message ?? next.error.kind}).` }))
 
   on('command.run', { command: 'heads' }, async $ => {
     await $.ui.open({ id: HEADS_PANE, title: 'Heads' })

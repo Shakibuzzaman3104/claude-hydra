@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "heads": {
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/agy/dist/hydra-mcp.mjs"
+      ],
+      "timeoutSeconds": -1,
+      "tools": {
+        "head": {
+          "background": "always",
+          "eager": true
+        },
+        "hunt": {
+          "background": "always",
+          "eager": true
+        },
+        "control": {
+          "background": "off",
+          "eager": true
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+**Antigravity as the Lead.** Hydra now installs as an Antigravity plugin (`agy plugin install https://github.com/Shakibuzzaman3104/claude-hydra`), so an agy model (Gemini or Claude) leads Heads the way Claude does. Run live on agy 1.5.16: a Gemini Hydrogen Lead sent a Codex Head and a two-Head hunt (Codex and OpenCode), kept working while they ran, and quoted their reports when Antigravity handed them back.
+- An MCP server (`hydra_heads`: `head`, `hunt`, `control`) built from the same engine code as the Claude Code plugin, plus an always-on rule with the Lead policy, generated from `policy.ts`.
+- `head` and `hunt` run in Antigravity's background with no time limit; the report arrives as a system message.
+- Consent through Antigravity's forms, or ahead of time with `--consent <engines> --checks` for headless runs. State is kept in `~/.gemini/hydra`.
+- The agy Lead's policy sends Heads to other engines first, since an agy Lead and agy Heads share one quota.
+- Not yet on Antigravity: the live band, `/heads`, `/hydra` commands, Rampage and Chimera.
+
+**Fixes**
+- The auto-mode routing line for Antigravity still offered Flash and Argon and named three usage pools; it now matches 2.4.0's models and two pools.
+
+**Internals**
+- The tool definitions (`lib/tools.ts`), the control tool (`lib/control.ts`) and the hunt pre-flight (`vetHunt`) moved out of `register.tsx`, so both Leads share them.
+
 ## 2.4.0 — 2026-11-25
 New Antigravity and Codex models, usage limits read per model group, and fixes for the problems in the Hydra issue log. Unit-tested throughout; the Antigravity lockdown was re-run live on agy 1.5.16.
 

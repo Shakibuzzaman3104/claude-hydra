@@ -92,6 +92,17 @@ In Claude Code:
 ```
 Answer `y` to add the marketplace and pick the user scope. Then run `/hydra`. The first time, it checks your setup and asks before anything is sent to the Head model.
 
+### With Antigravity as the Lead
+Hydra also runs inside the Antigravity CLI, with your agy model (Gemini or Claude) as the Lead:
+```
+agy plugin install https://github.com/Shakibuzzaman3104/claude-hydra
+```
+The plugin adds the `hydra_heads` MCP server (`head`, `hunt` and `control` tools) and an always-on rule with the Lead policy. It needs Node 20 or later and at least one Head engine from [Requirements](#requirements).
+- **Background reports.** Antigravity runs every `head` and `hunt` call in the background and hands the report to the agent when it ends, the way Claude Code delivers a background Head's message. Calls have no time limit (`timeoutSeconds: -1`).
+- **Consent.** Antigravity asks before each Hydra tool call unless you allow `mcp(hydra_heads/*)`, and Hydra asks once, in a form, before code first goes to an engine and before the first check runs. Headless runs (`agy -p`) cannot show a form, so agree ahead of time: `node ~/.gemini/config/plugins/hydra/agy/dist/hydra-mcp.mjs --consent codex,commandcode --checks`. Answers are kept in `~/.gemini/hydra`.
+- **Engines.** The first `head` or `hunt` turns Hydra on in auto mode with the ready engines you agreed to; `control` lists them and the limits in force, and turns Hydra off or changes the effort. An agy Lead and `agy` Heads share one Antigravity quota, so the policy sends Heads to the other engines first.
+- **Not yet on Antigravity:** the live band and `/heads` pane, `/hydra` commands, Rampage and Chimera. Reports and hunt results are saved under `~/.claude/hydra/` as in Claude Code.
+
 ## What a Head can and can't do
 A Head runs its CLI unattended. On Command Code that is `--yolo` (its headless mode can't edit otherwise), locked down by deny rules that Hydra writes before the Head starts and removes after it ends. On CodeBuddy it is `default` permission mode with a per-Head settings file (`--settings`, kept outside the project) that allows edits only under the project, plus the same write guard (WorkBuddy runs the same CodeBuddy setup). Codex and Antigravity add their own sandbox. Either way:
 - it can edit files inside the project, but not `.git`, `.commandcode` or `.env` files. Every write outside it is denied, including into new folders and through symlinks;

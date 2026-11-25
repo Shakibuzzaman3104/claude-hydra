@@ -4,6 +4,7 @@
  */
 import { expect, test } from 'claude-code/testing'
 import { agyBlockedUntil, agyLivePool, parseAgyUsage } from './engines/agy'
+import { AGY_LEAD_POLICY } from './lib/policy'
 import { AGY_MODELS, agyCurrentModel, agyModelId, isModelFor, modelAlternates, usagePoolOf } from './lib/engines'
 
 const USAGE = '{"event":"command_result","command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit. Quota is consumed proportionally to the cost of the tokens. Thus, limits will last longer with shorter tasks or using more cost-effective models.","groups":[{"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Orchestrator (Neon), Orchestrator (Carbon), Orchestrator (Argon), Gemini 3.8 Flash","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.3758058547973633,"reset_time":"2026-12-01T02:55:58Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.9563037157058716,"reset_time":"2026-11-25T05:55:53Z"}]},{"name":"Claude and GPT models","description":"Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0,"reset_time":"2026-11-29T10:22:25Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","disabled":true,"remaining_fraction":1}]}]}}}'
@@ -47,4 +48,14 @@ test('model levels, retirement and alternates follow the model registry', async 
   expect(isModelFor('codex', 'gpt-oss-120b')).toBe(false)
   expect(isModelFor('agy', 'gpt-oss-120b')).toBe(true)
   expect(isModelFor('agy', 'gemini-pro-orchestrator')).toBe(false)
+})
+
+test('the Antigravity Lead policy names its own server and tools, and none of Claude Code\'s', () => {
+  const policy = AGY_LEAD_POLICY(['commandcode', 'codex', 'agy'])
+  expect(policy).toContain('`hydra_heads` MCP server')
+  expect(policy).toContain('Antigravity runs every `head` and `hunt` call in the background')
+  expect(policy).toContain('Send Heads to the other engines first')
+  expect(policy).not.toContain('mcp__hydra__')
+  expect(policy).not.toContain('background: true')
+  expect(policy).toContain('gemini-4-neon')
 })

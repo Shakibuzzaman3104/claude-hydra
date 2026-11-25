@@ -1,0 +1,18 @@
+{
+  "extends": "../.claude-plugin/types/tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "claude-code",
+      "claude-code-tools",
+      "claude-code-mcp",
+      "node"
+    ],
+    "typeRoots": [
+      "../.claude-plugin/types",
+      "../node_modules/@types"
+    ]
+  },
+  "include": [
+    "./*.ts"
+  ]
+}

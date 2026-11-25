@@ -153,7 +153,7 @@ export const preflightText = (check: Preflight) =>
 export const needsEngineCheck = (action: string, input: Readonly<Record<string, unknown>>) =>
   action === 'on' || input.engine !== undefined || input.engines !== undefined
 
-const consentKey = (engine: Engine) => (engine === 'commandcode' ? CONSENT_KEY : `${CONSENT_KEY}:${engine}`)
+export const consentKey = (engine: Engine) => (engine === 'commandcode' ? CONSENT_KEY : `${CONSENT_KEY}:${engine}`)
 
 /** Asks once for every engine in `engines` that has no saved answer; the answers are kept across sessions. */
 export async function hasConsentAll($: EngineInterface, engines: readonly Engine[], mayAsk: boolean) {
@@ -182,7 +182,7 @@ export async function readyEngines($: EngineInterface, wanted: readonly Engine[]
   return { pool, skipped, warnings }
 }
 
-const CHECK_CONSENT_KEY = 'consent-check-v1'
+export const CHECK_CONSENT_KEY = 'consent-check-v1'
 
 /** Asks once, the first time Claude gives a Head a `check`: Hydra then runs code on the person's machine without the Bash prompt. */
 export async function hasCheckConsent($: EngineInterface, check: string) {
