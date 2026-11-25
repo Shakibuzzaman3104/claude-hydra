@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.5.0 — 2026-11-25
 **Antigravity as the Lead.** Hydra now installs as an Antigravity plugin (`agy plugin install https://github.com/Shakibuzzaman3104/claude-hydra`), so an agy model (Gemini or Claude) leads Heads the way Claude does. Run live on agy 1.5.16: a Gemini Hydrogen Lead sent a Codex Head and a two-Head hunt (Codex and OpenCode), kept working while they ran, and quoted their reports when Antigravity handed them back.
 - An MCP server (`hydra_heads`: `head`, `hunt`, `control`) built from the same engine code as the Claude Code plugin, plus an always-on rule with the Lead policy, generated from `policy.ts`.
 - `head` and `hunt` run in Antigravity's background with no time limit; the report arrives as a system message.

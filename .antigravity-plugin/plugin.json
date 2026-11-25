@@ -3,7 +3,7 @@
   "name": "hydra",
   "displayName": "Hydra",
   "description": "Your Antigravity agent leads, cheaper agents (Heads, on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode) implement: head, hunt and control tools with lockdowns, checks, usage-limit fallback and reports.",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "author": "Shakib",
   "license": "MIT",
   "repository": "https://github.com/Shakibuzzaman3104/claude-hydra",
