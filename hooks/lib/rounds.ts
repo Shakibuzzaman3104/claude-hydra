@@ -6,7 +6,7 @@ import type { Ending } from '../../types'
 import { HANDOFF_MS, HANDOFF_TURNS, HEAD_RULES, MAX_ROUNDS, STALL_ROUNDS, START_RETRIES, continuePrompt, endMark, followUpPrompt, handoffPrompt, isResumable, nudgePrompt } from './runtime'
 import type { Round } from './runtime'
 
-export type RoundSpec = { prompt: string; maxTurns: number; resume?: string }
+export type RoundSpec = { prompt: string; maxTurns: number; resume?: string; isHandoff?: boolean }
 export type RanRound = Round & { effort?: string }
 
 /** What `runRounds` needs from an engine: how to run one round, and its counters. The clock and the run record are wired by the caller. */
@@ -118,7 +118,7 @@ export async function runRounds(steps: RoundsSteps): Promise<RoundsResult> {
     const graceStop = new AbortController()
     void Promise.resolve(steps.sleep(HANDOFF_MS, graceStop.signal)).then(() => grace.abort(), () => undefined)
     await steps.onStep?.('writing a handoff')
-    const handoff = await steps.runRound({ prompt: handoffPrompt(ending === 'timeout' ? 'time' : cap ?? 'turn'), maxTurns: HANDOFF_TURNS, resume: sessionId }, grace.signal)
+    const handoff = await steps.runRound({ prompt: handoffPrompt(ending === 'timeout' ? 'time' : cap ?? 'turn'), maxTurns: HANDOFF_TURNS, resume: sessionId, isHandoff: true }, grace.signal)
     graceStop.abort()
     rounds++
     if (handoff.finalText.trim()) {

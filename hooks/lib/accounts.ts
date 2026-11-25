@@ -4,13 +4,15 @@
  */
 import type { EngineInterface } from 'claude-code'
 
-import { AGY_MODELS, AGY_POOL_LABEL, AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, isEngine } from './engines'
+import type { HeadRun, HydraMode } from '../../types'
+import { AGY_MODELS, AGY_POOL_LABEL, AGY_TOKEN, ENGINES, ENGINE_LABEL, WORKBUDDY_PRODUCT, engineLabel, isAuto, isEngine, usagePoolOf } from './engines'
 import type { AgyPool, Engine } from './engines'
 import { agyBlockedUntil, readAgyUsage } from '../engines/agy'
 import { opencodeCheckInit, opencodeProviders } from './checks'
 import { relativeTo } from './format'
 import { commandOf, homeOf, platformOf } from './platform'
 import type { Platform } from './platform'
+import { readRuns } from './state'
 
 /**
  * Several accounts per engine. An account is the CLI's own sign-in: `default` is its normal config (no override), and
@@ -170,6 +172,19 @@ export const loginInstructions = (engine: Engine, name: string, dir: string, pla
 export const timeOf = (ms: number) => {
   const date = new Date(ms)
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * When a cooldown lifts, for the Lead: `16:22` while that is later today (or the reset has no date of its own), else the
+ * date too (`29 Nov 10:22`), so a limit days away is not read as one that ends within the hour.
+ */
+export const untilText = (ms: number, now: number) => {
+  const then = new Date(ms)
+  const today = new Date(now)
+  const sameDay = then.getFullYear() === today.getFullYear() && then.getMonth() === today.getMonth() && then.getDate() === today.getDate()
+  return sameDay ? timeOf(ms) : `${then.getDate()} ${MONTH_NAMES[then.getMonth()]} ${timeOf(ms)}`
 }
 
 // --- Quota failures ---------------------------------------------------------------------------------------------------
@@ -634,29 +649,76 @@ export async function rotateAccounts<R extends Ran>(steps: Rotation<R>): Promise
   return withTrail(last!, steps.count > 1 ? 'every account hit its limit' : undefined)
 }
 
+/** A Head the person cleared from the views: it stays in the session's runs, so `resume` still finds it. */
+export const isHidden = (run: HeadRun) => (run as HeadRun & { hidden?: boolean }).hidden === true
+
+/** The runs the views and the lists show: cleared Heads are left out, running and queued ones never are. */
+export const visibleRuns = (list: readonly HeadRun[]) => list.filter(run => !isHidden(run))
+
+/** Marks every finished Head hidden, for `control clear`; running and queued Heads are left as they are. */
+export const hideFinished = (list: readonly HeadRun[]) =>
+  list.map(run => (run.state === 'running' || run.state === 'queued' || isHidden(run) ? run : ({ ...run, hidden: true } as HeadRun)))
+
+/** What the Lead and the views say the Heads run on: in auto, the engines and that each Head picks its own model. */
+export const headLine = (hydra: HydraMode, defaultEngine: Engine) =>
+  isAuto(hydra) ? `Heads on ${engineLabel(hydra, defaultEngine)} · model per Head` : `Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)}`
+
+/** How long past its stated reset a cooldown keeps being reported: a limit that did not lift at its time is worth naming for a while. */
+const LAPSED_NOTICE_MS = 6 * 60 * 60_000
+/** A cooldown barely past its time may simply have lapsed a moment ago: only one a while past is reported as still in force. */
+const LAPSED_GRACE_MS = 5 * 60_000
+
+/** The parts of a cooldown key (`agy/default#claude`): the account id and, when the engine limits models apart, the pool. */
+const splitCooldownKey = (key: string) => {
+  const hash = key.indexOf('#')
+  return hash < 0 ? { id: key, pool: undefined as string | undefined } : { id: key.slice(0, hash), pool: key.slice(hash + 1) }
+}
+
 /**
  * The usage limits in force now, as lines for the Lead: an engine (and pool) every account of which is cooling, one with only
- * some accounts cooling, and a model that could not start here, with when each frees up. An engine with every account free is left out.
+ * some accounts cooling, one whose cooldown lapsed without a Head confirming it free, and a model that could not start here,
+ * with when each frees up. An engine with every account free is left out.
  */
 export async function coolingLines($: EngineInterface, engines: readonly Engine[]): Promise<string[]> {
   const now = await $.clock.now()
-  const cooldowns = activeCooldowns(await readCooldowns($), now)
+  const stored = await readCooldowns($)
+  const cooldowns = activeCooldowns(stored, now)
   const unavailable = await activeUnavailable($, now)
-  if (Object.keys(cooldowns).length === 0 && unavailable.length === 0) return []
+  if (Object.keys(stored).length === 0 && unavailable.length === 0) return []
+  const runs = await readRuns($).catch(() => [] as HeadRun[])
+  // A cooldown whose time passed is only reported when no Head has run free on that account and pool since.
+  const isCleared = (engine: Engine, key: string, until: number) => {
+    const { id, pool } = splitCooldownKey(key)
+    const isDefault = id === `${engine}/${DEFAULT_ACCOUNT}`
+    return runs.some(run =>
+      run.state === 'done' && run.engine === engine && (run.startedAt ?? 0) >= until
+      && (run.account !== undefined ? run.account === id : isDefault)
+      && (pool === undefined || usagePoolOf(engine, run.model) === pool))
+  }
   const lines: string[] = []
   for (const engine of engines) {
     const accounts = await accountsOf($, engine)
     const pools = new Set<string | undefined>([undefined])
-    for (const key of Object.keys(cooldowns)) if (key.startsWith(`${engine}/`) && key.includes('#')) pools.add(key.slice(key.indexOf('#') + 1))
+    for (const key of Object.keys(stored)) {
+      const { id, pool } = splitCooldownKey(key)
+      if (id.startsWith(`${engine}/`) && pool !== undefined) pools.add(pool)
+    }
     for (const pool of pools) {
       const where = `${engine}${pool ? ` ${poolLabel(pool)}` : ''}`
       const picked = pickAccount(engine, accounts, cooldowns, now, 'fill', {}, [], pool)
       if (!picked.account && picked.until !== null) {
-        lines.push(`${where}: every account at its limit until ${timeOf(picked.until)}`)
+        lines.push(`${where}: every account at its limit until ${untilText(picked.until, now)}`)
         continue
       }
       const cooling = accounts.map(account => coolingUntil(cooldowns, accountId(account), pool)).filter(until => until > now)
-      if (pool === undefined && cooling.length > 0) lines.push(`${where}: ${cooling.length} of ${accounts.length} accounts at its limit until ${timeOf(Math.min(...cooling))}`)
+      if (pool === undefined && cooling.length > 0) lines.push(`${where}: ${cooling.length} of ${accounts.length} accounts at its limit until ${untilText(Math.min(...cooling), now)}`)
+    }
+    // Lapsed but not confirmed free: the limit may still hold, so the Lead should not route work back here blindly.
+    for (const [key, until] of Object.entries(stored)) {
+      if (!key.startsWith(`${engine}/`) || until > now || now - until < LAPSED_GRACE_MS || now - until > LAPSED_NOTICE_MS) continue
+      if (isCleared(engine, key, until)) continue
+      const { pool } = splitCooldownKey(key)
+      lines.push(`${engine}${pool ? ` ${poolLabel(pool)}` : ''}: was at its limit until ${untilText(until, now)} (not confirmed free since)`)
     }
   }
   for (const [, entry] of unavailable) if (engines.includes(entry.engine)) lines.push(`${entry.engine} ${entry.model}: could not start here at ${timeOf(entry.until)} (${entry.reason})`)

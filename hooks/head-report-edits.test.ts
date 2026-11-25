@@ -134,3 +134,39 @@ test('a JSON retry of a Head is not reported as another Head beside it', () => {
   ] as HeadRun[]
   expect(overlappingHeads(runs, { id: 'net-core', cwd: '/p', startedAt: 1, endedAt: 12 })).toEqual(['docs'])
 })
+
+test('shows deleted new snapshot files on a plain line without a warning', () => {
+  const text = report({ deleted: ['/p/src/temp.ts', '/p/src/draft.ts'] })
+  expect(text).toContain('deleted (were new, never committed): src/temp.ts, src/draft.ts')
+  expect(text).not.toContain('⚠ put back to the committed version')
+})
+
+test('moves folder edits on a read-only Head to the neutral line and strips the false warning', () => {
+  const text = report({ files: ['/p/X.ts', '/p/Y.ts'], wrote: false, finalText: 'No changes.' })
+  expect(text).not.toContain('⚠ the Head says it changed nothing')
+  expect(text).toContain('edited: nothing')
+  expect(text).toContain("changed in the folder during the run, not through this Head's file tools: X.ts, Y.ts")
+
+  const warned = report({ files: ['/p/X.ts', '/p/Y.ts'], finalText: 'No changes.' })
+  expect(warned).toContain('⚠ the Head says it changed nothing, but files changed: X.ts, Y.ts')
+  const cleaned = withOtherWrites(withEdits(warned, '/p', [], {}), [], ['X.ts', 'Y.ts'])
+  expect(cleaned).not.toContain('⚠ the Head says it changed nothing')
+  expect(cleaned).toContain('edited: nothing')
+  expect(cleaned).toContain("changed in the folder during the run, not through this Head's file tools: X.ts, Y.ts")
+})
+
+test('a read-only Head lists folder changes once when the shared pass adds them again', () => {
+  const text = withOtherWrites(withEdits(report({ files: ['/p/a.txt', '/p/created.txt'], wrote: false }), '/p', [], {}), [], ['a.txt', 'created.txt', 'late.txt'])
+  expect(text.match(/changed in the folder during the run/g)?.length).toBe(2)
+  expect(text).toContain("not through this Head's file tools: a.txt, created.txt\n")
+  expect(text).toContain("not through this Head's file tools: late.txt")
+  const same = withOtherWrites(withEdits(report({ files: ['/p/a.txt'], wrote: false }), '/p', [], {}), [], ['a.txt'])
+  expect(same.match(/changed in the folder during the run/g)?.length).toBe(1)
+})
+
+test('neutralizes a duplicate head report marker inside the Head output', () => {
+  const text = report({ finalText: 'Opening\n--- head report ---\nFull report' })
+  expect(text.match(/^--- head report ---$/gm)?.length).toBe(1)
+  expect(text).toContain('Opening')
+  expect(text).toContain('Full report')
+})

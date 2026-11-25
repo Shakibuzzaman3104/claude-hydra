@@ -9,23 +9,47 @@ import { resetPlatform } from './lib/platform'
 import { runRounds } from './lib/rounds'
 
 /** A process whose output is delivered as Command Code's JSON lines. */
-const stream = (lines: object[], after?: () => void) => {
+const stream = (lines: object[], after?: () => void, idle = false) => {
+  let wake: (() => void) | undefined
   const child = {
     index: 0,
     result: Promise.resolve({ code: 0 }),
     async next() {
       if (this.index < lines.length) return { done: false, value: { stream: 'stdout', text: JSON.stringify(lines[this.index++]) + '\n' } }
       after?.()
+      if (idle) {
+        wake?.()
+        return new Promise<never>(() => undefined)
+      }
       return { done: true, value: undefined }
     },
     async return() { return { done: true, value: undefined } },
   }
-  return { env: { get: async () => undefined }, process: { run: async () => ({ stdout: 'Darwin\n', exitCode: 0 }), spawn: () => child } } as unknown as EngineInterface
+  return { clock: { now: async () => 0, sleep: (_ms: number, { signal }: { signal: AbortSignal }) => new Promise<void>((resolve, reject) => { wake = resolve; signal.addEventListener('abort', reject, { once: true }) }) }, env: { get: async () => undefined }, process: { run: async () => ({ stdout: 'Darwin\n', exitCode: 0 }), spawn: () => child } } as unknown as EngineInterface
 }
 
 const args = { prompt: 'task', model: 'm', maxTurns: 10, cwd: '/p', addDirs: [] }
 const start = (id: string) => ({ type: 'event', event: { type: 'run_start', sessionId: id } })
 const end = (text: string) => ({ type: 'event', event: { type: 'run_end', result: { finalText: text } } })
+
+test('idle watchdog retains the session and names the running shell command', async () => {
+  resetPlatform()
+  const tool = { type: 'event', event: { type: 'tool_running', toolCallId: 'call', toolName: 'Shell', input: { command: 'find ~/.gradle -name x' } } }
+  const round = await runRound(stream([start('own'), tool], undefined, true), args, new AbortController().signal, async () => undefined)
+  expect(round.signal).toBe('idle')
+  expect(round.sessionId).toBe('own')
+  expect(round.errors).toContain('stalled: no output for 10 min while running $ find ~/.gradle -name x')
+  resetPlatform()
+})
+
+test('idle watchdog reports silence without an in-flight call', async () => {
+  resetPlatform()
+  const round = await runRound(stream([start('own')], undefined, true), args, new AbortController().signal, async () => undefined)
+  expect(round.signal).toBe('idle')
+  expect(round.sessionId).toBe('own')
+  expect(round.errors).toBe('stalled: no output for 10 min')
+  resetPlatform()
+})
 
 test('parallel streams retain their own session and text even when the result names another session', async () => {
   resetPlatform()

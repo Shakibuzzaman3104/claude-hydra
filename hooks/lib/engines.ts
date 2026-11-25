@@ -12,26 +12,33 @@ export const ENGINES = ['commandcode', 'codebuddy', 'codex', 'agy', 'workbuddy',
 export type Engine = (typeof ENGINES)[number]
 export const DEFAULT_ENGINE: Engine = 'commandcode'
 /**
- * Antigravity's models by base id: the levels each takes and the usage pool it draws on. Claude and GPT-OSS share one pool;
- * Gemini Flash and Gemini 4 Argon each have their own weekly one (no 5-hour window), so one pool's limit leaves the others free.
+ * Antigravity's models by base id, levels, default pool and retirement.
  */
 export const AGY_MODELS = {
   'gemini-4-hydrogen': { levels: ['low', 'medium', 'high', 'xhigh'], pool: 'gemini' },
-  'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], pool: 'gemini' },
-  'gemini-4-argon': { levels: ['low', 'medium', 'high'], pool: 'argon' },
+  'gemini-4-neon': { levels: ['low', 'medium', 'high', 'xhigh'], pool: 'gemini' },
+  'gemini-4-carbon': { levels: ['low', 'medium', 'high'], pool: 'gemini' },
+  'gemini-3.8-flash': { levels: ['low', 'medium', 'high'], pool: 'gemini', leaving: '2026-11-30', successor: 'gemini-4-hydrogen' },
+  'gemini-4-argon': { levels: ['low', 'medium', 'high'], pool: 'gemini', leaving: '2026-11-30', successor: 'gemini-4-neon' },
   'claude-sonnet-5-5': { levels: ['low', 'medium', 'high'], pool: 'claude' },
   'claude-opus-5-5': { levels: ['low', 'medium', 'high'], pool: 'claude' },
-  'gpt-oss-120b': { levels: ['medium'], pool: 'claude' },
-} as const satisfies Record<string, { levels: readonly string[]; pool: string }>
+  'gpt-oss-120b': { levels: ['medium'], pool: 'claude', leaving: '2026-11-30', successor: 'claude-sonnet-5-5' },
+} as const satisfies Record<string, { levels: readonly string[]; pool: string; leaving?: string; successor?: string }>
 export type AgyModel = keyof typeof AGY_MODELS
-export type AgyPool = (typeof AGY_MODELS)[AgyModel]['pool']
-export const AGY_POOL_LABEL: Record<AgyPool, string> = { gemini: 'Gemini (Hydrogen, Flash)', argon: 'Gemini 4 Argon', claude: 'Claude + GPT-OSS' }
+export type AgyPool = (typeof AGY_MODELS)[AgyModel]['pool'] | 'argon'
+export const AGY_POOL_LABEL: Record<AgyPool, string> = { gemini: 'Gemini models', argon: 'Gemini 4 Argon', claude: 'Claude + GPT-OSS' }
 /** Antigravity Heads' default model. */
 export const AGY_MODEL: AgyModel = 'gemini-4-hydrogen'
 /** `gemini-4-argon-high` or `google/gemini-4-argon` is `gemini-4-argon`; undefined when Antigravity has no such model. */
 export const agyBaseOf = (model: string): AgyModel | undefined => {
   const base = model.replace(/^google\//i, '').replace(/-(low|medium|high|xhigh)$/i, '').toLowerCase()
   return Object.hasOwn(AGY_MODELS, base) ? (base as AgyModel) : undefined
+}
+/** Resolve a retired model using the supplied time. */
+export const agyCurrentModel = (model: string, now: number): AgyModel => {
+  const base = agyBaseOf(model) ?? AGY_MODEL
+  const spec: { levels: readonly string[]; leaving?: string; successor?: string } = AGY_MODELS[base]
+  return spec.leaving && spec.successor && now >= Date.parse(`${spec.leaving}T00:00:00Z`) ? (spec.successor as AgyModel) : base
 }
 /** The id `agy --model` takes: the base with its level built in (agy refuses `--effort` beside it, and a bare id). No level is `low`; `max` is the model's top level, and a level it lacks rounds down to its nearest. */
 export const agyModelId = (model: string, effort?: string) => {
@@ -45,12 +52,14 @@ export const agyModelId = (model: string, effort?: string) => {
 export const agyPoolOf = (model: string): AgyPool => AGY_MODELS[agyBaseOf(model) ?? AGY_MODEL].pool
 /** What an Antigravity Head moves to when its model's pool is at its limit: the nearest model in each other pool. */
 const AGY_ALTERNATES: Record<AgyModel, readonly AgyModel[]> = {
-  'gemini-4-hydrogen': ['gemini-4-argon', 'claude-sonnet-5-5'],
-  'gemini-3.8-flash': ['gemini-4-argon', 'claude-sonnet-5-5'],
-  'gemini-4-argon': ['claude-sonnet-5-5', 'gemini-4-hydrogen'],
-  'claude-sonnet-5-5': ['gemini-4-argon', 'gemini-4-hydrogen'],
-  'claude-opus-5-5': ['gemini-4-argon', 'gemini-4-hydrogen'],
-  'gpt-oss-120b': ['gemini-4-hydrogen', 'gemini-4-argon'],
+  'gemini-4-hydrogen': ['claude-sonnet-5-5'],
+  'gemini-4-neon': ['claude-sonnet-5-5'],
+  'gemini-4-carbon': ['claude-sonnet-5-5'],
+  'gemini-3.8-flash': ['claude-sonnet-5-5'],
+  'gemini-4-argon': ['claude-sonnet-5-5'],
+  'claude-sonnet-5-5': ['gemini-4-neon', 'gemini-4-hydrogen'],
+  'claude-opus-5-5': ['gemini-4-neon', 'gemini-4-carbon'],
+  'gpt-oss-120b': ['gemini-4-hydrogen'],
 }
 /** Where Antigravity keeps the sign-in token, relative to the home folder. */
 export const AGY_TOKEN = '.gemini/antigravity-cli/antigravity-oauth-token'
@@ -161,15 +170,15 @@ export const modelOn = (engine: Engine, requested: string | undefined, headModel
 }
 
 /**
- * The usage pool a model draws on, where an engine limits models apart: Antigravity's three pools, and each CodeBuddy or
+ * The usage pool a model draws on, where an engine limits models apart: Antigravity's default pools, and each CodeBuddy or
  * WorkBuddy model on its own. A limit then cools that pool on the account, not the whole account.
  */
 export const usagePoolOf = (engine: Engine, model: string): string | undefined =>
   engine === 'agy' ? agyPoolOf(model) : isBuddy(engine) ? modelFor(engine, model).toLowerCase() : undefined
 
 /** Other models on the same engine that draw on other pools, nearest first: where a Head goes before another engine. */
-export const modelAlternates = (engine: Engine, model: string): string[] => {
-  if (engine === 'agy') return [...AGY_ALTERNATES[agyBaseOf(model) ?? AGY_MODEL]]
+export const modelAlternates = (engine: Engine, model: string, now = Date.now()): string[] => {
+  if (engine === 'agy') return AGY_ALTERNATES[agyBaseOf(model) ?? AGY_MODEL].filter(other => agyCurrentModel(other, now) === other)
   if (isBuddy(engine)) return BUDDY_ALTERNATES.filter(other => other !== modelFor(engine, model).toLowerCase())
   return []
 }

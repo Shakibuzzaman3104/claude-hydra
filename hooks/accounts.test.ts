@@ -7,18 +7,22 @@ import type { EngineInterface } from 'claude-code'
 
 import {
   ACCOUNT_SUPPORT, COOLDOWN_DEFAULT_MS, COOLDOWN_MAX_MS, accountEnv, accountOverview, accountsLine, accountsOf, accountsText, addAccount, allCoolingText,
-  cooldownFrom, coolingLines, isAccountName, isQuotaFailure, loginInstructions, parseAccountsArgs, pickAccount, readAccountNames, readCooldowns, recordCooldown,
-  recordUnavailable, refreshLimits, removeAccount, rotateAccounts, rowText, supportsAccounts, switchNote, timeOf, withEnv,
+  cooldownFrom, coolingLines, headLine, hideFinished, isAccountName, isQuotaFailure, loginInstructions, parseAccountsArgs, pickAccount, readAccountNames, readCooldowns, recordCooldown,
+  recordUnavailable, refreshLimits, removeAccount, rotateAccounts, rowText, supportsAccounts, switchNote, timeOf, untilText, visibleRuns, withEnv,
 } from './lib/accounts'
+import { resumeTarget } from './lib/format'
+import type { HeadRun } from '../types'
+import { AUTO } from './lib/engines'
 import type { Account } from './lib/accounts'
 import { parseHydraArgs, HYDRA_HELP, HYDRA_POLICY } from './lib/policy'
 
 /** A `$` with an in-memory store, a home folder, a clock and a file system that records writes: what the accounts code touches. */
-const withHome = (entries: Record<string, unknown> = {}, now = 1_000_000, spawn: (options: { env?: Record<string, string> }) => unknown = () => { throw new Error('no process') }) => {
+const withHome = (entries: Record<string, unknown> = {}, now = 1_000_000, spawn: (options: { env?: Record<string, string> }) => unknown = () => { throw new Error('no process') }, runs: HeadRun[] = []) => {
   const kept = new Map(Object.entries(entries))
   const written: string[] = []
   const $ = {
     store: { get: async (key: string) => kept.get(key), set: async (key: string, value: unknown) => void kept.set(key, JSON.parse(JSON.stringify(value))) },
+    state: { get: async () => ({ value: runs, version: 1 }) },
     env: { get: async (name: string) => (name === 'HOME' ? '/home/me' : undefined) },
     clock: { now: async () => now, sleep: async () => new Promise<never>(() => undefined) },
     fs: { write: async (path: string) => void written.push(path), list: async () => [], exists: async () => false },
@@ -309,6 +313,39 @@ test('lists a partly cooling engine and a model that could not start here', asyn
   expect(lines).toContain(`agy gemini-4-hydrogen: could not start here at ${timeOf(1_000_000 + 30 * MIN)} (RESOURCE_EXHAUSTED: quota exceeded in this region)`)
   // An engine the Lead did not ask about is left out.
   expect(await coolingLines($, ['codex'])).toEqual([`codex: 1 of 2 accounts at its limit until ${timeOf(1_000_000 + 20 * MIN)}`])
+})
+
+test('shows a reset date when it is not today, and names a lapsed limit no Head confirmed free', async () => {
+  const today = Date.parse('2026-11-25T21:12:00')
+  expect(untilText(Date.parse('2026-11-25T23:00:00'), today)).toBe('23:00')
+  expect(untilText(Date.parse('2026-11-29T10:22:00'), today)).toBe('29 Nov 10:22')
+
+  // A cooldown whose time passed, with no successful Head since: still reported, not dropped or shown as in force.
+  const { $ } = withHome({ 'accounts-v1': { agy: ['work'] }, 'cooldowns-v1': { 'agy/default#claude': Date.parse('2026-11-25T21:00:00') } }, today)
+  const lines = await coolingLines($, ['agy'])
+  expect(lines).toContain('agy Claude + GPT-OSS: was at its limit until 21:00 (not confirmed free since)')
+
+  // A Head that ran free on that account and pool after the reset clears the line.
+  const done: HeadRun = { id: 'h', task: 't', model: 'claude-sonnet-5-5', state: 'done', turns: 1, engine: 'agy', startedAt: Date.parse('2026-11-25T21:05:00') }
+  const { $: after } = withHome({ 'cooldowns-v1': { 'agy/default#claude': Date.parse('2026-11-25T21:00:00') } }, today, undefined, [done])
+  expect(await coolingLines(after, ['agy'])).not.toContain('was at its limit')
+})
+
+test('cleared Heads leave the views but stay resumable', async () => {
+  const runs: HeadRun[] = [
+    { id: 'ios-double-sheet', task: 't', model: 'm', state: 'done', turns: 3, engine: 'codex', sessionId: 's1' },
+    { id: 'live', task: 't', model: 'm', state: 'running', turns: 1 },
+  ]
+  const cleared = hideFinished(runs)
+  expect(cleared.map(run => (run as HeadRun & { hidden?: boolean }).hidden)).toEqual([true, undefined])
+  expect(visibleRuns(cleared).map(run => run.id)).toEqual(['live'])
+  expect(resumeTarget(cleared, 'ios-double-sheet')).toHaveProperty('run')
+})
+
+test('says the model is per Head in auto mode, and the model itself otherwise', async () => {
+  const auto = { isOn: true, headModel: 'deepseek/deepseek-v4.1-flash', engine: AUTO, engines: ['agy', 'codex'] }
+  expect(headLine(auto, 'commandcode')).toBe('Heads on Auto (Codex + Antigravity) · model per Head')
+  expect(headLine({ isOn: true, headModel: 'gpt-6-luna', engine: 'codex' }, 'commandcode')).toBe('Head gpt-6-luna on Codex')
 })
 
 test('keeps only the first 120 characters of a "could not start here" reason', async () => {

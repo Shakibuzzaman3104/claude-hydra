@@ -5,12 +5,12 @@
 import type { EngineInterface } from 'claude-code'
 
 import { effortModeOf, headEffort, nearestEffort, supportedEfforts } from '../lib/effort'
-import { applyEvent, formatReport, relativeTo } from '../lib/format'
+import { applyEvent, describeTool, formatReport, relativeTo } from '../lib/format'
 import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
 import { compareChangedFiles, pump, refreshHeads, refreshStatus, setRun, snapshotChangedFiles, stopReason, summaryOf } from '../lib/runtime'
-import type { Round, RoundArgs } from '../lib/runtime'
+import type { IdleLimits, Round, RoundArgs } from '../lib/runtime'
 import { DANGEROUS_SHELL, SECRET_PATHS, guardCommand, isWithin, strictGuardCommand, trimSlash, union } from '../lib/safety'
 import type { HeadNeeds } from '../lib/safety'
 import { homeOf, isWindowsPath, platformOf, pythonOf, removeFile, runScript, writeAtomically } from '../lib/platform'
@@ -24,6 +24,7 @@ const POLICY_FILE = '.commandcode/hydra-guard.json'
 const OWNER = 'hydra'
 
 const WATCHED = new Set(['turn_end', 'thinking_start', 'tool_queued', 'tool_running', 'tool_completed', 'tool_denied'])
+export const COMMANDCODE_WATCHDOG: IdleLimits = { firstMs: 600_000, idleMs: 600_000 }
 
 /** A session's cost, edits and denials from its transcript; with `since`, only from then on: a Head that continues a session reports its own part. */
 export async function sessionReport($: EngineInterface, sessionId: string, since?: number): Promise<SessionReport> {
@@ -317,6 +318,7 @@ export async function runRound(
   let result: Record<string, unknown> | null = null
   let started: string | undefined
   let streamedText: string | undefined
+  let pending: StreamEvent | undefined
   const { errors, exit } = await pump($, args, argv.cwd, signal, async line => {
     if (!line.trim().startsWith('{')) return false
     try {
@@ -326,25 +328,32 @@ export async function runRound(
         await onSession(started)
       }
       if (row.event?.type === 'run_end' && typeof row.event.result?.finalText === 'string') streamedText = row.event.result.finalText
+      if (row.event?.type === 'tool_queued' || row.event?.type === 'tool_running') {
+        pending = { ...(pending?.toolCallId === row.event.toolCallId ? pending : {}), ...row.event, input: row.event.input ?? (pending && pending.toolCallId === row.event.toolCallId ? pending.input : undefined) }
+      }
+      if ((row.event?.type === 'tool_completed' || row.event?.type === 'tool_denied') && (!row.event.toolCallId || row.event.toolCallId === pending?.toolCallId)) pending = undefined
       if (row.type === 'result') result = row as Record<string, unknown>
       if (row.event && WATCHED.has(row.event.type)) await onEvent(row.event)
     } catch {
       // A partial or non-JSON line from the CLI; the final result line is what counts.
     }
     return false
-  })
+  }, undefined, COMMANDCODE_WATCHDOG)
   const final = result as Record<string, unknown> | null
   const own = started ?? argv.resume
   const matched = own && final?.sessionId === own
   return {
     finalText: streamedText ?? (matched ? String(final?.finalText ?? '') : ''),
-    sessionId: started,
+    sessionId: own,
     subtype: matched && typeof final?.subtype === 'string' ? final.subtype : undefined,
     code: exit.code,
     signal: exit.signal,
-    errors,
+    errors: [errors, exit.signal === 'idle' ? commandcodeStall(pending, argv.cwd) : ''].filter(Boolean).join('\n'),
   }
 }
+
+export const commandcodeStall = (call?: StreamEvent, cwd = '') =>
+  `stalled: no output for 10 min${call ? ` while running ${describeTool(call.toolName === 'Shell' ? 'shell_command' : call.toolName ?? 'tool', call.input, cwd)}` : ''}`
 
 /** Runs a round at `effort`; if the model refuses that level, reruns once at its nearest supported one. */
 async function runRoundAt(
@@ -355,7 +364,7 @@ async function runRoundAt(
   onSession: (sessionId: string) => Promise<void>,
 ): Promise<Round & { effort?: string }> {
   const round = await runRound($, argv, signal, onEvent, onSession)
-  if (round.sessionId || !argv.effort || signal.aborted) return { ...round, effort: argv.effort }
+  if (round.sessionId || !argv.effort || signal.aborted || round.signal === 'idle') return { ...round, effort: argv.effort }
   if (/no reasoning effort/i.test(round.errors)) return { ...(await runRound($, { ...argv, effort: undefined }, signal, onEvent, onSession)), effort: undefined }
   const effort = /Unknown effort/i.test(round.errors) ? nearestEffort(argv.effort, supportedEfforts(round.errors)) : undefined
   if (!effort || effort === argv.effort) return { ...round, effort: argv.effort }
@@ -428,10 +437,13 @@ async function runLockedHead(
     turns: () => turns,
     calls: () => counter.calls,
     denied: async sessionId => (await sessionReport($, sessionId)).denied.map(d => `${d.tool} ${relativeTo(cwd, d.target)}`),
+    mayResume: round => round.signal !== 'idle',
+    mayRetryStart: round => round.signal !== 'idle',
     sleep: (ms, signal) => $.clock.sleep(ms, { signal }),
     onStep: activity => setRun($, id, { activity }),
   })
-  const { round, rounds, sessionId, ending } = ended
+  const { round, rounds, sessionId } = ended
+  const ending = round.signal === 'idle' ? 'stalled' : ended.ending
 
   const report = sessionId ? await sessionReport($, sessionId, head.since) : { usd: null, files: [], denied: [], toolCalls: 0 }
   const endedAt = await $.clock.now()
@@ -441,15 +453,15 @@ async function runLockedHead(
   await setRun($, id, {
     state: isDone ? 'done' : 'failed', turns, costUsd: report.usd ?? undefined, endedAt, ending, sessionId,
     files: report.files.map(file => relativeTo(cwd, file)), summary: summaryOf(round.finalText),
-    activity: endActivity(ended, { maxTurns, minutes, stopped }),
+    activity: round.signal === 'idle' ? round.errors.split('\n').at(-1) : endActivity(ended, { maxTurns, minutes, stopped }),
   })
   void refreshHeads($)
 
   const text = formatReport({
     id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns, usd: report.usd, files: report.files, denied: report.denied,
-    finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
+    finalText: round.finalText, exit: exitOf({ ...ended, ending }, { minutes, stopped }), errors: round.errors,
     rulesNote, writeDirs: head.writeDirs,
-    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
+    reverted: edits.reverted, deleted: edits.deleted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files: report.files, ending, sessionId }
 }

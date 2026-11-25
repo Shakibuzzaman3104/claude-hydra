@@ -40,14 +40,14 @@ const ACCOUNTS = '/home/me/.claude/hydra/accounts'
 test('each CodeBuddy model and each Antigravity pool is its own usage pool; other engines have none', async () => {
   expect(usagePoolOf('codebuddy', 'deepseek/deepseek-v4.1-flash')).toBe('deepseek-v4.1-flash')
   expect(usagePoolOf('workbuddy', 'GLM-5.3')).toBe('glm-5.3')
-  expect(usagePoolOf('agy', 'gemini-4-argon-high')).toBe('argon')
+  expect(usagePoolOf('agy', 'gemini-4-argon-high')).toBe('gemini')
   expect(usagePoolOf('agy', 'gpt-oss-120b')).toBe('claude')
   expect(usagePoolOf('codex', 'gpt-6.1-sol')).toBeUndefined()
   expect(usagePoolOf('commandcode', 'deepseek/deepseek-v4.1-flash')).toBeUndefined()
 })
 
 test('a model cut off moves to a model in another pool on the same engine first', async () => {
-  expect(modelAlternates('agy', 'gemini-4-argon')).toEqual(['claude-sonnet-5-5', 'gemini-4-hydrogen'])
+  expect(modelAlternates('agy', 'gemini-4-argon')).toEqual(['claude-sonnet-5-5'])
   expect(modelAlternates('agy', 'claude-opus-5-5')).not.toContain('claude-sonnet-5-5')
   expect(modelAlternates('codebuddy', 'deepseek-v4.1-flash')).toEqual(['glm-5.3', 'kimi-k3', 'minimax-m3.1-flash'])
   expect(modelAlternates('codex', 'gpt-6.1-sol')).toEqual([])
@@ -294,8 +294,13 @@ test('a route that could not start names the engine\'s own first error line', ()
   expect(unavailableWhy('x'.repeat(300))).toHaveLength(120)
 })
 
-test('a research Head moved off Argon is flagged as having lost web search', () => {
-  expect(lostSearch({ engine: 'agy', model: 'gemini-4-argon' }, { engine: 'codex', model: 'gpt-6.1-terra' })).toBe(true)
-  expect(lostSearch({ engine: 'agy', model: 'gemini-4-argon' }, { engine: 'agy', model: 'gemini-4-argon' })).toBe(false)
-  expect(lostSearch({ engine: 'agy', model: 'gemini-4-hydrogen' }, { engine: 'codex', model: 'gpt-6.1-terra' })).toBe(false)
+test('a web research Head moved off Antigravity is flagged as having lost web search', () => {
+  const codex = { engine: 'codex' as const, model: 'gpt-6.1-terra' }
+  const argon = { engine: 'agy' as const, model: 'gemini-4-argon', task: 'Do web research' }
+  const hydrogen = { engine: 'agy' as const, model: 'gemini-4-hydrogen', task: 'Search the web' }
+  expect(lostSearch(argon, codex)).toBe(true)
+  expect(lostSearch(hydrogen, codex)).toBe(true)
+  expect(lostSearch(argon, { engine: 'agy', model: 'gemini-4-neon' })).toBe(false)
+  expect(lostSearch({ ...hydrogen, task: 'Read the code' }, codex)).toBe(false)
+  expect(lostSearch({ engine: 'agy', model: 'gemini-4-argon' }, codex)).toBe(false)
 })

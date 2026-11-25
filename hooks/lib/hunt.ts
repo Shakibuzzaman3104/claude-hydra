@@ -15,11 +15,11 @@ export type HuntRefute = { lenses: string[]; fix: boolean }
 export type HuntPlan = { name: string; shared: string; schema?: Schema; heads: HuntHead[]; refute?: HuntRefute; fresh: boolean }
 export type Problem = { file?: string; line?: number; problem: string; severity: string }
 export type Verdict = 'holds' | 'broken' | 'unsure' | 'none'
-export type HeadStatus = 'done' | 'partial' | 'blocked' | 'unfinished' | 'failed' | 'invalid'
+export type HeadStatus = 'done' | 'partial' | 'blocked' | 'unfinished' | 'failed' | 'invalid' | 'stopped'
 export type HeadCall = HuntHead & { schema?: Schema; resume?: string }
 /** What a Head was asked to run on, before Hydra moved it. */
 export type HeadAsked = { engine: string; model?: string }
-export type HeadRan = { engine: string; model?: string; isDone: boolean; ending?: string; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; isResumable: boolean }
+export type HeadRan = { engine: string; model?: string; isDone: boolean; ending?: string; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; minutes?: number; turns?: number; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; isResumable: boolean }
 export type HeadOutcome = { name: string; engine: string; model?: string; status: HeadStatus; isCached: boolean; check?: 'passed' | 'failed' | 'unknown'; files: string[]; summary: string; data?: unknown; dataErrors?: string[]; reportPath?: string; cost?: string; /** Why a Head that did not finish still counts as done, e.g. `out of time, check passed`. */ note?: string; /** The files a reading Head changed in its fix round, though it was told not to. */ readingChanged?: string[]; /** The route trail from the report's `fallback:` line, when Hydra moved the Head. */ fallback?: string; /** The engine and model the Head was asked for, kept when it ended somewhere else. */ asked?: HeadAsked; refute?: { verdict: Verdict; by: string[]; problems: Problem[]; fixRounds: number; edited: string[] } }
 export type HuntResult = { name: string; outcomes: HeadOutcome[]; missing: string[] }
 export type HuntSteps = { plan: HuntPlan; cache: Readonly<Record<string, HeadOutcome>>; runHead: (call: HeadCall) => Promise<HeadRan>; refuterEngine: (author: string, index: number) => string | undefined; save: (key: string, outcome: HeadOutcome) => Promise<void>; isAborted: () => boolean }
@@ -116,14 +116,25 @@ export const headKey = (plan: HuntPlan, head: HuntHead): string => {
   return `${head.name}:${hash.toString(16).padStart(8, '0')}`
 }
 
-export const refuteTask = (head: HuntHead, shared: string, author: Pick<HeadRan, 'summary' | 'files' | 'data'>, lens: string): string => [
+export const refuteTask = (head: HuntHead, shared: string, author: Pick<HeadRan, 'summary' | 'files' | 'data' | 'reportPath'>, lens: string): string => {
+  const result = author.data !== undefined ? JSON.stringify(author.data, null, 1) : author.summary
+  const cut = author.data === undefined && /characters cut by Hydra|… cut: read the full report/i.test(result)
+  const paths = new Set(author.files)
+  const collect = (value: unknown) => {
+    if (typeof value === 'string' && !/\s/.test(value) && (/^(?:\.\.?\/|\/|[\w.-]+\/)\S*$/.test(value) || /^[\w.-]+\.[a-zA-Z0-9]{1,10}(?::\d+)?$/.test(value))) paths.add(value.replace(/:\d+$/, ''))
+    else if (Array.isArray(value)) value.forEach(collect)
+    else if (object(value)) Object.values(value).forEach(collect)
+  }
+  if (!head.files?.length) collect(author.data)
+  return [
   `You are a refuter. Another agent just did the task below. Your job is to find what is wrong with its result, through the lens of ${lens}. Change no files. Read the code as it is now and check each claim against it.`,
   shared ? `Context:\n${shared}` : '',
   `The task it was given:\n${head.task}`,
-  author.files.length ? `Files it changed:\n${author.files.map(file => `- ${file}`).join('\n')}` : '',
-  author.data !== undefined ? `Its result:\n${JSON.stringify(author.data, null, 1).slice(0, 6000)}` : author.summary ? `Its report:\n${author.summary.slice(0, 3000)}` : '',
+  paths.size ? `Read these files first; do not re-read whole files you have already read:\n${[...paths].map(file => `- ${file}`).join('\n')}` : 'Do not re-read whole files you have already read.',
+  result && (result.length > 40000 || cut) && author.reportPath ? `The full result is in the saved report file ${author.reportPath}; read it there.` : result ? `Its ${author.data !== undefined ? 'result' : 'report'}${cut ? ' (shortened by Hydra; truncation is not a problem to report)' : ''}:\n${result}` : '',
   'Answer "broken" only for a concrete problem you can point to (file and line where there is one), "holds" when you checked and found none, and "unsure" when you could not check. Never invent a problem to have one. List what you actually checked.',
-].filter(Boolean).join('\n\n')
+  ].filter(Boolean).join('\n\n')
+}
 
 export const fixTask = (problems: readonly Problem[], isReading = false): string => `A reviewer checked your work and reports these problems:\n${problems.slice(0, 15).map(p => `- [${p.severity}] ${p.file ? `${p.file}${p.line ? `:${p.line}` : ''}: ` : ''}${p.problem}`).join('\n')}\n${isReading ? 'This is a reading job: change no files, revise only your result (the report, or the JSON).\n' : ''}For each one: fix it if it is real, or say in one line why it is not. Then give your full result again.`
 
@@ -134,11 +145,12 @@ const doneNote = (ran: HeadRan): string | undefined => {
   if (ran.ending === 'timeout') return 'out of time, check passed'
   if (ran.ending === 'capped') return 'out of turns, check passed'
   if (ran.ending === 'stalled') return 'stalled, check passed'
-  if (ran.ending === 'blocked') return 'said blocked, check passed'
   return undefined
 }
 
 export const statusOf = (ran: HeadRan, hasSchema: boolean): HeadStatus => {
+  if (ran.ending === 'stopped') return 'stopped'
+  if (ran.ending === 'blocked' && ran.check === 'passed') return 'blocked'
   if (ran.check === 'failed') return ran.ending === 'blocked' ? 'blocked' : 'failed'
   if (!ran.isDone && ran.check === 'passed' && ENDINGS.includes(ran.ending ?? '')) return 'done'
   if (ran.isDone && hasSchema && ran.data === undefined) return 'invalid'
@@ -185,7 +197,9 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
         const answers = await Promise.all((plan.refute?.lenses ?? []).map(async (lens, index) => {
           const engine = steps.refuterEngine(ran.engine, index)
           if (engine === undefined) return undefined
-          try { const result = await steps.runHead({ name: `${head.name}-r${index + 1}${suffix}`, task: refuteTask(head, plan.shared, author, lens), engine, effort: 'medium', schema: VERDICT_SCHEMA, ...(head.cwd ? { cwd: head.cwd } : {}), ...(head.addDirs ? { addDirs: head.addDirs } : {}) }); return { engine, result } } catch { return undefined }
+          const reportDir = author.reportPath?.slice(0, author.reportPath.lastIndexOf('/'))
+          const addDirs = union(head.addDirs ?? [], reportDir ? [reportDir] : [])
+          try { const result = await steps.runHead({ name: `${head.name}-r${index + 1}${suffix}`, task: refuteTask(head, plan.shared, author, lens), engine, effort: 'medium', schema: VERDICT_SCHEMA, ...(head.cwd ? { cwd: head.cwd } : {}), ...(addDirs.length ? { addDirs } : {}), ...(author.minutes !== undefined ? { maxMinutes: Math.min(15, Math.max(5, Math.ceil(author.minutes * 3))) } : {}), ...(author.turns !== undefined ? { maxTurns: Math.min(80, Math.max(30, Math.ceil(author.turns * 1.5))) } : {}) }); return { engine, result } } catch { return undefined }
         }))
         const present = answers.filter((answer): answer is { engine: string; result: HeadRan } => answer !== undefined)
         return { ...verdictOf(present.map(answer => answer.result.data)), by: present.filter(answer => usable(answer.result.data)).map(answer => answer.engine), edited: [...new Set(present.flatMap(answer => answer.result.files))] }
@@ -219,7 +233,7 @@ export async function runHunt(steps: HuntSteps): Promise<HuntResult> {
       return outcome
     } catch (error) { return failure(`could not run: ${String(error).slice(0, 300)}`) }
   }))
-  return { name: plan.name, outcomes, missing: outcomes.filter(outcome => outcome.status !== 'done' && outcome.status !== 'partial').map(outcome => outcome.name) }
+  return { name: plan.name, outcomes, missing: outcomes.filter(outcome => outcome.status !== 'done' && outcome.status !== 'partial' && !(outcome.status === 'blocked' && outcome.check === 'passed')).map(outcome => outcome.name) }
 }
 
 /** The engine and model a Head started on, read from the first route of its `fallback:` trail (`engine model (why) → …`). */
@@ -238,7 +252,11 @@ export const formatHunt = (result: HuntResult, limit = 14000): string => {
   const share = Math.max(0, Math.floor((limit - first.length - 2 * result.outcomes.length) / (result.outcomes.length || 1)))
   const blocks = result.outcomes.map(outcome => {
     const refute = outcome.refute
-    const lines = [`## ${outcome.name} · ${outcome.engine || 'no engine'} · ${outcome.status}${outcome.note ? ` (${outcome.note})` : ''}${!outcome.note && outcome.check ? ` · check ${outcome.check}` : ''}${outcome.isCached ? ' (cached)' : ''}${refute ? ` · refute: ${refute.verdict}${refute.by.length ? ` by ${refute.by.join(', ')}` : ''}${refute.fixRounds ? ' after a fix' : ''}` : ''}${outcome.cost ? ` · ${outcome.cost}` : ''}`]
+    const lines = [`## ${outcome.name} · ${outcome.engine || 'no engine'} · ${outcome.status}${outcome.status === 'blocked' && outcome.check === 'passed' ? ' (check passed)' : outcome.note ? ` (${outcome.note})` : outcome.check ? ` · check ${outcome.check}` : ''}${outcome.isCached ? ' (cached)' : ''}${refute ? ` · refute: ${refute.verdict}${refute.by.length ? ` by ${refute.by.join(', ')}` : ''}${refute.fixRounds ? ' after a fix' : ''}` : ''}${outcome.cost ? ` · ${outcome.cost}` : ''}`]
+    if (outcome.status === 'blocked' && outcome.check === 'passed') {
+      const before = outcome.summary.split(/HEAD BLOCKED/i)[0]!.trim().split('\n').filter(Boolean).slice(-3).join('\n')
+      if (before) lines.push(`decision: ${before.slice(-600)}`)
+    }
     if (outcome.readingChanged?.length) lines.push(`⚠ a reading Head changed files in its fix round: ${outcome.readingChanged.join(', ')}`)
     if (outcome.fallback) {
       const asked = outcome.asked ?? askedOf(outcome.fallback)

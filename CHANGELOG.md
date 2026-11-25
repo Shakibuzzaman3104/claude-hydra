@@ -1,5 +1,49 @@
 # Changelog
 
+## 2.4.0 — 2026-11-25
+New Antigravity and Codex models, usage limits read per model group, and fixes for the problems in the Hydra issue log. Unit-tested throughout; the Antigravity lockdown was re-run live on agy 1.5.16.
+
+**Models and usage limits**
+- **Antigravity: `gemini-4-neon` and `gemini-4-carbon`.** Neon (low to xhigh) takes harder work, reviews, research and web search; Carbon (low to high) takes the deepest long-horizon work and spends the Gemini pool fastest. Hydrogen stays the default.
+- **Antigravity pools follow `agy /usage`.** Antigravity bills two groups, each with a weekly and a 5-hour limit charged by token cost: every Gemini model in one, Claude Opus 5.5, Sonnet 5.5 and GPT-OSS in the other. Opus and Sonnet share that limit; an Opus Head drains it several times faster. Hydra now reads which models each group lists, checks a model against its own group's buckets, and keys cooldowns by that group, so a split Google makes later is followed without a release. Disabled buckets (the Claude 5-hour window while the weekly one is spent) are ignored.
+- **Retirements.** `gemini-4-argon`, `gemini-3.8-flash` and `gpt-oss-120b` leave Antigravity on 30 November 2026. From that date a Head asking for one runs `gemini-4-neon`, `gemini-4-hydrogen` or `claude-sonnet-5-5`, and its report says so. The policy no longer offers them, and never offers the `gemini-pro-orchestrator` ids.
+- **Fallback inside Antigravity** moves a Gemini Head to Claude Sonnet and a Claude Head to Gemini Neon (Opus to Neon or Carbon), since the two pools are now the only split.
+- **Codex: `gpt-6-astra`.** The policy offers OpenAI's most capable model only for the hardest bug or after Terra failed at high: every Codex model draws on one 5-hour and weekly allowance, and Astra drains it about 3x faster than Sol (Luna about 20x slower). Effort is clamped to low..max; `ultra`, which delegates to subagents, is never sent.
+- Codex Heads find the newest packaged Codex binary when `codex` on PATH fails, and can read `~/.agents/skills` and `~/.codex/skills`.
+- The Lead's `/hydra-usage` side names Claude's per-model weekly windows (Opus, Sonnet, Fable, Haiku).
+- Claude models on Antigravity were not run live for this release: that pool is spent until 29 November.
+
+**Reports**
+- **Other sessions' hunt and Head reports are no longer deleted.** The sweep aged folders by their own mtime, which reads as 0, so every hunt folder and report file from another session was removed at the next start. Folders are now aged by their newest entry. This was the cause of vanished hunt folders and missing report files.
+- **Antigravity edits are credited to the Head.** Its write and edit tool calls make the edited list; a Head that wrote nothing puts folder changes on the neutral line instead of a ⚠. The folder-changes line is no longer printed twice.
+- Antigravity Heads without a shell are told which tools list folders and search, instead of ending BLOCKED.
+- A failing command in a Codex shell is no longer listed as denied. Sandbox file-access refusals get their own heading.
+- New files a Head created and removed are listed as `deleted` instead of "put back to the committed version".
+- The report's head-report marker is never doubled, and the turn count never passes the cap.
+
+**Command Code**
+- An idle watchdog ends a Head with no output for 10 minutes as `stalled`, naming the tool call in flight (for example a shell `find`). Its session stays resumable by the Lead, and Hydra does not retry it into the same hang.
+
+**Checks**
+- Checks in one project queue instead of running together; checks in different projects still overlap.
+- Out of memory, a crashed Gradle or Kotlin daemon, a full disk, too many open files and an empty output count as `unknown` (no fix rounds).
+- A fix round's note restates the brief's do-not rules, and a ⚠ line names files a fix round changed outside `files`.
+- `resume` keeps the earlier Head's `check` and `checkMinutes`, and says so when there was none.
+
+**Hunts**
+- An engine that is not ready fails only its own Heads, with a note; the hunt is refused only when no Head could start.
+- Refuters get the author's whole result, or the saved report's path with its folder readable, and are capped at 1.5x the author's turns (30-80) and 3x its minutes (5-15).
+- A task naming this session's hunt or Head report folder gets that folder in `addDirs`.
+- A Head blocked with a passing check shows `blocked (check passed)` and its decision; a Lead-stopped Head shows `stopped` with its minutes and turns, not `failed`.
+- Hunt blocks keep the Head's whole report.
+
+**Control and prompt**
+- `control clear` hides finished Heads; `resume` still finds them.
+- In auto mode the header shows the engines and "model per Head" instead of one model.
+- Limits show a date when the reset is not today, and a limit whose time passed without a Head confirming it free is reported as such.
+- Turning Hydra off mid-session replaces the policy, limits, surge and engines notes, so the Lead stops using Heads.
+- The Lead's prompt names engines that are installed and signed in but not turned on.
+
 ## 2.3.0 — 2026-11-19
 Fixes for the problems logged while running Hydra on real projects. Unit-tested throughout; the Command Code fixes were also run live.
 

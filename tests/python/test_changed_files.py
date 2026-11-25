@@ -188,3 +188,19 @@ def test_compare_counts_a_deleted_snapshot_file_as_reverted(tmp_path):
     result = compare(saved, time.time() - 60, root)
     assert relative(result["reverted"], root) == ["tracked.txt"]
     assert result["overwritten"] == []
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_compare_reports_deleted_uncommitted_new_file_as_deleted_not_reverted(tmp_path):
+    root = tmp_path / "repo"
+    write(root / "tracked.txt", "one", mtime=OLD)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "commit", "-q", "-m", "init")
+    write(root / "new.txt", "created in round 1")
+    saved = snapshot_file(tmp_path / "snapshot.json", snapshot(root))
+    (root / "new.txt").unlink()
+    result = compare(saved, time.time() - 60, root)
+    assert relative(result["deleted"], root) == ["new.txt"]
+    assert result["reverted"] == []
+    assert result["overwritten"] == []

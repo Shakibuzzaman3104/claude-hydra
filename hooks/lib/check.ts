@@ -6,7 +6,7 @@ import type { EngineInterface } from 'claude-code'
 
 import { DEFAULT_EFFORT, HEAD_EFFORTS } from './effort'
 import { relativeTo } from './format'
-import { platformOf } from './platform'
+import { platformOf, realPaths } from './platform'
 
 /** How many times a Head is sent back after a failed check before Hydra hands the failure to the Lead. */
 export const CHECK_FIX_ROUNDS = 2
@@ -42,6 +42,13 @@ export const outcomeOf = (ran: { exitCode: number; stdout: string; stderr: strin
   const tail = checkTail(ran.stdout, ran.stderr)
   if (ran.exitCode === 0) return { kind: 'passed', seconds }
   if (ran.exitCode === 126 || ran.exitCode === 127) return { kind: 'unknown', reason: `the shell could not run it (exit ${ran.exitCode})`, tail }
+  const output = `${ran.stdout}\n${ran.stderr}`
+  const reason = ran.exitCode === 137 || /OutOfMemoryError|Java heap space|GC overhead limit exceeded|Cannot allocate memory/i.test(output) || /^(?:.*: )?Killed(?::.*)?$/m.test(output) ? 'out of memory'
+    : /(?:Gradle|Kotlin).*daemon[^\n]*(?:disappeared|crash|died|terminated)|daemon[^\n]*(?:disappeared|crash|died|terminated)[^\n]*(?:Gradle|Kotlin)/i.test(output) ? 'daemon disappeared or crashed'
+    : /No space left on device/i.test(output) ? 'no space left on device'
+    : /Too many open files/i.test(output) ? 'too many open files' : ''
+  if (reason) return { kind: 'unknown', reason: `environment: ${reason}`, tail }
+  if (!ran.stdout && !ran.stderr) return { kind: 'unknown', reason: 'the check printed nothing', tail }
   return { kind: 'failed', exitCode: ran.exitCode, tail, seconds }
 }
 
@@ -49,13 +56,39 @@ export const checkMinutesOf = (value: unknown) =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(value, CHECK_MAX_MINUTES) : CHECK_DEFAULT_MINUTES
 
 /** Runs the check in `cwd` through the shell, as the person, outside every Head's lockdown. */
-export async function runCheck($: EngineInterface, check: string, cwd: string, minutes: number): Promise<CheckOutcome> {
-  const argv = (await platformOf($)) === 'windows' ? ['cmd', '/d', '/s', '/c', check] : ['/bin/sh', '-c', check]
-  const startedAt = await $.clock.now()
-  const ran = await $.process.run(argv, { cwd, timeoutMs: Math.round(minutes * 60_000) }).catch((error: unknown) => error as Error)
-  const seconds = Math.round(((await $.clock.now()) - startedAt) / 1000)
-  if (ran instanceof Error || !ran) return { kind: 'unknown', reason: `it did not finish within ${minutes} min or could not start (${String(ran).slice(0, 120)})`, tail: '' }
-  return outcomeOf(ran, seconds)
+const checkQueues = new Map<string, Promise<void>>()
+
+export async function runCheck($: EngineInterface, check: string, cwd: string, minutes: number, options?: { signal?: AbortSignal; onWait?: () => Promise<void>; onStart?: () => Promise<void> }): Promise<CheckOutcome> {
+  const git = await $.process.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], { timeoutMs: 10_000 }).catch(() => undefined)
+  const folder = git?.exitCode === 0 && git.stdout.trim() ? git.stdout.trim() : cwd
+  const key = (await realPaths($, [folder]))[0] ?? folder
+  const previous = checkQueues.get(key)
+  let release = () => {}
+  const current = new Promise<void>(resolve => { release = resolve })
+  const queued = previous ? previous.then(() => current) : current
+  checkQueues.set(key, queued)
+  try {
+    if (previous) {
+      await options?.onWait?.()
+      const signal = options?.signal
+      if (signal && !signal.aborted) {
+        let stopped = () => {}
+        const aborted = new Promise<void>(resolve => { stopped = resolve; signal.addEventListener('abort', stopped, { once: true }) })
+        try { await Promise.race([previous, aborted]) } finally { signal.removeEventListener('abort', stopped) }
+      } else if (!signal) await previous
+    }
+    if (options?.signal?.aborted) return { kind: 'unknown', reason: 'the Head was stopped', tail: '' }
+    if (previous) await options?.onStart?.()
+    const argv = (await platformOf($)) === 'windows' ? ['cmd', '/d', '/s', '/c', check] : ['/bin/sh', '-c', check]
+    const startedAt = await $.clock.now()
+    const ran = await $.process.run(argv, { cwd, timeoutMs: Math.round(minutes * 60_000) }).catch((error: unknown) => error as Error)
+    const seconds = Math.round(((await $.clock.now()) - startedAt) / 1000)
+    if (ran instanceof Error || !ran) return { kind: 'unknown', reason: `it did not finish within ${minutes} min or could not start (${String(ran).slice(0, 120)})`, tail: '' }
+    return outcomeOf(ran, seconds)
+  } finally {
+    release()
+    if (checkQueues.get(key) === queued) checkQueues.delete(key)
+  }
 }
 
 /** One level up from the Lead's pick for the next try; the person's fixed level still wins inside each engine. */
@@ -66,8 +99,10 @@ export const raisedEffort = (effort: string | undefined) => {
 }
 
 /** What the Head is told when it goes back: the check, what it printed, and that the files it changed are still there. */
-export const fixNote = (check: string, outcome: Extract<CheckOutcome, { kind: 'failed' }>, files: readonly string[]) =>
-  `\n\nYour previous attempt ended, but the acceptance check failed. Check: \`${check}\` (exit ${outcome.exitCode}). Its last output:\n\`\`\`\n${outcome.tail || '(no output)'}\n\`\`\`\nFiles already changed: ${files.length > 0 ? files.join(', ') : 'none recorded'}. Fix the code so the check passes. Do not weaken, skip or delete tests or the check to get there. Hydra runs the check again when you finish: you need not run it yourself.`
+export const fixNote = (check: string, outcome: Extract<CheckOutcome, { kind: 'failed' }>, files: readonly string[], named: readonly string[] = [], task = '') => {
+  const rules = task.split(/\n|(?<=[.!?])\s+/).map(rule => rule.trim()).filter(rule => /\b(?:do not|don't|never|only|must not)\b/i.test(rule)).slice(0, 8)
+  return `\n\nYour previous attempt ended, but the acceptance check failed. Check: \`${check}\` (exit ${outcome.exitCode}). Its last output:\n\`\`\`\n${outcome.tail || '(no output)'}\n\`\`\`\nFiles already changed: ${files.length > 0 ? files.join(', ') : 'none recorded'}.${named.length ? ` Only change these task files: ${named.join(', ')}.` : ''}${rules.length ? ` Original task rules:\n${rules.map(rule => `"${rule}"`).join('\n')}` : ''}\nFix the code so the check passes. Do not weaken, skip or delete tests or the check to get there. If passing the check would break these rules, stop and say so instead (HEAD BLOCKED); do not edit outside them. Hydra runs the check again when you finish: you need not run it yourself.`
+}
 
 /** What a Head is told about its check before it starts: Hydra runs it, so the Head neither has to nor has to wait for it. */
 export const checkNote = (check: string) =>
@@ -132,6 +167,8 @@ export type CheckSteps<R extends Checked> = {
   /** The Head's whole time budget, in minutes: fix rounds only start while some of it is left. */
   minutes: number
   effort?: string
+  task?: string
+  files?: readonly string[]
   /** Runs the Head: the first time as asked, then with a fix note added to the task, a raised effort and the minutes left. */
   run: (change?: { note: string; effort?: string; minutes: number }) => Promise<R>
   runCheck: () => Promise<CheckOutcome>
@@ -152,6 +189,8 @@ export type CheckSteps<R extends Checked> = {
 export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promise<{ result: R; outcome?: CheckOutcome }> {
   const startedAt = await steps.now()
   const edited: string[] = []
+  const outside: string[] = []
+  const warnings = () => outside.length ? [`⚠ the fix round changed files outside \`files\`: ${outside.join(', ')}`] : []
   const tries: CheckOutcome[] = []
   let effort = steps.effort
   const efforts = [effort ?? DEFAULT_EFFORT]
@@ -163,7 +202,7 @@ export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promis
     for (const file of result.files ?? []) if (!edited.includes(file)) edited.push(file)
     if (!isCheckable({ ...result, files: edited }) || steps.isAborted()) {
       const line = tries.length > 0 ? `✗ FAILED earlier, and the Head did not finish its fix round` : 'not run: the Head did not finish'
-      return { result: { ...result, files: edited, text: withSummary(report(), [`check: \`${steps.check}\` ${line}`, ...effortLines()]) }, outcome: tries.at(-1) }
+      return { result: { ...result, files: edited, text: withSummary(report(), [`check: \`${steps.check}\` ${line}`, ...warnings(), ...effortLines()]) }, outcome: tries.at(-1) }
     }
     await steps.onStep?.(`check: ${steps.check}`)
     const outcome = await steps.runCheck()
@@ -171,6 +210,7 @@ export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promis
     const minutesLeft = steps.minutes - Math.floor(((await steps.now()) - startedAt) / 60_000)
     if (outcome.kind !== 'failed' || result.ending === 'blocked' || tries.length > CHECK_FIX_ROUNDS || minutesLeft < 1 || steps.isAborted()) {
       const lines = checkLines(steps.check, outcome, tries, outcome.kind === 'unknown' ? [] : checkedEdits(steps.check, edited, steps.cwd))
+      lines.push(...warnings())
       lines.push(...effortLines())
       if (outcome.kind === 'passed' && !result.isDone) lines.push(result.ending === 'blocked' ? '⚠ the Head said it was blocked, but the check passed' : `⚠ ${UNFINISHED_PASS}`)
       return { result: { ...result, ...(outcome.kind === 'passed' && result.ending === 'blocked' ? { isDone: true } : {}), files: edited, text: withSummary(report(), lines, outcome.kind === 'passed' ? undefined : outcome.tail) }, outcome }
@@ -179,7 +219,11 @@ export async function checkHead<R extends Checked>(steps: CheckSteps<R>): Promis
     if (nextEffort && nextEffort !== (effort ?? DEFAULT_EFFORT)) efforts.push(nextEffort)
     effort = nextEffort
     await steps.onStep?.(`check failed (exit ${outcome.exitCode}): sending it back`)
-    result = await steps.run({ note: fixNote(steps.check, outcome, edited.map(file => relativeTo(steps.cwd, file))), effort, minutes: minutesLeft })
+    result = await steps.run({ note: fixNote(steps.check, outcome, edited.map(file => relativeTo(steps.cwd, file)), steps.files, steps.task), effort, minutes: minutesLeft })
+    if (steps.files?.length) for (const file of result.files ?? []) {
+      const rel = relativeTo(steps.cwd, file).replace(/^\.\//, '')
+      if (!steps.files.some(named => rel === relativeTo(steps.cwd, named).replace(/^\.\//, '')) && !outside.includes(rel)) outside.push(rel)
+    }
     reports.push(result.text)
   }
 }

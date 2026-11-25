@@ -38,6 +38,17 @@ def git_candidates(root):
     return git_listing(root, '-m', '-o', '--exclude-standard')
 
 
+def git_head_files(root):
+    """The paths committed in git HEAD under `root`, or None outside a repository or without HEAD."""
+    try:
+        ran = subprocess.run(['git', '-C', root, 'ls-tree', '-r', '--name-only', '-z', 'HEAD'], capture_output=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if ran.returncode != 0:
+        return None
+    return [os.path.join(root, name.replace('/', os.sep)) for name in ran.stdout.decode('utf-8', 'replace').split('\0') if name]
+
+
 def candidates(root):
     listing = git_candidates(root)
     if listing is not None:
@@ -88,13 +99,17 @@ def compare(snapshot_path, since_ms, roots):
     with open(snapshot_path, encoding='utf-8') as file:
         before = json.load(file)
     since = since_ms / 1000
-    uncommitted, modified, tracked = set(), set(), set()
+    uncommitted, modified, tracked, head_files = set(), set(), set(), set()
     for root in roots:
         uncommitted.update(git_candidates(root) or [])
         modified.update(git_listing(root, '-m') or [])
         tracked.update(git_listing(root) or [])
-    overwritten, reverted, restored = [], [], []
+        head_files.update(git_head_files(root) or [])
+    overwritten, reverted, deleted, restored = [], [], [], []
     for path, sha in sorted(before.items()):
+        if not os.path.isfile(path) and path not in head_files:
+            deleted.append(path)
+            continue
         if path not in uncommitted or not os.path.isfile(path):
             reverted.append(path)
             continue
@@ -109,7 +124,7 @@ def compare(snapshot_path, since_ms, roots):
                 restored.append(path)
         except OSError:
             continue
-    return {'overwritten': overwritten[:LIMIT], 'reverted': reverted[:LIMIT], 'restored': restored[:LIMIT]}
+    return {'overwritten': overwritten[:LIMIT], 'reverted': reverted[:LIMIT], 'deleted': deleted[:LIMIT], 'restored': restored[:LIMIT]}
 
 
 def main():

@@ -1,6 +1,6 @@
 {
   "name": "hydra",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Claude leads, cheaper agents (Heads, on Command Code, CodeBuddy, Codex, Antigravity, WorkBuddy or OpenCode) implement: /hydra turns it on, /heads watches them live, /hydra-usage shows both sides' limits",
   "author": {
     "name": "Shakib"
@@ -10,7 +10,7 @@
     "headModel": {
       "type": "string",
       "title": "Hydra head model",
-      "description": "Model the Heads run on (CodeBuddy, WorkBuddy and Codex ids have no provider prefix: deepseek-v4.1-flash, gpt-6.1-sol; OpenCode takes provider/model; switching to Codex or OpenCode picks gpt-6.1-sol or opencode/deepseek-v4.1-flash-free on its own)",
+      "description": "Model the Heads run on (CodeBuddy, WorkBuddy and Codex ids have no provider prefix: deepseek-v4.1-flash, gpt-6.1-terra; OpenCode takes provider/model; switching to Codex or OpenCode picks gpt-6.1-terra or opencode/deepseek-v4.1-flash-free on its own)",
       "default": "deepseek/deepseek-v4.1-flash"
     },
     "headEngine": {

@@ -8,8 +8,8 @@ import type { Ending } from '../../types'
 
 import { effortModeOf, headEffort } from '../lib/effort'
 import { agyTokenOf } from '../lib/accounts'
-import { AGY_TOKEN, agyModelId, agyPoolOf } from '../lib/engines'
-import { applyEvent, describeTool, formatReport, relativeTo, tokensText } from '../lib/format'
+import { AGY_MODELS, AGY_TOKEN, agyBaseOf, agyCurrentModel, agyModelId, agyPoolOf } from '../lib/engines'
+import { applyEvent, describeTool, formatReport, relativeTo, tokensText, withOtherWrites } from '../lib/format'
 import type { SessionReport, StreamEvent } from '../lib/format'
 import { createCallCounter, endActivity, exitOf, runRounds } from '../lib/rounds'
 import type { RoundSpec } from '../lib/rounds'
@@ -49,6 +49,8 @@ export type AgyState = {
   denied: SessionReport['denied']
   /** The commands a shell call ran, in order, for the report's `shell:` line. */
   shell: string[]
+  files: string[]
+  wrote: boolean
   turns: number
   inputTokens: number
   outputTokens: number
@@ -60,18 +62,17 @@ export type AgyState = {
   pending?: { tool: string; input: Record<string, unknown> }
 }
 
-export const newAgyState = (): AgyState => ({ calls: new Map(), denied: [], shell: [], turns: 0, inputTokens: 0, outputTokens: 0, finalText: '', lastTarget: '' })
+export const newAgyState = (): AgyState => ({ calls: new Map(), denied: [], shell: [], files: [], wrote: false, turns: 0, inputTokens: 0, outputTokens: 0, finalText: '', lastTarget: '' })
 
 const agyInput = (name: string, parameters: Record<string, unknown> = {}): Record<string, unknown> => {
   if (name === 'run_command') return { command: String(parameters.CommandLine ?? '') }
-  const path = parameters.TargetFile ?? parameters.AbsolutePath ?? parameters.DirectoryPath ?? parameters.SearchPath ?? parameters.SearchDirectory
+  const path = parameters.TargetFile ?? parameters.AbsolutePath ?? parameters.file_path ?? parameters.path ?? parameters.DirectoryPath ?? parameters.SearchPath ?? parameters.SearchDirectory
   return { ...(path ? { file_path: String(path) } : {}), ...(parameters.Query ? { pattern: String(parameters.Query) } : {}) }
 }
 
 /**
  * Folds one line of `agy -p --output-format stream-json` into `state` and returns the live-view events it stands for.
- * A turn is one finished tool call. The stream does not say whether a file tool call was refused (a refusal ends the run
- * and shows only in the final `denied_actions`), so edited files come from the file system, not from here.
+ * A turn is one finished tool call; a refused call remains in flight and is named in the final `denied_actions`.
  */
 export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
   const events: StreamEvent[] = []
@@ -93,6 +94,10 @@ export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
         const call = state.calls.get(index)!
         state.lastTarget = String(call.input.command ?? call.input.file_path ?? call.input.pattern ?? '')
         if (call.tool === 'shell_command' && call.input.command) state.shell.push(String(call.input.command))
+        if (['write_file', 'edit_file', 'create_file', 'multi_edit', 'multi_edit_file'].includes(call.tool)) {
+          state.wrote = true
+          if (call.input.file_path) state.files.push(String(call.input.file_path))
+        }
         if (state.pending === call) state.pending = undefined
         events.push({ type: 'tool_completed', toolCallId: String(index), toolName: call.tool, isError: false }, { type: 'turn_end' })
         state.turns++
@@ -113,6 +118,22 @@ export const foldAgyRow = (row: AgyRow, state: AgyState): StreamEvent[] => {
     }
   }
   return events
+}
+
+const absoluteIn = (cwd: string, path: string) => {
+  const parts: string[] = []
+  for (const part of (path.startsWith('/') ? path : `${cwd}/${path}`).split('/')) {
+    if (part === '..') parts.pop()
+    else if (part && part !== '.') parts.push(part)
+  }
+  return `/${parts.join('/')}`
+}
+
+export const agyReportFiles = (state: AgyState, cwd: string, changed: readonly string[]) => {
+  const files = [...new Set(state.files.map(file => absoluteIn(cwd, file)))]
+  const own = new Set(files.map(file => relativeTo(cwd, file)))
+  const folder = [...new Set(changed.map(file => relativeTo(cwd, absoluteIn(cwd, file))))].filter(file => !own.has(file))
+  return { files, folder }
 }
 
 
@@ -176,6 +197,7 @@ export const agySettings = (cwd: string, head: HeadNeeds, home = '', envFiles: r
       allow: [...own.map(root => `write_file(${root}/)`), ...extra.map(dir => `read_file(${dir}/)`), ...(head.shell ? ['command(*)'] : [])],
       deny: [
         ...own.flatMap(root => rules('write_file', `${root}/.git/`)),
+        ...roots.flatMap(root => rules('read_file', `${root}/.git/`)),
         ...tempDirs.map(dir => `write_file(${dir}/)`),
         ...envFiles.flatMap(file => rules('read_file', file)),
         ...guarded.paths.flatMap(path => {
@@ -269,15 +291,24 @@ export const failureReason = (state: Pick<AgyState, 'status' | 'finalText'>) =>
   state.status && state.status !== 'SUCCESS' && state.finalText.length <= 400 ? state.finalText : ''
 
 /** One of Antigravity's quota buckets as `agy -p /usage` reports it, under Hydra's pool name. */
-export type AgyBucket = { pool: string; window: string; remaining: number; resetAt: number }
+export type AgyBucket = { pool: string; window: string; remaining: number; resetAt: number; models?: string[]; group?: string }
 
 /** Hydra's pool for an `agy /usage` group: its Argon group, its Claude and GPT group, or the Gemini one. */
-const agyGroupPool = (name: string) => (/argon/i.test(name) ? 'argon' : /claude|gpt/i.test(name) ? 'claude' : /gemini/i.test(name) ? 'gemini' : undefined)
+const agyGroupPool = (name: string) => (/argon/i.test(name) ? 'argon' : /claude.*gpt|gpt.*claude/i.test(name) ? 'claude' : /^gemini models$/i.test(name) ? 'gemini' : name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''))
+
+/** The live group key for a model, falling back to its static pool. */
+export const agyLivePool = (buckets: readonly AgyBucket[], model: string): string => {
+  const base = agyBaseOf(model)
+  const listed = buckets.find(bucket => base && bucket.models?.includes(base))
+  if (listed) return listed.pool
+  if (base === 'gemini-4-argon' && buckets.some(bucket => bucket.pool === 'argon' && !bucket.models?.length)) return 'argon'
+  return agyPoolOf(model)
+}
 
 /** The buckets in `agy -p /usage --output-format stream-json`; none when the output is not that. */
 export const parseAgyUsage = (stdout: string): AgyBucket[] => {
   for (const line of stdout.split('\n')) {
-    let row: { event?: string; command?: { name?: string; data?: { groups?: { name?: string; buckets?: { window?: string; remaining_fraction?: number; reset_time?: string }[] }[] } } }
+    let row: { event?: string; command?: { name?: string; data?: { groups?: { name?: string; description?: string; buckets?: { window?: string; disabled?: boolean; remaining_fraction?: number; reset_time?: string }[] }[] } } }
     try {
       row = JSON.parse(line)
     } catch {
@@ -286,7 +317,9 @@ export const parseAgyUsage = (stdout: string): AgyBucket[] => {
     if (row.event !== 'command_result' || row.command?.name !== 'usage') continue
     return (row.command.data?.groups ?? []).flatMap(group => {
       const pool = agyGroupPool(group.name ?? '')
-      return pool ? (group.buckets ?? []).map(bucket => ({ pool, window: bucket.window ?? '', remaining: Number(bucket.remaining_fraction ?? 1), resetAt: Date.parse(bucket.reset_time ?? '') })) : []
+      const names = (group.description?.match(/models within this group:\s*(.*)/i)?.[1] ?? '').split(',').map(name => name.toLowerCase().replace(/[^a-z0-9]/g, ''))
+      const models = Object.keys(AGY_MODELS).filter(model => names.includes(model.replace(/[^a-z0-9]/g, '')))
+      return pool ? (group.buckets ?? []).filter(bucket => !bucket.disabled).map(bucket => ({ pool, group: group.name ?? '', models, window: bucket.window ?? '', remaining: Number(bucket.remaining_fraction ?? 1), resetAt: Date.parse(bucket.reset_time ?? '') })) : []
     }).filter(bucket => Number.isFinite(bucket.remaining) && Number.isFinite(bucket.resetAt))
   }
   return []
@@ -296,12 +329,13 @@ export const parseAgyUsage = (stdout: string): AgyBucket[] => {
 const AGY_SPENT = 0.01
 
 /**
- * When `model` can run again, if one of its pool's buckets is spent: the latest reset among the spent ones. On plans with no
- * Argon group (Ultra: Argon is part of the Gemini bucket) Argon reads the Gemini buckets. Undefined while it can run.
+ * When `model` can run again, using its reported group or its static pool when membership is unavailable.
  */
 export const agyBlockedUntil = (buckets: readonly AgyBucket[], model: string): number | undefined => {
-  const pool = agyPoolOf(model)
-  const own = buckets.filter(bucket => bucket.pool === pool)
+  const base = agyBaseOf(model)
+  const listed = buckets.find(bucket => base && bucket.models?.includes(base))
+  const pool = agyLivePool(buckets, model)
+  const own = buckets.filter(bucket => listed ? bucket.group === listed.group : bucket.pool === pool)
   const mine = own.length > 0 || pool !== 'argon' ? own : buckets.filter(bucket => bucket.pool === 'gemini')
   const spent = mine.filter(bucket => bucket.remaining < AGY_SPENT)
   return spent.length > 0 ? Math.max(...spent.map(bucket => bucket.resetAt)) : undefined
@@ -363,6 +397,7 @@ async function runRoundAgy(
   state.finalText = ''
   state.status = undefined
   state.pending = undefined
+  state.calls.clear()
   const turnsBefore = state.turns
   let isCapped = false
   const { errors, exit } = await pump($, agyArgs(argv), argv.cwd, signal, async line => {
@@ -490,12 +525,14 @@ export async function runAgyHead($: EngineInterface, head: AgyHead, outer: Abort
 }
 
 async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, outer: AbortSignal, id: string) {
-  const { task: brief, cwd, model, maxTurns, minutes } = head
+  const { task: brief, cwd, maxTurns, minutes } = head
+  const model = agyCurrentModel(head.model, await $.clock.now())
+  const retired = agyBaseOf(head.model) !== undefined && agyBaseOf(head.model) !== model ? [`${agyBaseOf(head.model)} has left Antigravity, so the Head ran ${model}.`] : []
   const addDirs = union(head.addDirs, head.writeDirs)
   // Read each round, so a /hydra effort change reaches a running Head at its next round.
   const effortNow = async () => headEffort(effortModeOf(await readMode($)), head.effort)
   const untracked = await agyUntrackedNote($, cwd)
-  const task = untracked ? `${untracked}\n\n${brief}` : brief
+  const task = [!head.shell ? 'You have no shell. List folders with list_dir and search with find_by_name, grep_search or codebase_search; open files with view_file.' : '', untracked, brief].filter(Boolean).join('\n\n')
 
   const startedAt = await $.clock.now()
   await snapshotChangedFiles($, id, [cwd, ...head.writeDirs])
@@ -527,7 +564,8 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
   })
   const { round, rounds, sessionId, ending } = ended
 
-  const files = await changedFiles($, startedAt, [cwd, ...head.writeDirs])
+  const changed = await changedFiles($, startedAt, [cwd, ...head.writeDirs])
+  const { files, folder } = agyReportFiles(state, cwd, changed)
   const endedAt = await $.clock.now()
   const edits = await compareChangedFiles($, id, { cwd, startedAt, endedAt }, [cwd, ...head.writeDirs])
   const tokens = tokensText(state.inputTokens, state.outputTokens)
@@ -545,12 +583,13 @@ async function runAgyRounds($: EngineInterface, head: AgyHead, home: string, out
   void refreshHeads($)
 
   const report = formatReport({
-    id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending: finalEnding, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns: state.turns, usd: null, files, denied: state.denied,
+    id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending: finalEnding, cap: ended.cap, maxTurns, startedAt, endedAt, rounds, turns: state.turns, usd: null, files: state.wrote ? files : changed, wrote: state.wrote, denied: state.denied,
     finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
-    writeDirs: head.writeDirs, engine: 'agy', tokens,
-    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
+    writeDirs: head.writeDirs, engine: 'agy', tokens, warnings: retired,
+    reverted: edits.reverted, deleted: edits.deleted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   const shellLine = agyShellLine(state.shell)
-  const text = shellLine ? report.replace('\n--- head report ---', `\n${shellLine}\n--- head report ---`) : report
+  const attributed = state.wrote ? withOtherWrites(report, [], folder) : report
+  const text = shellLine ? attributed.replace('\n--- head report ---', `\n${shellLine}\n--- head report ---`) : attributed
   return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending: finalEnding }
 }

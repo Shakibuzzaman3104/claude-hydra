@@ -6,7 +6,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { checkHead, checkNote, fixNote, isCheckable } from './lib/check'
 import type { CheckOutcome } from './lib/check'
-import { applyEvent, clipReport, countsOf, editedCount, editedLine, expectedFiles, expectedMarks, formatReport, parseDiffStat, progressBar, progressOf, progressText, resumeTarget, scopeLines, stopLine, turnsOf, withEditStats, withEdits } from './lib/format'
+import { applyEvent, clipReport, countsOf, editedCount, editedLine, expectedFiles, expectedMarks, formatReport, leadLabel, parseDiffStat, progressBar, progressOf, progressText, resumeTarget, scopeLines, stopLine, turnsOf, withEditStats, withEdits } from './lib/format'
 import { BRIEF_RULE, HYDRA_POLICY, READ_RULE, REPORT_RULE } from './lib/policy'
 import { createCallCounter, endActivity, exitOf, runRounds } from './lib/rounds'
 import type { RoundsSteps } from './lib/rounds'
@@ -15,7 +15,7 @@ import type { Ending, HeadRun } from '../types'
 
 type Script = { finalText: string; code?: number | null; subtype?: string; sessionId?: string | null; calls?: number; turns?: number; errors?: string }
 type Options = { outer?: AbortSignal; resume?: string; mayResume?: () => boolean; sleep?: (ms: number, signal: AbortSignal) => Promise<unknown> }
-type Spec = { prompt: string; maxTurns: number; resume?: string }
+type Spec = { prompt: string; maxTurns: number; resume?: string; isHandoff?: boolean }
 
 // Scripts runRounds: each runRound call logs its spec and returns the next scripted reply.
 const scripted = (scripts: Script[], options: Options = {}) => {
@@ -485,4 +485,31 @@ test('applyEvent adds the files an edit writes to what the Head has touched', as
   expect(applyEvent(run, { type: 'tool_denied', toolCallId: 'd', toolName: 'edit_file' }, labels, '/p').touched).toBeUndefined()
   const many = applyEvent(run, { type: 'tool_completed', toolCallId: '9', toolName: 'edit_file', files: ['/p/a.kt', '/p/b.kt'] }, labels, '/p')
   expect(many.touched).toEqual(['a.kt', 'b.kt'])
+})
+
+test('turn counts never exceed maxTurns in applyEvent, progressText, countsOf or formatReport', () => {
+  const atCap = { id: 'h', task: 't', model: 'm', state: 'running' as const, turns: 200, maxTurns: 200 }
+  expect(applyEvent(atCap, { type: 'turn_end' }, new Map(), '/p').turns).toBe(200)
+  expect(progressText({ turns: 201, maxTurns: 200 })).toBe('200/200 turns')
+  expect(countsOf({ turns: 201, maxTurns: 200 })).toBe('200/200 turns')
+  expect(reportOf({ turns: 201, maxTurns: 200 })).toContain('200 turns')
+})
+
+test('handoff round is marked as isHandoff in runRounds', async () => {
+  const { steps, log } = scripted([
+    { finalText: 'working', code: 8, subtype: 'error_max_turns', calls: 5, turns: 50 },
+    { finalText: 'Done: a\nNot done: b' },
+  ])
+  await runRounds(steps)
+  expect(log[0]!.isHandoff).toBeUndefined()
+  expect(log[1]!.isHandoff).toBe(true)
+})
+
+test('leadLabel formats known and generic weekly windows', () => {
+  expect(leadLabel('five_hour')).toBe('5-hour limit')
+  expect(leadLabel('seven_day')).toBe('Weekly · all models')
+  expect(leadLabel('seven_day_opus')).toBe('Weekly · Opus')
+  expect(leadLabel('seven_day_sonnet')).toBe('Weekly · Sonnet')
+  expect(leadLabel('seven_day_haiku')).toBe('Weekly · Haiku')
+  expect(leadLabel('seven_day_oauth_apps')).toBe('Weekly · oauth apps')
 })

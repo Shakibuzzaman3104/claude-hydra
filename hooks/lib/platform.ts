@@ -59,7 +59,35 @@ const resolved = new Map<string, readonly string[]>()
  * falls back to `cmd.exe /d /s /c`, which works for short command lines.
  */
 export async function commandOf($: EngineInterface, bin: string): Promise<readonly string[]> {
-  if ((await platformOf($)) !== 'windows') return [bin]
+  if ((await platformOf($)) !== 'windows') {
+    if (bin !== 'codex') return [bin]
+    const cached = resolved.get(bin)
+    if (cached) return cached
+    const ran = await $.process.run([bin, '--version'], { timeoutMs: 10_000 }).catch(() => undefined)
+    if (ran?.exitCode === 0) return [bin]
+    const home = await homeOf($)
+    const packages = home ? `${home.replace(/\/+$/, '')}/.codex/packages` : ''
+    const candidates: { path: string; version: number[] }[] = []
+    for (const pkg of packages ? await $.fs.list(packages).catch(() => []) : []) {
+      if (pkg.kind !== 'dir') continue
+      const releases = `${packages}/${pkg.name}/releases`
+      for (const release of await $.fs.list(releases).catch(() => [])) {
+        const version = /^(\d+)\.(\d+)\.(\d+)(?:-|$)/.exec(release.name)
+        if (release.kind !== 'dir' || !version) continue
+        const path = `${releases}/${release.name}/bin/codex`
+        if (await $.fs.exists(path).catch(() => false)) candidates.push({ path, version: version.slice(1).map(Number) })
+      }
+    }
+    candidates.sort((left, right) => right.version[0]! - left.version[0]! || right.version[1]! - left.version[1]! || right.version[2]! - left.version[2]!)
+    const app = '/Applications/Codex.app/Contents/Resources/codex'
+    const path = candidates[0]?.path ?? ((await $.fs.exists(app).catch(() => false)) ? app : undefined)
+    if (path) {
+      const argv = [path]
+      resolved.set(bin, argv)
+      return argv
+    }
+    return [bin]
+  }
   const cached = resolved.get(bin)
   if (cached) return cached
   const where = await $.process.run(['where.exe', bin], { timeoutMs: 10_000 }).catch(() => undefined)
@@ -93,6 +121,19 @@ export async function pythonOf($: EngineInterface): Promise<readonly string[] | 
     if (ran?.exitCode === 0 && /Python 3\./.test(ran.stdout + ran.stderr)) return (python = argv)
   }
   return undefined
+}
+
+const REALPATHS = 'import json, os, sys; print(json.dumps([os.path.realpath(p) for p in sys.argv[1:]]))'
+
+/** Resolves paths through symlinks on every platform. */
+export async function realPaths($: EngineInterface, paths: readonly string[]): Promise<string[]> {
+  if (paths.length === 0) return []
+  const python = await pythonOf($)
+  const ran = python
+    ? await $.process.run([...python, '-I', '-c', REALPATHS, ...paths], { timeoutMs: 10_000 }).catch(() => undefined)
+    : undefined
+  const real = ran?.exitCode === 0 ? (JSON.parse(ran.stdout) as string[]) : []
+  return paths.map((path, index) => (real[index] ? toSlashes(real[index]!) : path))
 }
 
 const REMOVE = 'import os,sys\n(os.rmdir if sys.argv[2] == "dir" else os.remove)(sys.argv[1])'

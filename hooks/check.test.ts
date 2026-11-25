@@ -160,3 +160,38 @@ test('a long check output keeps the failing test lines that the tail would cut',
   expect(tail).toContain(' 1 fail')
   expect(checkTail('a\nb\n 0 fail', '')).toBe('a\nb\n 0 fail')
 })
+
+test('environment failures and silent failures are unknown and never start a fix round', async () => {
+  for (const [exitCode, output, reason] of [
+    [1, 'java.lang.OutOfMemoryError', 'out of memory'], [1, 'Java heap space', 'out of memory'],
+    [1, 'GC overhead limit exceeded', 'out of memory'], [1, 'Cannot allocate memory', 'out of memory'],
+    [1, 'Killed', 'out of memory'], [137, '', 'out of memory'],
+    [1, 'Gradle build daemon disappeared unexpectedly', 'daemon disappeared or crashed'],
+    [1, 'Kotlin daemon crashed', 'daemon disappeared or crashed'],
+    [1, 'No space left on device', 'no space left on device'], [1, 'Too many open files', 'too many open files'],
+    [1, '', 'the check printed nothing'],
+  ] as const) {
+    const outcome = outcomeOf({ exitCode, stdout: '', stderr: output }, 1)
+    expect(outcome.kind).toBe('unknown')
+    if (outcome.kind !== 'unknown') throw new Error('expected unknown')
+    expect(outcome.reason).toContain(reason)
+    const calls: unknown[] = []
+    const checked = await checkHead(steps([{ text: report(), isDone: true }], [outcome], calls))
+    expect(calls.length).toBe(1)
+    expect(checked.result.text).toContain('run it yourself')
+  }
+})
+
+test('fix rounds repeat task rules and flag files outside the named files', async () => {
+  const calls: { note: string }[] = []
+  const checked = await checkHead({
+    ...steps([{ text: report(), isDone: true, files: ['/p/a.ts'] }, { text: report(), isDone: true, files: ['/p/b.ts'] }], [failed(), passed], calls as unknown[]),
+    files: ['a.ts'], task: 'Do not fix production code. Make the assertion fail. Only change a.ts.',
+  })
+  expect(calls[1]?.note).toContain('Only change these task files: a.ts')
+  expect(calls[1]?.note).toContain('"Do not fix production code."')
+  expect(calls[1]?.note).toContain('"Only change a.ts."')
+  expect(calls[1]?.note).toContain('HEAD BLOCKED')
+  expect(checked.result.text).toContain('⚠ the fix round changed files outside `files`: b.ts')
+  expect(checked.result.text.indexOf('⚠ the fix round')).toBeLessThan(checked.result.text.indexOf('--- head report ---'))
+})

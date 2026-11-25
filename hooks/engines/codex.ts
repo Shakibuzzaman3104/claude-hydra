@@ -20,8 +20,11 @@ import { readMode } from '../lib/state'
 /** Codex item types as the tool names Command Code's stream uses, so one live view reads every engine. */
 const CODEX_TOOLS: Record<string, string> = { command_execution: 'shell_command', file_change: 'edit_file', web_search: 'web_search' }
 
-/** How a command fails when Codex's sandbox refuses it: the kernel's wording for a blocked read or write. */
-const CODEX_DENIAL = /permission denied|read-only file system|operation not permitted|EACCES|EROFS|blocked by/i
+const CODEX_DENIAL = /\b(?:declined|rejected|denied)\b/i
+/** A command that ran, but whose file access the sandbox refused: the kernel's wording for a blocked read or write. */
+const CODEX_SANDBOX = /permission denied|read-only file system|operation not permitted|EACCES|EROFS/i
+/** The `tool` of a denied-list entry that is a sandbox refusal inside a command that ran, which reports list apart. */
+export const SANDBOX_TOOL = 'sandbox'
 
 type CodexItem = {
   id?: string; type?: string; text?: string; command?: string; exit_code?: number | null; status?: string
@@ -91,9 +94,10 @@ export const foldCodexRow = (row: CodexRow, state: CodexState): StreamEvent[] =>
         if (isDone) {
           const call = state.calls.get(id)!
           const output = item.aggregated_output ?? ''
-          const isError = item.type === 'command_execution' ? item.exit_code !== 0 && item.exit_code !== null && item.exit_code !== undefined : item.status === 'failed'
-          const isDenied = isError && item.type === 'command_execution' && CODEX_DENIAL.test(output)
+          const isDenied = item.type === 'command_execution' && item.exit_code == null && CODEX_DENIAL.test(`${item.status ?? ''} ${output}`)
+          const isError = item.type === 'command_execution' ? isDenied || (item.exit_code != null && item.exit_code !== 0) || item.status === 'failed' : item.status === 'failed'
           if (isDenied) state.denied.push({ tool: call.tool, target: String(item.command ?? ''), text: output.replace(/\s+/g, ' ').trim() })
+          else if (isError && item.type === 'command_execution' && CODEX_SANDBOX.test(output)) state.denied.push({ tool: SANDBOX_TOOL, target: String(item.command ?? ''), text: (output.split('\n').find(line => CODEX_SANDBOX.test(line)) ?? output).replace(/\s+/g, ' ').trim() })
           else if (!isError && item.type === 'file_change') for (const change of item.changes ?? []) if (change.path) state.files.add(change.path)
           events.push({ type: isDenied ? 'tool_denied' : 'tool_completed', toolCallId: id, toolName: call.tool, isError, ...(item.type === 'file_change' ? { files: (item.changes ?? []).flatMap(change => (change.path ? [change.path] : [])) } : {}) }, { type: 'turn_end' })
           state.turns++
@@ -105,7 +109,7 @@ export const foldCodexRow = (row: CodexRow, state: CodexState): StreamEvent[] =>
 }
 
 /** Codex takes low to max; Hydra's `off` is its `low`. */
-export const codexEffort = (effort: string) => (effort === 'off' ? 'low' : effort)
+export const codexEffort = (effort: string) => effort === 'ultra' ? 'max' : ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) ? effort : 'low'
 
 const tomlString = (value: string) => JSON.stringify(value)
 
@@ -339,6 +343,9 @@ export async function runCodexHead($: EngineInterface, head: CodexHead, outer: A
     return notStarted(id, model, cwd, `${refusal} A Head never starts without Hydra's rules.`, 'codex', 'unavailable')
   }
   const homeRead = realHome ? await homeReadDirs($, realHome) : []
+  for (const dir of ['.agents/skills', '.codex/skills']) {
+    if (await $.fs.exists(`${realHome}/${dir}`).catch(() => false)) homeRead.push(dir)
+  }
   const repoDirs = await gitReadDirs($, realCwd!, realHome)
   const worktreeDirs = await worktreeGitDirs($, realCwd!)
   const tempDir = await makeCodexTemp($, id)
@@ -415,7 +422,7 @@ async function runCodexRounds($: EngineInterface, head: CodexHead, filesystem: s
     id, model, effort: round.effort, cwd, sessionId, finished: isDone, ending, cap: ended.cap, maxTurns, rounds, turns: state.turns, usd: null, files, denied: state.denied,
     finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
     writeDirs: head.writeDirs, engine: 'codex', tokens, warnings, startedAt, endedAt,
-    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
+    reverted: edits.reverted, deleted: edits.deleted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
 }

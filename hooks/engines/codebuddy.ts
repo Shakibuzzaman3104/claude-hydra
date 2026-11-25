@@ -392,7 +392,7 @@ async function runBuddyRounds($: EngineInterface, head: BuddyHead, settings: str
     finalText: round.finalText, exit: exitOf(ended, { minutes, stopped }), errors: round.errors,
     writeDirs: head.writeDirs, engine: head.engine ?? 'codebuddy', tokens,
     rulesNote: searchBlock ? `search tool removed because ${relativeTo(cwd, searchBlock)} is in reach` : undefined,
-    reverted: edits.reverted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
+    reverted: edits.reverted, deleted: edits.deleted, restored: edits.restored, overwritten: edits.overwritten, alsoRan: edits.alsoRan,
   })
   return { text, fullText: round.finalText, isDone, failure: isDone ? undefined : round.errors, files, ending, sessionId }
 }

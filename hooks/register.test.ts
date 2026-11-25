@@ -9,7 +9,7 @@ import {
   relativeTo, resetsIn, SEARCH_DENY, statusFile, statusMark, createGate, createJobQueue, createQueue, createReplyBox, headName, waitForResult, listRuns, nameFromTask, slugOf, stopReason, stopRuns,
   ENGINES, engineOf, isEngine, modelFor, headModelFor, isModelFor, foldCodexRow, newCodexState, codexFilesystem, codexArgs, codexBaseUrl, codexEffort, SECRET_PATHS, foldBuddyRow, newBuddyState, buddySettings, buddyArgs, buddyEffort, buddyTools, BUDDY_SHELL_DENY, tokensText,
   foldAgyRow, newAgyState, agySettings, agyArgs, agyModelId, agyBaseOf, agyPoolOf, AGY_MODEL, AGY_SHELL_DENY, AGY_SECRET_DIRS, agyTempDeny, AGY_TEMP_DIRS,
-  AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck,
+  AUTO, isAuto, poolOf, engineLabel, parseEngineList, resolveHeadEngine, AUTO_CONSENT_QUESTION, needsEngineCheck, offSections, engineNoteLine,
 } from './register'
 import type { On } from 'claude-code'
 
@@ -697,9 +697,10 @@ test('turns a Codex stream into live events: a turn per finished tool call, refu
   expect(state.files).toEqual(new Set(['/p/a.txt']))
 
   const denied = foldCodexRow({ type: 'item.completed', item: command('i3', 'echo x > ../y', 1, 'sh: ../y: Read-only file system') }, state)
-  expect(denied[2]).toEqual({ type: 'tool_denied', toolCallId: 'i3', toolName: 'shell_command', isError: true })
+  // The command ran and the sandbox refused its write: listed apart from refused calls, not as a denial event.
+  expect(denied[2]).toEqual({ type: 'tool_completed', toolCallId: 'i3', toolName: 'shell_command', isError: true })
   expect(state.denied).toHaveLength(1)
-  expect(state.denied[0]).toMatchObject({ tool: 'shell_command', target: 'echo x > ../y' })
+  expect(state.denied[0]).toMatchObject({ tool: 'sandbox', target: 'echo x > ../y', text: 'sh: ../y: Read-only file system' })
 
   foldCodexRow({ type: 'item.completed', item: command('i4', 'cat nope', 1, 'cat: nope: No such file or directory') }, state)
   expect(state.denied).toHaveLength(1)
@@ -874,7 +875,7 @@ test('builds the Antigravity command: stdin closed, own HOME, the model with its
   expect(agyModelId('gemini-3.1-pro', 'low')).toBe('gemini-4-hydrogen-low')
   expect(agyBaseOf('google/gemini-4-argon-medium')).toBe('gemini-4-argon')
   expect(agyBaseOf('constructor')).toBeUndefined()
-  expect(['gemini-3.8-flash', 'gemini-4-hydrogen-xhigh', 'gemini-4-argon', 'claude-opus-5-5', 'claude-sonnet-5-5-low', 'gpt-oss-120b'].map(agyPoolOf)).toEqual(['gemini', 'gemini', 'argon', 'claude', 'claude', 'claude'])
+  expect(['gemini-3.8-flash', 'gemini-4-hydrogen-xhigh', 'gemini-4-argon', 'claude-opus-5-5', 'claude-sonnet-5-5-low', 'gpt-oss-120b'].map(agyPoolOf)).toEqual(['gemini', 'gemini', 'gemini', 'claude', 'claude', 'claude'])
 })
 
 test('tells the Lead which lockdown and model apply on Antigravity', async () => {
@@ -883,12 +884,17 @@ test('tells the Lead which lockdown and model apply on Antigravity', async () =>
   expect(policy).toContain('run `gemini-4-hydrogen` unless you pass another `model`')
   expect(policy).toContain('`max` runs as `xhigh`')
   expect(policy).toContain('claude-opus-5-5')
-  expect(policy).toContain('three usage pools')
-  expect(policy).toContain('Gemini (Hydrogen and Flash share a weekly limit and a 5-hour one')
-  expect(policy).toContain('retires it on 2 November 2026')
+  expect(policy).toContain('two groups: Gemini (every Gemini model) and Claude + GPT')
+  expect(policy).toContain('follows a split')
+  expect(policy).toContain('leave on 30 November 2026')
+  expect(policy).toContain('`gemini-4-neon`')
+  expect(policy).toContain('Never pick Orchestrator ids')
   expect(policy).toContain('sandbox')
   expect(policy).not.toContain('--yolo')
   expect(policy).not.toContain('Measured over 126')
+  const sandboxed = formatReport({ id: 'h', model: 'gpt-6.1-terra', cwd: '/p', sessionId: 'c-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [{ tool: 'sandbox', target: '/p/go test ./...', text: 'mkdir /tmp/wfpg: operation not permitted' }, { tool: 'shell_command', target: 'curl x', text: 'declined' }], finalText: 'ok', exit: '0', engine: 'codex' })
+  expect(sandboxed).toContain('denied (1):\n  - shell_command curl x: declined')
+  expect(sandboxed).toContain('ran, but the sandbox refused a file access inside (1; the check runs outside it):\n  - go test ./...: mkdir /tmp/wfpg: operation not permitted')
   expect(formatReport({ id: 'h', model: 'gemini-3.8-flash', cwd: '/p', sessionId: 'c-1', finished: true, rounds: 1, turns: 3, usd: null, files: [], denied: [], finalText: 'ok', exit: '0', engine: 'agy', tokens: '1k in / 80 out' })).toContain('(agy --resume c-1)')
 })
 
@@ -974,4 +980,22 @@ test('checks readiness and consent whenever the Lead turns Hydra on or changes t
   expect(needsEngineCheck('effort', { engine: 'auto' })).toBe(true)
   expect(needsEngineCheck('effort', { engines: ['agy'] })).toBe(true)
   expect(needsEngineCheck('effort', {})).toBe(false)
+})
+
+test('turns the earlier policy, limits, surge and engine sections off under the same ids when Hydra goes off', async () => {
+  const off = offSections()
+  const ids = off.map(section => section.id)
+  for (const id of ['hydra:policy', 'hydra:limits', 'hydra:surge', 'hydra:engines']) expect(ids).toContain(id)
+  expect(new Set(ids).size).toBe(ids.length)
+  expect(off.every(section => section.scope === 'session')).toBe(true)
+  const policy = off.find(section => section.id === 'hydra:policy')!
+  expect(policy.text).toContain('Hydra is off now')
+  expect(policy.text).toContain('do the work yourself')
+  expect(policy.text).toContain('/hydra')
+})
+
+test('tells the Lead which engines are installed but not turned on, and to ask rather than name one', async () => {
+  expect(engineNoteLine([], ['codex', 'agy'])).toBe('')
+  const line = engineNoteLine(['codex'], ['agy', 'commandcode'])
+  expect(line).toBe('- Installed but not turned on: codex. Only the person can add it, with /hydra engines=agy,commandcode,codex; ask them instead of naming it in a Head.')
 })

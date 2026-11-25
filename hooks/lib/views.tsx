@@ -4,7 +4,7 @@
  */
 import type { EngineInterface, RenderElement, RenderInput } from 'claude-code'
 
-import { accountOverview, accountStrategy, hasExtraAccounts, rowText } from './accounts'
+import { accountOverview, accountStrategy, hasExtraAccounts, headLine, rowText, visibleRuns } from './accounts'
 import { checklistOf, nextStepOf, reportLines, sessionProgressText, taskTitle } from './detail'
 import { effortModeOf } from './effort'
 import { ENGINE_LABEL, engineLabel, isAuto, isEngine } from './engines'
@@ -22,7 +22,7 @@ const columnsOf = (e: { props: { bodyColumns?: number }; viewport?: { columns: n
 export async function bandView($: EngineInterface, e: RenderInput<'AbovePrompt'>) {
   const now = await readTick($)
   const frame = Math.floor(now / 1000)
-  const live = (await readRuns($)).filter(run => isLive(run, now))
+  const live = visibleRuns(await readRuns($)).filter(run => isLive(run, now))
   if (live.length === 0) return undefined
   const isRouted = isAuto(await readMode($))
   const { Box, Text } = $.ui.resolve(e)
@@ -90,7 +90,7 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
   const now = await readTick($)
   const frame = Math.floor(now / 1000)
   const hydra = await readMode($)
-  const list = [...(await readRuns($))].reverse()
+  const list = [...visibleRuns(await readRuns($))].reverse()
   const pick = await readSelected($)
   const chosen = list.find(run => run.id === pick) ?? list.find(run => run.state === 'running') ?? list[0]
   const at = chosen ? list.indexOf(chosen) : -1
@@ -118,7 +118,7 @@ export async function headsPaneView($: EngineInterface, e: RenderInput<'Pane'>, 
 
   return (
     <Box flexDirection="column">
-      <Text bold>🐉 Hydra · {hydra?.isOn ? `${engineLabel(hydra, defaultEngine)} · ${shortModel(hydra.headModel)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
+      <Text bold>🐉 Hydra · {hydra?.isOn ? `${headLine(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
       {list.length === 0 && <Text dimColor>No Heads in this session yet. Claude starts them once Hydra is on (/hydra).</Text>}
       {list.length > 0 && <Text wrap="wrap">{countsLine}</Text>}
       {list.length > 0 && <Text dimColor wrap="wrap">{workLine}</Text>}
@@ -324,7 +324,7 @@ export async function usagePaneView(
         </Box>
       )}
 
-      <Text bold>🐉 Hydra · {hydra?.isOn ? `on · Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
+      <Text bold>🐉 Hydra · {hydra?.isOn ? `on · ${headLine(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'off'}</Text>
       {recent.length > 0 && <Text dimColor>{headsSummaryOf(recent)} · /heads to watch them</Text>}
     </Box>
   )

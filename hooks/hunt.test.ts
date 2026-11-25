@@ -99,7 +99,7 @@ test('status distinguishes all endings and invalid results', async () => {
 })
 
 test('a Head that did not finish but passed its check is done with a note', async () => {
-  const notes = { blocked: 'said blocked, check passed', capped: 'out of turns, check passed', timeout: 'out of time, check passed', stalled: 'stalled, check passed' }
+  const notes = { capped: 'out of turns, check passed', timeout: 'out of time, check passed', stalled: 'stalled, check passed' }
   for (const [ending, note] of Object.entries(notes)) {
     expect(statusOf(ran({ isDone: false, ending, check: 'passed' }), false)).toBe('done')
     const result = await runHunt(fake(plan(), { one: ran({ isDone: false, ending, check: 'passed' }) }).steps)
@@ -107,6 +107,46 @@ test('a Head that did not finish but passed its check is done with a note', asyn
     expect(result.missing).toEqual([])
     expect(formatHunt(result)).toContain(`done (${note})`)
   }
+})
+
+test('a blocked Head with a passing check shows its decision and is not missing', async () => {
+  const result = await runHunt(fake(plan(), { one: ran({ isDone: false, ending: 'blocked', check: 'passed', summary: 'Please choose an engine.\nHEAD BLOCKED', data: { ok: true } }) }).steps)
+  expect(result.missing).toEqual([])
+  expect(formatHunt(result)).toContain('blocked (check passed)')
+  expect(formatHunt(result)).toContain('decision: Please choose an engine.')
+})
+
+test('refuters receive the whole result or its report, reading list and proportional limits', async () => {
+  const big = { areas_read: ['src/a.ts'], text: 'x'.repeat(41000) }
+  const author = ran({ files: ['src/b.ts'], data: big, reportPath: '/home/me/.claude/hydra/hunts/s1/a/one.md', minutes: 4, turns: 25 })
+  const p = plan({ refute: { lenses: ['correctness'], fix: false } })
+  const f = fake(p, { one: author })
+  await runHunt(f.steps)
+  const call = f.calls[1]!
+  expect(call.maxMinutes).toBe(12)
+  expect(call.maxTurns).toBe(38)
+  expect(call.addDirs).toEqual(['/home/me/.claude/hydra/hunts/s1/a'])
+  expect(call.task).toContain('src/a.ts')
+  expect(call.task).toContain('src/b.ts')
+  expect(call.task).toContain('full result is in the saved report')
+  expect(refuteTask(p.heads[0]!, '', { ...author, reportPath: undefined }, 'correctness')).toContain(big.text)
+  expect(refuteTask(p.heads[0]!, '', ran({ summary: 'z'.repeat(7000) }), 'correctness')).toContain('z'.repeat(7000))
+})
+
+test('a stopped Head remains distinct from a failure', async () => {
+  const result = await runHunt(fake(plan(), { one: ran({ isDone: false, ending: 'stopped', files: ['a.ts'], summary: 'Stopped by the Lead · 2.0 min · 4 turns' }) }).steps)
+  expect(formatHunt(result)).toContain('stopped')
+  expect(formatHunt(result)).toContain('a.ts')
+  expect(formatHunt(result)).toContain('2.0 min · 4 turns')
+})
+
+test('an unavailable engine fails its Head while another Head runs', async () => {
+  const p = plan({ heads: [{ name: 'one', task: 'work', engine: 'codex' }, { name: 'two', task: 'work', engine: 'codebuddy' }] })
+  const f = fake(p, { one: new Error('Codex is not ready here: The Codex CLI is not installed'), two: ran() })
+  const result = await runHunt(f.steps)
+  expect(result.outcomes[0]!.status).toBe('failed')
+  expect(result.outcomes[0]!.summary).toContain('Codex is not ready here')
+  expect(result.outcomes[1]!.status).toBe('done')
 })
 
 test('partial Heads keep their data are not missing and are counted', async () => {

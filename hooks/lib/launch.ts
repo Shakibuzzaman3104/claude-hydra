@@ -24,9 +24,9 @@ import { readMode, readRuns, updateMode } from './state'
 /** What the session is set to, as `register` read it from the options. */
 export type Launch = { defaultEngine: Engine; defaultHead: string; isFallbackOn: boolean }
 
-export type Prepared = { input: Record<string, unknown>; headModel: string; id: string; engine: Engine; routing: Routing; schema?: Schema; /** The Head whose session this one continues. */ continues?: string }
+export type Prepared = { input: Record<string, unknown>; headModel: string; id: string; engine: Engine; routing: Routing; schema?: Schema; missingCheck?: boolean; /** The Head whose session this one continues. */ continues?: string }
 
-const headOptions = new Map<string, { effort?: string; schema?: Schema }>()
+const headOptions = new Map<string, { effort?: string; schema?: Schema; check?: string; checkMinutes?: number }>()
 
 /** Everything the Head tool settles before a Head starts: its engine, consent, folders, model and name. */
 export async function prepareHead($: EngineInterface, hydra: HydraMode, e: Readonly<Record<string, unknown>>, launch: Launch): Promise<Prepared | { deny: string }> {
@@ -49,24 +49,36 @@ export async function prepareHead($: EngineInterface, hydra: HydraMode, e: Reado
   }
   if (!(await hasConsent($, hydra.headModel, false, engine))) return { deny: NO_CONSENT }
   if (routed.isNew && isAuto(hydra)) await updateMode($, mode => (mode ? { ...mode, engines: [...poolOf(mode), engine] } : mode))
-  const check = typeof e.check === 'string' ? e.check.trim() : ''
+  const prior = earlier ? headOptions.get(earlier.id) : undefined
+  const check = typeof e.check === 'string' ? e.check.trim() : prior?.check ?? ''
   if (check && !(await hasCheckConsent($, check))) return { deny: NO_CHECK_CONSENT }
   const headModel = earlier?.model ?? headModelFor(engine, undefined, hydra.headModel, defaultHead)
   const asked = earlier ? earlier.model : typeof e.model === 'string' && e.model ? e.model : undefined
   const resumed = earlier
     ? { cwd, model: earlier.model, addDirs: e.addDirs ?? earlier.addDirs, shell: e.shell ?? earlier.shell, resumeSession: { id: earlier.sessionId, engine, model: earlier.model, account: earlier.account }, resumeFiles: earlier.files ?? [] }
     : {}
-  const prior = earlier ? headOptions.get(earlier.id) : undefined
   const effort = typeof e.effort === 'string' ? e.effort : prior?.effort ?? earlier?.effort
   const schema = (e.schema as Schema | undefined) ?? prior?.schema
-  const input = { ...e, ...(effort ? { effort } : {}), writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}), ...resumed }
+  const checkMinutes = typeof e.checkMinutes === 'number' ? e.checkMinutes : prior?.checkMinutes
+  const input: Record<string, unknown> = { ...e, ...(effort ? { effort } : {}), ...(check ? { check } : {}), ...(checkMinutes !== undefined ? { checkMinutes } : {}), writeDirs: writable.dirs, ...(asked && !isModelFor(engine, asked) ? { model: undefined } : {}), ...resumed }
+  const task = String(e.task ?? '')
+  if (task.includes('/.claude/hydra/hunts/') || task.includes('/.claude/hydra/heads/')) {
+    const home = await homeOf($)
+    const sessionId = await $.session.id()
+    const dirs = strings(input.addDirs)
+    for (const kind of ['hunts', 'heads']) {
+      const dir = `${home}/.claude/hydra/${kind}/${sessionId}`
+      if (home && (task.includes(`${dir}/`) || task.includes(`~/.claude/hydra/${kind}/${sessionId}/`))) dirs.push(dir)
+    }
+    if (dirs.length) input.addDirs = [...new Set(dirs)]
+  }
   const routing = { headModel: hydra.headModel, configured: defaultHead, model: asked, pool: isAuto(hydra) && hydra.pinned ? poolOf(hydra) : undefined, fallback: isFallbackOn }
   const taken = new Set([...usedNames, ...(await readRuns($)).map(run => run.id)])
   const id = headName(e.name ?? earlier?.id, String(e.task ?? ''), taken)
   usedNames.add(id)
-  headOptions.set(id, { effort, schema })
+  headOptions.set(id, { effort, schema, check, checkMinutes })
 
-  return { input, headModel, id, engine, routing, ...(schema ? { schema } : {}), ...(earlier ? { continues: earlier.id } : {}) }
+  return { input, headModel, id, engine, routing, ...(schema ? { schema } : {}), ...(earlier ? { continues: earlier.id } : {}), ...(earlier?.check && e.check === undefined && !prior?.check ? { missingCheck: true } : {}) }
 }
 
 const REPORT_MARK = '\n--- head report ---\n'
@@ -160,11 +172,12 @@ export async function untilStopped<T>(run: () => Promise<T>, signal: AbortSignal
 export async function runStructured($: EngineInterface, prepared: Prepared, signal: AbortSignal, schema?: Schema, reportDir?: string): Promise<Structured> {
   const { headModel, id, engine, routing } = prepared
   schema = schema ?? prepared.schema
-  headOptions.set(id, { effort: typeof prepared.input.effort === 'string' ? prepared.input.effort : undefined, schema })
+  headOptions.set(id, { effort: typeof prepared.input.effort === 'string' ? prepared.input.effort : undefined, schema, check: typeof prepared.input.check === 'string' ? prepared.input.check : undefined, checkMinutes: typeof prepared.input.checkMinutes === 'number' ? prepared.input.checkMinutes : undefined })
   const home = reportDir ? undefined : await homeOf($)
   const dir = reportDir ?? (home ? `${home}/.claude/hydra/heads/${await $.session.id()}` : undefined)
   if (dir) await $.process.run(['/bin/mkdir', '-p', dir]).catch(() => undefined)
   const save = async (result: HeadResult, name: string) => {
+    if (prepared.missingCheck) result = { ...result, text: withSummary(result.text, ['check: none (the resumed Head had none)']) }
     if (!dir) return result
     return saveHeadReport($, result, `${dir}/${name}.md`)
   }
@@ -255,7 +268,6 @@ export const huntControllers = new Map<string, AbortController>()
 
 const HUNT_KEEP_MS = 7 * 86_400_000
 const HUNT_STORE = 'hunt-v1:'
-const SUMMARY_CHARS = 2500
 
 type StoredHunt = { at: number; outcomes: Record<string, HeadOutcome> }
 
@@ -307,6 +319,13 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
       let structured: Structured
       try {
         structured = await runStructured($, prepared, controller.signal, schema ?? prepared.schema, dir)
+      } catch (error) {
+        if (!controller.signal.aborted) throw error
+        const run = (await readRuns($)).find(entry => entry.id === prepared.id)
+        const now = await $.clock.now()
+        const minutes = run?.startedAt !== undefined ? Math.max(0, ((run.endedAt ?? now) - run.startedAt) / 60000) : undefined
+        const details = [minutes !== undefined ? `${minutes.toFixed(1)} min` : '', run?.turns !== undefined ? `${run.turns} turns` : ''].filter(Boolean).join(' · ')
+        return { engine: run?.engine ?? prepared.engine, isDone: false, ending: 'stopped', files: [...new Set([...(run?.files ?? []), ...(run?.touched ?? [])])], summary: `Stopped ${signal.aborted ? 'because the hunt was stopped' : 'by the Lead'}${details ? ` · ${details}` : ''}${run?.sessionId ? ` · resume: ${prepared.id}` : ''}`, isResumable: !!run?.sessionId && RESUMABLE.has((run.engine ?? prepared.engine) as Engine) }
       } finally {
         controllers.delete(prepared.id)
         signal.removeEventListener('abort', stop)
@@ -333,11 +352,13 @@ export async function runHuntJob($: EngineInterface, job: HuntJob, signal: Abort
         ...(result.ending ? { ending: result.ending } : {}),
         ...(structured.check ? { check: structured.check } : {}),
         files: (result.files ?? []).map(file => relativeTo(cwd, file)),
-        summary: headSummary(result.text).slice(0, SUMMARY_CHARS),
+        summary: result.fullText?.trim() || headSummary(result.text),
         ...(structured.data !== undefined ? { data: structured.data } : {}),
         ...(structured.dataErrors ? { dataErrors: structured.dataErrors } : {}),
         ...(reportPath ? { reportPath } : {}),
         ...(cost ? { cost } : {}),
+        ...(run?.startedAt !== undefined && run.endedAt !== undefined ? { minutes: Math.max(0, (run.endedAt - run.startedAt) / 60000) } : {}),
+        ...(run?.turns !== undefined ? { turns: run.turns } : {}),
         ...(fallback ? { fallback } : {}),
         ...(fallback ? { asked: askedFor } : {}),
         // A Head that changed nothing can always be asked again: from its session, or from the start.

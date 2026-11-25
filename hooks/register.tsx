@@ -2,14 +2,15 @@
  * @author Shakib
  * @since 06/10/26
  */
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+import type { HydraMode } from '../types'
 
 import { sweepAgyHomes } from './engines/agy'
 import { sweepBuddySettings } from './engines/codebuddy'
 import { sweepCodexTemps } from './engines/codex'
 import { writeRules } from './engines/commandcode'
 import { sweepOpenCodeFiles } from './engines/opencode'
-import { coolingLines, isStrategy, refreshLimits, timeOf, parseAccountsArgs, runAccountsCommand, setAccountStrategy } from './lib/accounts'
+import { coolingLines, headLine, hideFinished, isStrategy, refreshLimits, timeOf, parseAccountsArgs, runAccountsCommand, setAccountStrategy, visibleRuns } from './lib/accounts'
 import { EFFORTS, EFFORT_MODES, HEAD_EFFORTS, effortModeOf, isEffortMode, isHeadEffort } from './lib/effort'
 import type { EffortMode } from './lib/effort'
 import { AUTO, DEFAULT_ENGINE, ENGINES, ENGINE_LABEL, engineLabel, engineOf, headModelFor, isAuto, isEngine, isModelFor, parseEngineList, poolOf, resolveHeadEngine } from './lib/engines'
@@ -65,6 +66,54 @@ const PANE = 'hydra-usage'
 const HEADS_PANE = 'hydra-heads'
 
 const REFRESH_MS = 120_000
+
+/** How long the installed-but-not-consented engine check is kept: prompt.compose runs every prompt. */
+const ENGINE_NOTE_MS = 10 * 60_000
+
+let engineNote: { at: number; text: string; signature: string } | undefined
+
+/** The Lead's prompt when Hydra was on earlier this session and is off now: the Heads refuse, so Claude works alone. */
+const HYDRA_OFF_POLICY = '# Hydra mode (off)\nHydra is off now: the Head and hunt tools refuse, so do the work yourself. The person turns it back on with /hydra.'
+
+const OFF_SECTION: Record<string, string> = {
+  'hydra:policy': HYDRA_OFF_POLICY,
+  'hydra:limits': '- Usage limits: Hydra is off, so no Head is picking an account.',
+  'hydra:surge': '# Hydra surge (off)\nHydra is off now, so no surge applies.',
+  'hydra:engines': '- Hydra is off, so no engine can be added right now.',
+}
+
+/**
+ * The sections that turn last prompt's Hydra text off, each under the id it was sent with: a session section is kept until one
+ * with its id replaces it, so the policy, the limits, the surge and the engines note all have to be answered. Ids never sent are
+ * harmless: an off line for them says nothing the Lead acts on.
+ */
+export const offSections = () =>
+  Object.entries(OFF_SECTION).map(([id, text]) => ({ id, text, scope: 'session' as const }))
+
+/** The Lead's line naming engines installed and signed in but not agreed to, or '' when every ready engine is in the pool. */
+export const engineNoteLine = (missing: readonly Engine[], pool: readonly Engine[]) =>
+  missing.length === 0 ? ''
+    : `- Installed but not turned on: ${missing.join(',')}. Only the person can add ${missing.length === 1 ? 'it' : 'them'}, with /hydra engines=${pool.join(',')},${missing.join(',')}; ask them instead of naming ${missing.length === 1 ? 'it' : 'them'} in a Head.`
+
+/**
+ * The engine note, cached: preflight runs processes, and prompt.compose runs on every prompt. The person otherwise learns of an
+ * engine installed but not agreed to only when a Head is refused.
+ */
+async function engineNoteFor($: EngineInterface, hydra: HydraMode, configured: Engine): Promise<string> {
+  const now = await $.clock.now()
+  const pool = isAuto(hydra) ? poolOf(hydra) : [engineOf(hydra, configured)]
+  const signature = `${hydra.headModel}|${pool.join(',')}`
+  if (engineNote && engineNote.signature === signature && now - engineNote.at < ENGINE_NOTE_MS) return engineNote.text
+  const missing: Engine[] = []
+  for (const engine of ENGINES) {
+    if (pool.includes(engine)) continue
+    if ((await preflight($, engine)).problems.length > 0) continue
+    if (!(await hasConsent($, hydra.headModel, false, engine))) missing.push(engine)
+  }
+  const text = engineNoteLine(missing, pool)
+  engineNote = { at: now, text, signature }
+  return text
+}
 
 let isWorkerRunning = false
 
@@ -151,7 +200,7 @@ export const register: Register = (on, options) => {
           resume: { type: 'string', description: 'Name of an ended Head to continue in its own session, on its engine, model and account, with what it already read and did: for feedback on its work, the next step of the same job, or a Head that ran out of turns or time (raise maxTurns or maxMinutes). `task` is then just the follow-up. Cheaper and better informed than a new Head. Not for Antigravity Heads, nor for unrelated work.' },
           cwd: { type: 'string', description: 'Repo directory to work in; defaults to the session root' },
           engine: { type: 'string', enum: [...ENGINES], description: 'The engine this Head runs on. Required in auto mode; in a fixed-engine session it defaults to that engine, and naming another ready one sends just this Head there. Pick by the task: see the routing guide in the Hydra policy. If the engine is at its usage limit or signed out, Hydra moves the Head to another model or engine on its own, and the report says where it ran.' },
-          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-terra (default) for coding, including hard or multi-file work, gpt-6.1-sol for work that is not code, gpt-6-luna for mechanical or small tasks. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-4-hydrogen (default, low to xhigh), gemini-3.8-flash (bulk, cheaper on the shared Gemini pool), gemini-4-argon (research and search) or claude-sonnet-5-5 (normal work), claude-opus-5-5 (hard work), gpt-oss-120b (simple edits, retiring 2 November 2026); Claude + GPT-OSS, Gemini and Argon draw on separate usage limits. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
+          model: { type: 'string', description: 'Head model id (CodeBuddy, WorkBuddy and Codex ids have no provider prefix; OpenCode takes provider/model); defaults to the Hydra head model. On Codex: gpt-6.1-terra (default) for coding, including hard or multi-file work, gpt-6.1-sol for work that is not code, gpt-6-luna for mechanical or small tasks, gpt-6-astra (most capable, drains the shared allowance about 3x faster than Sol) only for the hardest bug or after Terra failed at high. On CodeBuddy and WorkBuddy: deepseek-v4.1-flash, glm-5.3, kimi-k3, minimax-m3.1-flash, gpt-5.6-terra and the others `codebuddy --help` lists; each model has its own usage limit. On Antigravity: gemini-4-hydrogen (default, low to xhigh, cheapest), gemini-4-neon (low to xhigh: harder work, reviews, research and web search), gemini-4-carbon (deepest long-horizon work, spends the Gemini pool fastest), claude-sonnet-5-5 (normal work on the Claude pool), claude-opus-5-5 (hard work, drains the Claude pool several times faster than Sonnet); gemini-4-argon, gemini-3.8-flash and gpt-oss-120b leave on 30 November 2026. Every Gemini model shares one usage pool and Claude + GPT-OSS another, each charged by token cost. On OpenCode: opencode/deepseek-v4.1-flash-free (free) or any provider/model the person set up.' },
           files: { type: 'array', items: { type: 'string' }, description: 'The files this Head must create or change, relative to cwd, as the task names them. Hydra measures the Head against them: the band shows files written of files named, and the report flags a named file it never changed and any file it changed beyond them. Leave out for a reading job.' },
           maxTurns: { type: 'number', description: 'Turn cap for the Head (default 100; 200 on Codex and Antigravity, where a turn is one tool call). It stops a runaway Head; a Head that hits it writes a handoff. Raise it for wide reads and audits.' },
           addDirs: { type: 'array', items: { type: 'string' }, description: 'Absolute folders outside cwd the Head must read (mockups, briefs, other repos)' },
@@ -396,15 +445,23 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
     const hydra = await readMode($)
-    if (!hydra?.isOn) return composed
+    if (!hydra?.isOn) {
+      // Hydra was on earlier this session (a stored mode, or Heads already ran): tell the Lead its tools refuse now, by the
+      // same ids it read the policy under, so those section texts are replaced rather than left standing.
+      const wasOn = hydra !== null || (await readRuns($)).length > 0
+      if (!wasOn) return composed
+      return { sections: [...composed.sections, ...offSections()] }
+    }
 
     const policy = { id: 'hydra:policy', text: HYDRA_POLICY(hydra.headModel, effortModeOf(hydra), isAuto(hydra) ? AUTO : engineOf(hydra, defaultEngine), poolOf(hydra), { fallback: isFallbackOn, pinned: hydra.pinned === true }), scope: 'session' as const }
     const cooling = await coolingLines($, isAuto(hydra) && hydra.pinned ? poolOf(hydra) : ENGINES).catch(() => [])
     const limited = cooling.length > 0 ? [{ id: 'hydra:limits', text: `- Usage limits in force now (Hydra moves a Head off these on its own; route new work elsewhere): ${cooling.join('; ')}.`, scope: 'session' as const }] : []
 
     const surged = hydra.surge ? [{ id: 'hydra:surge', text: SURGE_POLICY(hydra.surge, 'session'), scope: 'session' as const }] : []
+    const engineNoteText = await engineNoteFor($, hydra, defaultEngine).catch(() => '')
+    const engines = engineNoteText ? [{ id: 'hydra:engines', text: engineNoteText, scope: 'session' as const }] : []
 
-    return { sections: [...composed.sections, policy, ...limited, ...surged] }
+    return { sections: [...composed.sections, policy, ...limited, ...surged, ...engines] }
   })
 
   on('tool.describe', { tool: HEAD_TOOL }, async ($, e, next) => {
@@ -459,25 +516,34 @@ export const register: Register = (on, options) => {
     if (!isWorkerRunning) return { deny: 'Hydra is still starting in this session. Try again in a moment.' }
     // Everything a Head would be refused for is found here, before any Head starts.
     const vetted = new Set<Engine>()
+    // An engine that is not ready fails only its own Heads; the hunt is refused only when no Head could start.
+    const unready = new Map<Engine, string>()
+    const headEngines: Engine[] = []
     for (const head of plan.heads) {
       if (head.effort !== undefined && !isHeadEffort(head.effort)) return { deny: `Head ${head.name}: effort must be low, medium, high, xhigh or max.` }
       const routed = resolveHeadEngine(hydra, head.engine, defaultEngine)
       if ('deny' in routed) return { deny: `Head ${head.name}: ${routed.deny}` }
-      if (vetted.has(routed.engine)) continue
-      vetted.add(routed.engine)
+      headEngines.push(routed.engine)
+      if (vetted.has(routed.engine) || unready.has(routed.engine)) continue
       if (routed.isNew) {
         const ready = await preflight($, routed.engine)
-        if (ready.problems.length > 0) return { deny: `Head ${head.name}: ${ENGINE_LABEL[routed.engine]} is not ready here: ${ready.problems[0]} Pick another engine.` }
+        if (ready.problems.length > 0) { unready.set(routed.engine, ready.problems[0]!); continue }
       }
+      vetted.add(routed.engine)
       if (!(await hasConsent($, hydra.headModel, false, routed.engine))) return { deny: NO_CONSENT }
     }
+    if (vetted.size === 0 && unready.size > 0) {
+      const [engine, problem] = [...unready][0]!
+      return { deny: `${ENGINE_LABEL[engine]} is not ready here: ${problem} Pick another engine.` }
+    }
+    const unreadyNotes = [...unready].map(([engine, problem]) => `not started: ${plan.heads.filter((_, index) => headEngines[index] === engine).map(head => head.name).join(', ')}, because ${ENGINE_LABEL[engine]} is not ready here: ${problem} The other Heads run; send these to another engine.`)
     const firstCheck = plan.heads.find(head => head.check)?.check
     if (firstCheck && !(await hasCheckConsent($, firstCheck))) return { deny: NO_CHECK_CONSENT }
     // Read before any Head starts, so the Lead sees a limit or an unreadable path before the results come back.
     const pathNotes = await outsidePathNotes(plan, await $.session.root(), path => $.fs.stat(path).then(() => true, () => false)).catch(() => [])
     await refreshLimits($, [...vetted])
     const limits = await coolingLines($, [...vetted]).catch(() => [])
-    parsed.notes = [...(parsed.notes ?? []), ...pathNotes, ...(limits.length > 0 ? [`limits now: ${limits.join('; ')} (Hydra moves these Heads to another route on its own)`] : [])]
+    parsed.notes = [...(parsed.notes ?? []), ...unreadyNotes, ...pathNotes, ...(limits.length > 0 ? [`limits now: ${limits.join('; ')} (Hydra moves these Heads to another route on its own)`] : [])]
     if (e.background === true) {
       huntJobs.push({ plan, launch })
 
@@ -498,11 +564,11 @@ export const register: Register = (on, options) => {
     const ids = typeof e.id === 'string' && e.id && e.id !== 'all' ? [e.id] : ('all' as const)
     if (action === 'list') {
       const hydra = await readMode($)
-      const head = hydra?.isOn ? `Hydra on · Head ${hydra.headModel} on ${engineLabel(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'Hydra off'
+      const head = hydra?.isOn ? `Hydra on · ${headLine(hydra, defaultEngine)} · effort ${effortModeOf(hydra)}` : 'Hydra off'
 
       const home = await homeOf($)
       const saved = home ? `\nReports: ${home}/.claude/hydra/heads/${await $.session.id()}/<head>.md (a hunt's in ${home}/.claude/hydra/hunts/${await $.session.id()}/<hunt>/)` : ''
-      return { result: `${head}\n${listRuns(await readRuns($), now, id => controllers.has(id))}${saved}` }
+      return { result: `${head}\n${listRuns(visibleRuns(await readRuns($)), now, id => controllers.has(id))}${saved}` }
     }
     if (action === 'stop') {
       const list = await readRuns($)
@@ -517,9 +583,10 @@ export const register: Register = (on, options) => {
       return { result: `${stoppedHunts}Stopping ${targets.map(run => run.id).join(', ')}.${ghosts.length > 0 ? ` ${ghosts.join(', ')} had no live process and were marked failed.` : ''}` }
     }
     if (action === 'clear') {
-      await updateRuns($, list => list.filter(run => run.state === 'running' || run.state === 'queued'))
+      // Only hide them: they stay in the session's runs, so `resume "<name>"` still finds them.
+      await updateRuns($, hideFinished)
 
-      return { result: 'Cleared finished and failed Heads from the views.' }
+      return { result: 'Cleared finished and failed Heads from the views. They can still be resumed by name.' }
     }
     const stored = await readMode($)
     const current = stored ?? { isOn: false, headModel: defaultHead, effort: defaultEffort, engine: defaultEngine }

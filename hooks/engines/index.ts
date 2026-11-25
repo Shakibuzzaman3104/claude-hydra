@@ -19,7 +19,7 @@ import { guardedPaths, ignoreChangedLine, ignoreChanges, snapshotIgnoreFiles } f
 import type { Guarded } from '../lib/protect'
 import { homeHeadRefusal, secretDirRefusal, union } from '../lib/safety'
 import { readRuns, updateRuns, updateTick } from '../lib/state'
-import { agyBlockedUntil, readAgyUsage, runAgyHead } from './agy'
+import { agyBlockedUntil, agyLivePool, readAgyUsage, runAgyHead } from './agy'
 import { runBuddyHead } from './codebuddy'
 import { runCodexHead } from './codex'
 import { runCommandCodeHead } from './commandcode'
@@ -83,7 +83,7 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
     const dirs = [cwd, ...writeDirs]
     const before = await snapshotChangedFiles($, id, dirs)
     const checked: Record<string, number> = {}
-    const ran = await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, turnsGiven: input.maxTurns, resume, since: resume ? startedAt : undefined }, signal, id, routing, checked)
+    const ran = await runHeadInside($, { task, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, check, checkMinutes, files: strings(input.files), turnsGiven: input.maxTurns, resume, since: resume ? startedAt : undefined }, signal, id, routing, checked)
     const times = await changedFileTimes($, startedAt, dirs)
     const entry = (await readRuns($)).find(run => run.id === id)
     const relativeTimes = Object.fromEntries(Object.entries(times).map(([file, time]) => [relativeTo(cwd, file), time]))
@@ -109,7 +109,7 @@ export async function runHead($: EngineInterface, input: Record<string, unknown>
  */
 async function runHeadInside(
   $: EngineInterface,
-  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; check: string; checkMinutes: number; turnsGiven?: unknown; resume?: HeadSession; since?: number },
+  head: { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; check: string; checkMinutes: number; files?: string[]; turnsGiven?: unknown; resume?: HeadSession; since?: number },
   outer: AbortSignal,
   id: string,
   routing?: Routing,
@@ -134,7 +134,7 @@ async function runHeadInside(
     return notStarted(id, model, cwd, guarded.refusal, engine)
   }
   const named = withHeadName(task, id)
-  const spec: HeadSpec = { task: check ? named + checkNote(check) : named, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded, resume, since }
+  const spec: HeadSpec = { task: check ? named + checkNote(check) : named, originalTask: task, files: head.files, cwd, model, maxTurns, addDirs, writeDirs, shell, minutes, effort, engine, guarded, resume, since }
   // A resumed Head stays where its session lives; a fresh one may move across accounts and engines.
   const run = async (head: HeadSpec): Promise<HeadResult> => {
     if (!head.resume) {
@@ -182,6 +182,8 @@ async function runChecked(
     cwd: spec.cwd,
     minutes: spec.minutes,
     effort: spec.effort,
+    task: spec.originalTask ?? spec.task,
+    files: spec.files,
     run: async change => {
       if (!change) return (last = await run(spec))
       await markPhase('fix')
@@ -199,7 +201,13 @@ async function runChecked(
       const dirs = [spec.cwd, ...spec.writeDirs]
       const before = await changedFileTimes($, 0, dirs)
       try {
-        return await runCheck($, check, spec.cwd, checkMinutes)
+        return await runCheck($, check, spec.cwd, checkMinutes, { signal: outer, onWait: async () => {
+          await setRun($, id, { activity: 'waiting for another Head’s check' })
+          await refreshStatus($)
+        }, onStart: async () => {
+          await setRun($, id, { activity: `check: ${check}`.slice(0, 80) })
+          await refreshStatus($)
+        } })
       } finally {
         const after = await changedFileTimes($, 0, dirs)
         for (const [file, time] of Object.entries(after)) if (before[file] !== time) checked[file] = time
@@ -226,7 +234,7 @@ async function runChecked(
 /** A resumed run the engine never got going (no session, or a limit, a lost sign-in): the work starts again in a fresh session. */
 const isLostSession = (result: HeadResult) => !result.isDone && (result.engineBound !== undefined || !result.sessionId)
 
-type HeadSpec = { task: string; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; guarded: Guarded; /** An earlier Head's session to continue, on the engine and account it lives on. */ resume?: HeadSession; /** When a Head that continues another's session started: what it reports begins there. */ since?: number }
+type HeadSpec = { task: string; originalTask?: string; files?: string[]; cwd: string; model: string; maxTurns: number; addDirs: string[]; writeDirs: string[]; shell: boolean; minutes: number; effort?: string; engine: Engine; guarded: Guarded; /** An earlier Head's session to continue, on the engine and account it lives on. */ resume?: HeadSession; /** When a Head that continues another's session started: what it reports begins there. */ since?: number }
 
 /** Continues `session` where it lives: the same engine and account, with no rotation or fallback, since no other can open it. */
 async function runResumed($: EngineInterface, head: HeadSpec, session: HeadSession, outer: AbortSignal, id: string): Promise<HeadResult> {
@@ -334,12 +342,12 @@ async function runRoutes($: EngineInterface, head: HeadSpec, turnsGiven: unknown
   if (all.length > editedCount(result.text)) result = { ...result, files: all, text: withEdits(result.text, head.cwd, all, await diffStat($, head.cwd, all)) }
   if (trail.length === 0) return result
   const line = `fallback: ${trail.join(' → ')}${ending ? ` (${ending})` : ` → ${routeText(current)}`}`
-  const offline = lostSearch(head, current) ? `\n⚠ asked for ${routeText(head)}, which searches the web; it ran on ${routeText(current)}, which cannot: check any sources it cites` : ''
+  const offline = lostSearch(head, current) ? `\n⚠ asked for ${routeText(head)}, which searches the web; it ran on ${routeText(current)}, which may not: check any sources it cites` : ''
   return { ...result, text: `${line}${offline}\n${result.text}` }
 }
 
-/** A Head asked for Antigravity's search model (Argon) that ended on a route with no web search. */
-export const lostSearch = (asked: Route, ran: Route) => asked.engine === 'agy' && /argon/i.test(asked.model) && !(ran.engine === 'agy' && /argon/i.test(ran.model))
+/** Whether a web research task moved from Antigravity to another engine. */
+export const lostSearch = (asked: Route & { task?: string }, ran: Route) => asked.engine === 'agy' && ran.engine !== 'agy' && /\b(?:web research|web search|research(?:ing)? (?:the )?web|search(?:ing)? (?:the )?web|https?:\/\/\S+)\b/i.test(asked.task ?? '')
 
 /** Where a Head may go next, nearest first, before any check: `current`'s models in other pools (not for a lost sign-in), then the engines in `first`'s fallback order. */
 export const fallbackRoutes = (first: Engine, current: Route, bound: EngineBound, routing: Routing): Route[] => {
@@ -367,7 +375,8 @@ async function nextRoute($: EngineInterface, head: HeadSpec, current: HeadSpec, 
     if (tried.has(routeKey(route))) continue
     if (route.engine === current.engine && onEngine >= MAX_MODELS_PER_ENGINE) continue
     if (route.engine !== current.engine && ((await preflight($, route.engine)).problems.length > 0 || !(await hasConsent($, route.model, false, route.engine)))) continue
-    const picked = pickAccount(route.engine, await accountsOf($, route.engine), cooldowns, now, 'fill', {}, [], usagePoolOf(route.engine, route.model))
+    const routeAccounts = await accountsOf($, route.engine)
+    const picked = pickAccount(route.engine, routeAccounts, cooldowns, now, 'fill', {}, [], await livePoolOf($, route.engine, route.model, routeAccounts))
     if (picked.account) return route
   }
   return undefined
@@ -382,7 +391,7 @@ async function nextRoute($: EngineInterface, head: HeadSpec, current: HeadSpec, 
 async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSignal, id: string): Promise<HeadResult> {
   const { engine, cwd, model } = head
   const accounts = await accountsOf($, engine)
-  const pool = usagePoolOf(engine, model)
+  const pool = await livePoolOf($, engine, model, accounts)
   const named = (name: string) => accounts.find(account => accountId(account) === name)
   // This route starts its own usage record, even when no account is free to start it; `runRoutes` adds the routes before it back.
   await setRun($, id, { tokens: undefined })
@@ -419,6 +428,12 @@ async function runOnAccounts($: EngineInterface, head: HeadSpec, outer: AbortSig
   })
   if (spent) await setRun($, id, { tokens: addTokens(spent, await tokensNow()) })
   return result
+}
+
+/** The usage pool a limit on `model` cools: for Antigravity the group its own `/usage` lists the model in, so a split group cools only its models. */
+async function livePoolOf($: EngineInterface, engine: Engine, model: string, accounts: readonly Account[]): Promise<string | undefined> {
+  if (engine !== 'agy') return usagePoolOf(engine, model)
+  return agyLivePool(await readAgyUsage($, accounts[0]?.dir).catch(() => []), model)
 }
 
 /** `pickUsable`, and for Antigravity a look at the account's quota first: a spent bucket is recorded as a cooldown and the next account picked. */

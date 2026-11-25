@@ -258,21 +258,35 @@ test('an unfinished Head reads JSON without retrying, and a failed retry keeps t
 
 test('a resumed Head inherits effort and schema, with explicit effort taking precedence', async () => {
   const list = [{ id: 'resume-seed', task: 'work', model: 'm', state: 'done', turns: 1, cwd: '/repo', engine: 'codebuddy', sessionId: 's1' }]
-  const $ = { state: { get: async () => ({ value: list, version: 1 }) }, store: { get: async (key: string) => key === 'consent-v1:codebuddy' },
+  const $ = { state: { get: async () => ({ value: list, version: 1 }) }, store: { get: async (key: string) => key === 'consent-v1:codebuddy' || key === 'consent-check-v1' },
     env: { get: async () => '' }, fs: { stat: async () => undefined },
   } as unknown as EngineInterface
   const hydra = { isOn: true, headModel: 'm', engine: 'codebuddy' }
   const launch = { defaultEngine: 'codebuddy' as const, defaultHead: 'm', isFallbackOn: false }
-  const first = await prepareHead($, hydra, { task: 'first', resume: 'resume-seed', effort: 'high', schema: SCHEMA }, launch)
+  const first = await prepareHead($, hydra, { task: 'first', resume: 'resume-seed', effort: 'high', schema: SCHEMA, check: 'npm test', checkMinutes: 7 }, launch)
   if ('deny' in first) throw new Error(first.deny)
   list.push({ ...list[0]!, id: first.id })
   const resumed = await prepareHead($, hydra, { task: 'continue', resume: first.id }, launch)
   if ('deny' in resumed) throw new Error(resumed.deny)
   expect(resumed.input.effort).toBe('high')
   expect(resumed.schema).toEqual(SCHEMA)
-  const changed = await prepareHead($, hydra, { task: 'continue', resume: first.id, effort: 'max' }, launch)
+  expect(resumed.input.check).toBe('npm test')
+  expect(resumed.input.checkMinutes).toBe(7)
+  const changed = await prepareHead($, hydra, { task: 'continue', resume: first.id, effort: 'max', check: 'other', checkMinutes: 3 }, launch)
   if ('deny' in changed) throw new Error(changed.deny)
   expect(changed.input.effort).toBe('max')
+  expect(changed.input.check).toBe('other')
+  expect(changed.input.checkMinutes).toBe(3)
+})
+
+test('report paths grant only the current session hunt and heads folders', async () => {
+  const list = [{ id: 'report-seed', task: 'work', model: 'm', state: 'done', turns: 1, cwd: '/repo', engine: 'codebuddy', sessionId: 's1' }]
+  const $ = { state: { get: async () => ({ value: list, version: 1 }) }, store: { get: async () => true }, session: { id: async () => 'current' }, env: { get: async () => '/home/me' }, fs: { stat: async () => undefined } } as unknown as EngineInterface
+  const hydra = { isOn: true, headModel: 'm', engine: 'codebuddy' }
+  const launch = { defaultEngine: 'codebuddy' as const, defaultHead: 'm', isFallbackOn: false }
+  const result = await prepareHead($, hydra, { resume: 'report-seed', task: 'Read ~/.claude/hydra/hunts/current/a/report.md and /home/me/.claude/hydra/heads/current/b.md and ~/.claude/hydra/heads/other/c.md' }, launch)
+  if ('deny' in result) throw new Error(result.deny)
+  expect(result.input.addDirs).toEqual(['/home/me/.claude/hydra/hunts/current', '/home/me/.claude/hydra/heads/current'])
 })
 
 test('a stopped run asks no more, and the check verdict is the first run\'s', async () => {

@@ -17,6 +17,7 @@ const LEAD_LABELS: Record<string, string> = {
   seven_day: 'Weekly · all models',
   seven_day_opus: 'Weekly · Opus',
   seven_day_sonnet: 'Weekly · Sonnet',
+  seven_day_haiku: 'Weekly · Haiku',
   seven_day_fable: 'Weekly · Fable',
 }
 
@@ -270,7 +271,7 @@ export const applyEvent = (run: HeadRun, event: StreamEvent, labels: Map<string,
       }
     }
     case 'turn_end':
-      return { turns: run.turns + 1 }
+      return { turns: run.maxTurns !== undefined ? Math.min(run.turns + 1, run.maxTurns) : run.turns + 1 }
     default:
       return {}
   }
@@ -282,7 +283,8 @@ const NEAR_CAP = 0.8
 export const isNearCap = (run: Pick<HeadRun, 'turns' | 'maxTurns'>) => run.maxTurns !== undefined && run.turns >= run.maxTurns * NEAR_CAP
 
 /** Every turn a Head took: this run's, which the cap counts, and those of its earlier runs (a fix round, another account or route). */
-export const turnsOf = (run: Pick<HeadRun, 'turns' | 'earlierTurns'>) => (run.earlierTurns ?? 0) + run.turns
+export const turnsOf = (run: Pick<HeadRun, 'turns' | 'earlierTurns' | 'maxTurns'>) =>
+  (run.earlierTurns ?? 0) + (run.maxTurns !== undefined ? Math.min(run.turns, run.maxTurns) : run.turns)
 
 /** The files the Lead named, relative to `cwd` and once each: what a Head's progress is measured against. */
 export const expectedFiles = (cwd: string, files: readonly string[]) => [...new Set(files.map(file => relativeTo(cwd, file.trim()).replace(/^\.\//, '')).filter(Boolean))]
@@ -304,7 +306,7 @@ export const progressBar = (run: Pick<HeadRun, 'expected' | 'touched' | 'files'>
 
 /** A Head's count in the views: its turns against the cap once it nears it, else the named files written, else its turns so far. */
 export const progressText = (run: Pick<HeadRun, 'turns' | 'earlierTurns' | 'maxTurns' | 'expected' | 'touched' | 'files'>) => {
-  if (isNearCap(run)) return `${run.turns}/${run.maxTurns} turns`
+  if (isNearCap(run)) return `${Math.min(run.turns, run.maxTurns!)}/${run.maxTurns} turns`
   const progress = progressOf(run)
   return progress ? `${progress.done}/${progress.total} files` : `${turnsOf(run)} turns`
 }
@@ -312,7 +314,7 @@ export const progressText = (run: Pick<HeadRun, 'turns' | 'earlierTurns' | 'maxT
 /** A Head's counts in one line, for a list: the named files written and its turns. */
 export const countsOf = (run: Pick<HeadRun, 'turns' | 'earlierTurns' | 'maxTurns' | 'expected' | 'touched' | 'files'>) => {
   const progress = progressOf(run)
-  const turns = isNearCap(run) ? `${run.turns}/${run.maxTurns} turns` : `${turnsOf(run)} turns`
+  const turns = isNearCap(run) ? `${Math.min(run.turns, run.maxTurns!)}/${run.maxTurns} turns` : `${turnsOf(run)} turns`
   return progress ? `${progress.done}/${progress.total} files · ${turns}` : turns
 }
 
@@ -517,7 +519,8 @@ export const editedCount = (report: string) => Number(summaryOfReport(report).ma
 /** A report whose `edited` line names `files`: a Head moved to another account or engine also edited what its earlier attempts wrote. */
 export const withEdits = (report: string, cwd: string, files: readonly string[], stats: Readonly<Record<string, string>> = {}) => {
   const summary = summaryOfReport(report)
-  return summary.replace(EDITED_LINE, () => editedLine(cwd, files, stats)) + report.slice(summary.length)
+  const cleaned = files.length === 0 ? summary.replace(/^⚠ the Head says it changed nothing, but files changed: [^\n]*(?:\n|$)/m, '') : summary
+  return cleaned.replace(EDITED_LINE, () => editedLine(cwd, files, stats)) + report.slice(summary.length)
 }
 
 /** Separates file-tool edits from check output and other writes in the folder. */
@@ -536,11 +539,15 @@ export const priorEditStats = (cwd: string, stats: Readonly<Record<string, strin
   return Object.fromEntries(Object.entries(stats).map(([file, stat]) => [file, prior.has(file) ? (stat === 'new' ? 'had edits before' : `${stat} vs last commit; had edits before`) : stat]))
 }
 
+const FOLDER_LABEL = "changed in the folder during the run, not through this Head's file tools"
+
 /** Adds compact lines for writes that are not attributed to the Head. */
 export const withOtherWrites = (report: string, check: readonly string[], folder: readonly string[]) => {
   const line = (label: string, files: readonly string[]) => files.length ? `\n${label}: ${files.slice(0, 8).join(', ')}${files.length > 8 ? ` and ${files.length - 8} more` : ''}` : ''
   const summary = summaryOfReport(report)
-  return summary.replace(EDITED_LINE, match => match + line('check wrote', check) + line("changed in the folder during the run, not through this Head's file tools", folder)) + report.slice(summary.length)
+  const listed = new Set([...summary.matchAll(new RegExp(`^${FOLDER_LABEL}: (.*)$`, 'gm'))].flatMap(match => match[1]!.split(', ')))
+  const unlisted = folder.filter(file => !listed.has(file))
+  return summary.replace(EDITED_LINE, match => match + line('check wrote', check) + line(FOLDER_LABEL, unlisted)) + report.slice(summary.length)
 }
 
 /** `git diff --numstat -z` rows and `git ls-files --others -z` paths as one stat per file: `+12 −3`, or `new` for a file git does not track yet. */
@@ -598,35 +605,49 @@ export const formatReport = (head: {
   writeDirs?: readonly string[]; engine?: Engine; tokens?: string; /** Things the Lead must check by hand, each shown as a ⚠ line. */ warnings?: readonly string[]
   /** Files the Head put back to the committed version, or changed though they were already uncommitted before it started. */
   reverted?: readonly string[]; overwritten?: readonly string[]
+  /** Snapshot files that were new (never in git HEAD) and were removed during this Head. */
+  deleted?: readonly string[]
   /** Tracked files rewritten during the Head that match the committed version again. */
   restored?: readonly string[]
   /** Other Heads that ran in the same folder, or one inside or holding it, during this Head. */
   alsoRan?: readonly string[]
+  /** False when the Head made no file-write tool calls of its own: folder changes are not blamed on it. */
+  wrote?: boolean
 }) => {
   const took = head.startedAt !== undefined && head.endedAt !== undefined ? ` · ${clockOf(head.endedAt - head.startedAt)}` : ''
+  const turns = head.maxTurns !== undefined ? Math.min(head.turns, head.maxTurns) : head.turns
+  const ownFiles = head.wrote === false ? [] : head.files
+  const folderFiles = head.wrote === false ? [...new Set(head.files.map(file => relativeTo(head.cwd, file)))] : []
   const lines = [
-    ...damageLines(head),
-    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${head.turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}${took}`,
+    ...damageLines({ ...head, files: ownFiles }),
+    `head ${head.id} · ${head.model}${head.effort ? ` · effort ${head.effort}` : ''} · ${head.finished ? 'finished' : 'NOT finished'} · exit ${head.exit} · ${head.rounds} round(s) · ${turns} turns · ${head.tokens ?? `$${(head.usd ?? 0).toFixed(4)}`}${took}`,
     `session ${head.sessionId ?? 'none'} (${resumeCommand(head.engine ?? DEFAULT_ENGINE)} ${head.sessionId ?? '<id>'}) · cwd ${head.cwd}`,
   ]
-  const stop = head.finished ? undefined : stopLine(head)
+  const stop = head.finished ? undefined : stopLine({ ...head, files: ownFiles })
   if (stop) lines.push(stop)
   if (head.rulesNote) lines.push(`rules: ${head.rulesNote}`)
   for (const warning of head.warnings ?? []) lines.push(`⚠ ${warning}`)
   if (head.writeDirs && head.writeDirs.length > 0) lines.push(`may also write: ${head.writeDirs.join(', ')}`)
-  const outside = outsideFiles(head.cwd, head.files, head.writeDirs)
+  const outside = outsideFiles(head.cwd, ownFiles, head.writeDirs)
   if (outside.length > 0) lines.push(`⚠ WROTE OUTSIDE THE PROJECT (${outside.length}): ${outside.join(', ')}`)
-  const ignoreEdits = head.files.filter(isIgnoreFile)
+  const ignoreEdits = ownFiles.filter(isIgnoreFile)
   if (ignoreEdits.length > 0) lines.push(`⚠ CHANGED .hydraignore (${ignoreEdits.map(file => relativeTo(head.cwd, file)).join(', ')}): check it before the next Head runs`)
-  lines.push(editedLine(head.cwd, head.files, head.stats))
+  lines.push(editedLine(head.cwd, ownFiles, head.stats))
+  if (folderFiles.length > 0) lines.push(`${FOLDER_LABEL}: ${folderFiles.slice(0, 8).join(', ')}${folderFiles.length > 8 ? ` and ${folderFiles.length - 8} more` : ''}`)
   if (head.reverted && head.reverted.length > 0) lines.push(`⚠ put back to the committed version during this Head (uncommitted edits there are gone): ${head.reverted.map(file => relativeTo(head.cwd, file)).join(', ')}`)
+  if (head.deleted && head.deleted.length > 0) lines.push(`deleted (were new, never committed): ${head.deleted.map(file => relativeTo(head.cwd, file)).join(', ')}`)
   if (head.restored && head.restored.length > 0) lines.push(`⚠ rewritten during this Head and now identical to the committed version (if anyone edited them while it ran, those edits are gone): ${head.restored.map(file => relativeTo(head.cwd, file)).join(', ')}`)
   if (head.overwritten && head.overwritten.length > 0) lines.push(`⚠ changed files that already had uncommitted edits before this Head started: ${head.overwritten.map(file => relativeTo(head.cwd, file)).join(', ')}`)
   if (head.alsoRan && head.alsoRan.length > 0) lines.push(`⚠ ${head.alsoRan.join(', ')} also ran in this folder during this Head; the edited list may include their files`)
-  if (head.denied.length > 0) {
-    lines.push(`denied (${head.denied.length}):`, ...head.denied.map(d => `  - ${d.tool} ${relativeTo(head.cwd, d.target)}: ${d.text.slice(0, 140)}`))
+  const refused = head.denied.filter(d => d.tool !== 'sandbox')
+  const sandboxed = head.denied.filter(d => d.tool === 'sandbox')
+  if (refused.length > 0) {
+    lines.push(`denied (${refused.length}):`, ...refused.map(d => `  - ${d.tool} ${relativeTo(head.cwd, d.target)}: ${d.text.slice(0, 140)}`))
   }
-  lines.push('--- head report ---', clipReport(head.finalText) || '(no final report)')
+  if (sandboxed.length > 0) {
+    lines.push(`ran, but the sandbox refused a file access inside (${sandboxed.length}; the check runs outside it):`, ...sandboxed.map(d => `  - ${relativeTo(head.cwd, d.target).slice(0, 100)}: ${d.text.slice(0, 140)}`))
+  }
+  lines.push('--- head report ---', clipReport(head.finalText.replace(/^[ \t]*--- head report ---[ \t]*\r?$/gm, '---')) || '(no final report)')
   if (!head.finished && head.errors?.trim()) lines.push('--- stderr ---', head.errors.trim())
   return lines.join('\n')
 }

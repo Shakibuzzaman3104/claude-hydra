@@ -14,7 +14,7 @@ import { lookOf, rowLine } from './look'
 import { WORKBUDDY_LOGIN, engineChecks } from './checks'
 import { AUTO_CONSENT_QUESTION, CHECK_CONSENT_QUESTION, CHECK_CONSENT_YES, CONSENT_QUESTION, CONSENT_YES } from './policy'
 import { isWithin, secretDirRefusal, union } from './safety'
-import { canRun, commandOf, homeOf, platformOf, pythonOf, runScript, toSlashes } from './platform'
+import { canRun, commandOf, homeOf, platformOf, pythonOf, realPaths as platformRealPaths, runScript, toSlashes } from './platform'
 import { readMode, readRuns, readWarned, updateHeads, updateLead, updateRuns, updateWarned } from './state'
 
 const STATUS_KEEP_MS = 7 * 86_400_000
@@ -545,18 +545,9 @@ export const notStarted = (id: string, model: string, cwd: string, reason: strin
   ...(engineBound ? { engineBound } : {}),
 })
 
-/** Prints the real path of each argument as a JSON list; one Python call works on every platform, unlike `realpath`. */
-const REALPATHS = 'import json, os, sys; print(json.dumps([os.path.realpath(p) for p in sys.argv[1:]]))'
-
 /** The real path of each folder, so the profile's rules match what the sandbox sees through a symlink. */
 export async function realPaths($: EngineInterface, paths: readonly string[]): Promise<string[]> {
-  if (paths.length === 0) return []
-  const python = await pythonOf($)
-  const ran = python
-    ? await $.process.run([...python, '-I', '-c', REALPATHS, ...paths], { timeoutMs: 10_000 }).catch(() => undefined)
-    : undefined
-  const real = ran?.exitCode === 0 ? (JSON.parse(ran.stdout) as string[]) : []
-  return paths.map((path, index) => (real[index] ? toSlashes(real[index]!) : path))
+  return platformRealPaths($, paths)
 }
 
 /** Files under `dirs` written since `since` (ms), by the file system's own account: Codex's stream misses what a shell command writes. */
@@ -619,6 +610,8 @@ export type EditConflicts = {
   overwritten: string[]
   /** Snapshot files now back to the committed version, or deleted: edits made before the Head started are gone. */
   reverted: string[]
+  /** Snapshot files that were new (never in git HEAD) and are now gone. */
+  deleted: string[]
   /** Tracked files rewritten during the Head that match the committed version: an edit made there while it ran is gone. */
   restored: string[]
   /** Other Heads that ran in this folder, or one inside or holding it, during this Head. */
@@ -636,7 +629,7 @@ async function snapshotFile($: EngineInterface, id: string, snapshot: Record<str
 /** What the Head did to edits that were uncommitted before it started, and the Heads that ran beside it. */
 export async function compareChangedFiles($: EngineInterface, id: string, head: { cwd: string; startedAt?: number; endedAt?: number }, dirs: readonly string[]): Promise<EditConflicts> {
   const snapshot = editsBefore.get(id) ?? {}
-  let edits = { overwritten: [] as string[], reverted: [] as string[], restored: [] as string[] }
+  let edits = { overwritten: [] as string[], reverted: [] as string[], deleted: [] as string[], restored: [] as string[] }
   // Runs with an empty snapshot too: a clean tree at the start can still lose an edit made while the Head ran.
   let file: string | undefined
   try {
@@ -645,7 +638,7 @@ export async function compareChangedFiles($: EngineInterface, id: string, head: 
     const ran = await runScript($, 'changed-files.py', ['--compare', file, String(since), ...dirs])
     const parsed = JSON.parse(ran.stdout) as Partial<typeof edits>
     const own = ownEdits.get(id)
-    edits = { overwritten: (parsed.overwritten ?? []).filter(path => !own?.has(relativeTo(head.cwd, path))), reverted: parsed.reverted ?? [], restored: parsed.restored ?? [] }
+    edits = { overwritten: (parsed.overwritten ?? []).filter(path => !own?.has(relativeTo(head.cwd, path))), reverted: parsed.reverted ?? [], deleted: parsed.deleted ?? [], restored: parsed.restored ?? [] }
   } catch {
     // No report line beats a wrong one.
   } finally {
